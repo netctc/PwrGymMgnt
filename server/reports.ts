@@ -1328,23 +1328,23 @@ async function buildAllSectionsReport(pool: Pool, fromDate: string, toDate: stri
 
   const statusRows = await queryRows(
     pool,
-    `SELECT 'Members' AS section, status AS metric, COUNT(*) AS total FROM members GROUP BY status
+    `SELECT 'Members' AS section, status COLLATE utf8mb4_unicode_ci AS metric, COUNT(*) AS total FROM members GROUP BY status
      UNION ALL
-     SELECT 'Employees' AS section, employment_status AS metric, COUNT(*) AS total FROM employees GROUP BY employment_status
+     SELECT 'Employees' AS section, employment_status COLLATE utf8mb4_unicode_ci AS metric, COUNT(*) AS total FROM employees GROUP BY employment_status
      UNION ALL
-     SELECT 'Invoices' AS section, status AS metric, COUNT(*) AS total FROM invoices GROUP BY status
+     SELECT 'Invoices' AS section, status COLLATE utf8mb4_unicode_ci AS metric, COUNT(*) AS total FROM invoices GROUP BY status
      UNION ALL
-     SELECT 'Classes' AS section, status AS metric, COUNT(*) AS total FROM class_sessions GROUP BY status
+     SELECT 'Classes' AS section, status COLLATE utf8mb4_unicode_ci AS metric, COUNT(*) AS total FROM class_sessions GROUP BY status
      UNION ALL
-     SELECT 'Private PT' AS section, status AS metric, COUNT(*) AS total FROM private_sessions GROUP BY status
+     SELECT 'Private PT' AS section, status COLLATE utf8mb4_unicode_ci AS metric, COUNT(*) AS total FROM private_sessions GROUP BY status
      ORDER BY section, total DESC`,
   );
 
   const upcoming = await queryRows(
     pool,
-    `SELECT 'Group Class' AS type, title AS name, trainer_name, room, start_time, status FROM class_sessions WHERE start_time >= NOW()
+    `SELECT 'Group Class' AS type, title COLLATE utf8mb4_unicode_ci AS name, trainer_name COLLATE utf8mb4_unicode_ci AS trainer_name, room COLLATE utf8mb4_unicode_ci AS room, start_time, status COLLATE utf8mb4_unicode_ci AS status FROM class_sessions WHERE start_time >= NOW()
      UNION ALL
-     SELECT 'Private PT' AS type, CONCAT('PT - ', COALESCE(member_name, member_id)) AS name, trainer_name, room, start_time, status FROM private_sessions WHERE start_time >= NOW()
+     SELECT 'Private PT' AS type, CONCAT('PT - ', COALESCE(member_name, member_id)) COLLATE utf8mb4_unicode_ci AS name, trainer_name COLLATE utf8mb4_unicode_ci AS trainer_name, room COLLATE utf8mb4_unicode_ci AS room, start_time, status COLLATE utf8mb4_unicode_ci AS status FROM private_sessions WHERE start_time >= NOW()
      ORDER BY start_time ASC
      LIMIT 80`,
   );

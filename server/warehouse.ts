@@ -29,7 +29,7 @@ type AuthenticatedRequest = Request & {
 };
 
 const MAX_PAGE_SIZE = 500;
-const DEFAULT_TAX_RATE = 0;
+const DEFAULT_TAX_RATE = 0.11;
 const DEFAULT_WAREHOUSE_LOCATION = "main";
 
 function createId(prefix: string) {
@@ -815,6 +815,36 @@ async function ensureWarehouseTables(db: Db) {
 export function registerWarehouseRoutes(app: Express, poolProvider: PoolProvider) {
   app.use("/api/warehouse", requirePermission("warehouse.read"));
 
+  // --- Tax Rate Settings ---
+  app.get("/api/warehouse/tax-settings", async (_req, res, next) => {
+    try {
+      const pool = requirePool(poolProvider);
+      await ensureWarehouseTables(pool);
+      const [rows]: any = await pool.query("SELECT data FROM settings WHERE id = 'warehouse' LIMIT 1");
+      const data = rows?.[0]?.data ? (typeof rows[0].data === "string" ? JSON.parse(rows[0].data) : rows[0].data) : {};
+      res.json({ taxRate: numberOrDefault(data.taxRate, DEFAULT_TAX_RATE) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.put("/api/warehouse/tax-settings", requirePermission("warehouse.write"), async (req: AuthenticatedRequest, res, next) => {
+    try {
+      const pool = requirePool(poolProvider);
+      await ensureWarehouseTables(pool);
+      const taxRate = numberOrDefault(req.body.taxRate, DEFAULT_TAX_RATE);
+      if (taxRate < 0 || taxRate > 1) return res.status(400).json({ error: "Tax rate must be between 0 and 1 (e.g. 0.11 for 11%)" });
+      await pool.query(
+        `INSERT INTO settings (id, data) VALUES ('warehouse', ?)
+         ON DUPLICATE KEY UPDATE data = VALUES(data)`,
+        [JSON.stringify({ taxRate })],
+      );
+      res.json({ taxRate });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.get("/api/warehouse/categories", async (req, res, next) => {
     try {
       const pool = requirePool(poolProvider);
@@ -1479,8 +1509,8 @@ export function registerWarehouseRoutes(app: Express, poolProvider: PoolProvider
         throw error;
       }
       const subtotal = roundMoney(normalizedItems.reduce((sum: number, item: any) => sum + item.lineTotal, 0));
-      const taxTotal = validateWarehouseMoney(req.body.taxTotal, "Tax total");
-      const shippingTotal = validateWarehouseMoney(req.body.shippingTotal, "Shipping total");
+      const taxTotal = roundMoney(Math.max(0, numberOrDefault(req.body.taxTotal, 0)));
+      const shippingTotal = roundMoney(Math.max(0, numberOrDefault(req.body.shippingTotal, 0)));
       const total = roundMoney(subtotal + taxTotal + shippingTotal);
       await connection.query(
         `INSERT INTO warehouse_purchase_orders

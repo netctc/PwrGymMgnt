@@ -101,6 +101,18 @@ function money(value: number) {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(Number(value || 0));
 }
 
+function displayDate(value?: string | null) {
+  if (!value) return '—';
+  // Convert YYYY-MM-DD to dd/MM/yyyy
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
+  if (match) return `${match[3]}/${match[2]}/${match[1]}`;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  const d = String(parsed.getDate()).padStart(2, '0');
+  const m = String(parsed.getMonth() + 1).padStart(2, '0');
+  return `${d}/${m}/${parsed.getFullYear()}`;
+}
+
 function monthStart() {
   const now = new Date();
   return new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
@@ -333,7 +345,7 @@ export default function Accounting() {
     autoTable(doc, {
       startY: 66,
       head: [["Date", "Type", "Category", "Amount", "Status", "Description"]],
-      body: transactions.map((tx) => [tx.date, tx.type, tx.category, money(tx.amount), tx.status, tx.description || ""]),
+      body: transactions.map((tx) => [displayDate(tx.date), tx.type, tx.category, money(tx.amount), tx.status, tx.description || ""]),
     });
     doc.save(`financial-summary-${filterFrom}-${filterTo}.pdf`);
   }
@@ -542,7 +554,7 @@ export default function Accounting() {
                 <TableBody>
                   {transactions.map((tx) => (
                     <TableRow key={tx.id}>
-                      <TableCell>{tx.date}</TableCell>
+                      <TableCell>{displayDate(tx.date)}</TableCell>
                       <TableCell className="capitalize">{tx.type}</TableCell>
                       <TableCell>{tx.category}</TableCell>
                       <TableCell>{money(tx.amount)}</TableCell>
@@ -600,7 +612,7 @@ export default function Accounting() {
                 <TableHeader><TableRow><TableHead>Date</TableHead><TableHead>Amount</TableHead><TableHead>Status</TableHead><TableHead>Reference</TableHead><TableHead>Description</TableHead></TableRow></TableHeader>
                 <TableBody>
                   {transactions.filter((tx) => tx.referenceType === "payroll_run" || tx.category === "Payroll").map((tx) => (
-                    <TableRow key={tx.id}><TableCell>{tx.date}</TableCell><TableCell>{money(tx.amount)}</TableCell><TableCell>{tx.status}</TableCell><TableCell>{tx.referenceId}</TableCell><TableCell>{tx.description}</TableCell></TableRow>
+                    <TableRow key={tx.id}><TableCell>{displayDate(tx.date)}</TableCell><TableCell>{money(tx.amount)}</TableCell><TableCell>{tx.status}</TableCell><TableCell>{tx.referenceId}</TableCell><TableCell>{tx.description}</TableCell></TableRow>
                   ))}
                 </TableBody>
               </Table>

@@ -172,4 +172,7 @@ export const schedulingApi = {
       `/api/scheduling/private-classes/${encodeURIComponent(id)}${toQuery({ scope })}`,
       { method: 'DELETE' },
     ),
+
+  updatePrivateClass: (id: string, payload: Partial<PrivateClassSession> & { durationMinutes?: number; allowConflicts?: boolean }) =>
+    apiRequest<{ privateClass: PrivateClassSession }>(`/api/scheduling/private-classes/${encodeURIComponent(id)}`, { method: 'PUT', body: payload }),
 };

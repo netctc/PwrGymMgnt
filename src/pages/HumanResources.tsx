@@ -98,6 +98,12 @@ export default function HumanResources() {
   const [runMonth, setRunMonth] = useState(currentMonth);
   const [defaultBonus, setDefaultBonus] = useState('0');
   const [additionalDeduction, setAdditionalDeduction] = useState('0');
+  const [departments, setDepartments] = useState<Array<{ id: string; name: string; code: string; status: string }>>([]);
+  const [jobTitles, setJobTitles] = useState<Array<{ id: string; name: string; departmentId?: string; status: string }>>([]);
+  const [showDeptDialog, setShowDeptDialog] = useState(false);
+  const [deptForm, setDeptForm] = useState({ id: '', name: '', code: '' });
+  const [showJobTitleDialog, setShowJobTitleDialog] = useState(false);
+  const [jobTitleForm, setJobTitleForm] = useState({ id: '', name: '', departmentId: '' });
   const canCreateUserForCurrentEmployee = !editingEmployeeId || !employeeForm.linkedUserId;
 
   const activeEmployees = useMemo(() => employees.filter((employee) => employee.employmentStatus === 'active'), [employees]);
@@ -110,12 +116,16 @@ export default function HumanResources() {
   const loadData = async () => {
     setLoading(true);
     try {
-      const [employeeResult, runResult] = await Promise.all([
+      const [employeeResult, runResult, deptResult, jtResult] = await Promise.all([
         hrPayrollApi.listEmployees({ search, status: statusFilter }),
         hrPayrollApi.listPayrollRuns(),
+        fetch('/api/hr/departments', { credentials: 'include' }).then((r) => r.ok ? r.json() : { departments: [] }),
+        fetch('/api/hr/job-titles', { credentials: 'include' }).then((r) => r.ok ? r.json() : { jobTitles: [] }),
       ]);
       setEmployees(employeeResult.employees);
       setPayrollRuns(runResult.payrollRuns);
+      setDepartments(deptResult.departments || []);
+      setJobTitles(jtResult.jobTitles || []);
       if (runResult.payrollRuns.length > 0 && !selectedRun) {
         await loadPayrollRun(runResult.payrollRuns[0].id);
       }
@@ -169,8 +179,21 @@ export default function HumanResources() {
     event.preventDefault();
     setSaving(true);
     try {
+      // Auto-generate employee code on creation
+      let employeeCode = employeeForm.employeeCode || '';
+      if (!editingEmployeeId) {
+        try {
+          const codeRes = await fetch(`/api/hr/next-employee-code?department=${encodeURIComponent(employeeForm.department || 'General')}`, { credentials: 'include' });
+          if (codeRes.ok) {
+            const codeData = await codeRes.json();
+            employeeCode = codeData.code;
+          }
+        } catch { /* use empty if generation fails */ }
+      }
+
       const payload = {
         ...employeeForm,
+        employeeCode,
         baseSalary: Number(employeeForm.baseSalary || 0),
         allowanceHousing: Number(employeeForm.allowanceHousing || 0),
         allowanceTransport: Number(employeeForm.allowanceTransport || 0),
@@ -553,9 +576,29 @@ export default function HumanResources() {
             <div className="space-y-2"><Label>Last name</Label><Input required value={employeeForm.lastName || ''} onChange={(event) => updateEmployeeForm('lastName', event.target.value)} /></div>
             <div className="space-y-2"><Label>Email</Label><Input type="email" value={employeeForm.email || ''} onChange={(event) => updateEmployeeForm('email', event.target.value)} /></div>
             <div className="space-y-2"><Label>Phone</Label><Input value={employeeForm.phone || ''} onChange={(event) => updateEmployeeForm('phone', event.target.value)} /></div>
-            <div className="space-y-2"><Label>Employee code</Label><Input value={employeeForm.employeeCode || ''} onChange={(event) => updateEmployeeForm('employeeCode', event.target.value)} /></div>
-            <div className="space-y-2"><Label>Department</Label><Input value={employeeForm.department || ''} onChange={(event) => updateEmployeeForm('department', event.target.value)} /></div>
-            <div className="space-y-2"><Label>Job title</Label><Input value={employeeForm.jobTitle || ''} onChange={(event) => updateEmployeeForm('jobTitle', event.target.value)} /></div>
+            {editingEmployeeId && (
+              <div className="space-y-2"><Label>Employee code</Label><Input value={employeeForm.employeeCode || ''} readOnly disabled className="bg-slate-50" /></div>
+            )}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label>Department</Label>
+                <button type="button" className="text-xs text-indigo-600 hover:underline" onClick={() => { setDeptForm({ id: '', name: '', code: '' }); setShowDeptDialog(true); }}>+ Manage</button>
+              </div>
+              <select className="h-10 w-full rounded-md border border-slate-200 px-3 text-sm" value={employeeForm.department || 'General'} onChange={(event) => updateEmployeeForm('department', event.target.value)}>
+                {departments.filter((d) => d.status === 'active').map((d) => <option key={d.id} value={d.name}>{d.name}</option>)}
+                {departments.filter((d) => d.status === 'active').length === 0 && <option value="General">General</option>}
+              </select>
+            </div>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label>Job title</Label>
+                <button type="button" className="text-xs text-indigo-600 hover:underline" onClick={() => { setJobTitleForm({ id: '', name: '', departmentId: '' }); setShowJobTitleDialog(true); }}>+ Manage</button>
+              </div>
+              <select className="h-10 w-full rounded-md border border-slate-200 px-3 text-sm" value={employeeForm.jobTitle || ''} onChange={(event) => updateEmployeeForm('jobTitle', event.target.value)}>
+                <option value="">Select job title</option>
+                {jobTitles.filter((j) => j.status === 'active').map((j) => <option key={j.id} value={j.name}>{j.name}</option>)}
+              </select>
+            </div>
             <div className="space-y-2">
               <Label>Status</Label>
               <Select value={employeeForm.employmentStatus || 'active'} onValueChange={(value) => updateEmployeeForm('employmentStatus', value)}>
@@ -646,6 +689,79 @@ export default function HumanResources() {
           </form>
         </DialogContent>
       </Dialog>
+
+      {/* Department Maintenance Dialog */}
+      {showDeptDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowDeptDialog(false)}>
+          <div className="bg-white rounded-2xl p-6 w-full max-w-lg shadow-xl max-h-[80vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-bold text-slate-900 mb-4">Manage Departments</h3>
+            <div className="space-y-3 mb-4">
+              {departments.map((dept) => (
+                <div key={dept.id} className="flex items-center justify-between p-3 rounded-lg border border-slate-200">
+                  <div><span className="font-medium">{dept.name}</span> <span className="text-xs text-slate-500">({dept.code})</span></div>
+                  <div className="flex gap-1">
+                    <button type="button" className="text-xs text-indigo-600 hover:underline" onClick={() => setDeptForm({ id: dept.id, name: dept.name, code: dept.code })}>Edit</button>
+                    <button type="button" className="text-xs text-red-600 hover:underline" onClick={async () => { await fetch(`/api/hr/departments/${dept.id}`, { method: 'DELETE', credentials: 'include' }); await loadData(); }}>Delete</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="border-t pt-4 space-y-3">
+              <p className="text-sm font-semibold">{deptForm.id ? 'Edit Department' : 'Add Department'}</p>
+              <div className="grid grid-cols-2 gap-3">
+                <Input placeholder="Department name" value={deptForm.name} onChange={(e) => setDeptForm({ ...deptForm, name: e.target.value })} />
+                <Input placeholder="Code (3 chars)" maxLength={10} value={deptForm.code} onChange={(e) => setDeptForm({ ...deptForm, code: e.target.value.toUpperCase() })} />
+              </div>
+              <Button size="sm" onClick={async () => {
+                if (!deptForm.name || !deptForm.code) { toast.error('Name and code required'); return; }
+                if (deptForm.id) {
+                  await fetch(`/api/hr/departments/${deptForm.id}`, { method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: deptForm.name, code: deptForm.code }) });
+                } else {
+                  await fetch('/api/hr/departments', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: deptForm.name, code: deptForm.code }) });
+                }
+                setDeptForm({ id: '', name: '', code: '' });
+                await loadData();
+              }}>{deptForm.id ? 'Update' : 'Add'}</Button>
+            </div>
+            <Button variant="outline" className="mt-4 w-full" onClick={() => setShowDeptDialog(false)}>Close</Button>
+          </div>
+        </div>
+      )}
+
+      {/* Job Title Maintenance Dialog */}
+      {showJobTitleDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowJobTitleDialog(false)}>
+          <div className="bg-white rounded-2xl p-6 w-full max-w-lg shadow-xl max-h-[80vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-bold text-slate-900 mb-4">Manage Job Titles</h3>
+            <div className="space-y-3 mb-4">
+              {jobTitles.map((jt) => (
+                <div key={jt.id} className="flex items-center justify-between p-3 rounded-lg border border-slate-200">
+                  <span className="font-medium">{jt.name}</span>
+                  <div className="flex gap-1">
+                    <button type="button" className="text-xs text-indigo-600 hover:underline" onClick={() => setJobTitleForm({ id: jt.id, name: jt.name, departmentId: jt.departmentId || '' })}>Edit</button>
+                    <button type="button" className="text-xs text-red-600 hover:underline" onClick={async () => { await fetch(`/api/hr/job-titles/${jt.id}`, { method: 'DELETE', credentials: 'include' }); await loadData(); }}>Delete</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="border-t pt-4 space-y-3">
+              <p className="text-sm font-semibold">{jobTitleForm.id ? 'Edit Job Title' : 'Add Job Title'}</p>
+              <Input placeholder="Job title name" value={jobTitleForm.name} onChange={(e) => setJobTitleForm({ ...jobTitleForm, name: e.target.value })} />
+              <Button size="sm" onClick={async () => {
+                if (!jobTitleForm.name) { toast.error('Name required'); return; }
+                if (jobTitleForm.id) {
+                  await fetch(`/api/hr/job-titles/${jobTitleForm.id}`, { method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: jobTitleForm.name, departmentId: jobTitleForm.departmentId }) });
+                } else {
+                  await fetch('/api/hr/job-titles', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: jobTitleForm.name, departmentId: jobTitleForm.departmentId }) });
+                }
+                setJobTitleForm({ id: '', name: '', departmentId: '' });
+                await loadData();
+              }}>{jobTitleForm.id ? 'Update' : 'Add'}</Button>
+            </div>
+            <Button variant="outline" className="mt-4 w-full" onClick={() => setShowJobTitleDialog(false)}>Close</Button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

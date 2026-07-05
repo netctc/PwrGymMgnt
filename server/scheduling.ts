@@ -790,6 +790,55 @@ export function registerSchedulingRoutes(app: Express, poolProvider: PoolProvide
     }
   });
 
+  app.put("/api/scheduling/private-classes/:id", requireScheduler, async (req: AuthenticatedRequest, res, next) => {
+    try {
+      const pool = await getReadyPool();
+      const [existing]: any = await pool.query("SELECT * FROM private_sessions WHERE id = ?", [req.params.id]);
+      if (existing.length === 0) return res.status(404).json({ error: "Private session not found" });
+      const current = existing[0];
+
+      const start = parseDateTime(req.body.startTime) || new Date(current.start_time);
+      const durationMinutes = numberOrDefault(req.body.durationMinutes, 60);
+      const end = parseDateTime(req.body.endTime) || new Date(start.getTime() + durationMinutes * 60 * 1000);
+      if (!start || !end || end <= start) return res.status(400).json({ error: "Invalid session time" });
+
+      const room = normalizeString(req.body.room) || current.room;
+      const trainerId = req.body.trainerId === undefined ? current.trainer_id : normalizeString(req.body.trainerId);
+      const memberId = req.body.memberId === undefined ? current.member_id : normalizeString(req.body.memberId);
+
+      const conflicts = await findConflicts(pool, { start, end, room, trainerId, memberId, excludePrivateId: req.params.id });
+      if (conflicts.length > 0 && !req.body.allowConflicts) {
+        return res.status(409).json({ error: "Schedule conflict detected", conflicts });
+      }
+
+      await pool.query(
+        `UPDATE private_sessions
+         SET member_id = ?, member_name = ?, trainer_id = ?, trainer_name = ?, start_time = ?, end_time = ?, room = ?, status = ?, level = ?, branch = ?, notes = ?, data = ?
+         WHERE id = ?`,
+        [
+          memberId,
+          req.body.memberName === undefined ? current.member_name : normalizeString(req.body.memberName) || null,
+          trainerId,
+          req.body.trainerName === undefined ? current.trainer_name : normalizeString(req.body.trainerName) || null,
+          toMysqlDateTime(start),
+          toMysqlDateTime(end),
+          room,
+          normalizeString(req.body.status) || current.status,
+          normalizeString(req.body.level) || current.level,
+          normalizeString(req.body.branch) || current.branch,
+          req.body.notes === undefined ? current.notes : normalizeString(req.body.notes),
+          toMysqlJson(req.body.data ?? (typeof current.data === "string" ? JSON.parse(current.data || "{}") : current.data || {})),
+          req.params.id,
+        ],
+      );
+
+      const [rows]: any = await pool.query("SELECT * FROM private_sessions WHERE id = ?", [req.params.id]);
+      res.json({ privateClass: mapPrivateSession(rows[0]) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.delete("/api/scheduling/private-classes/:id", requireScheduler, async (req, res, next) => {
     try {
       const pool = await getReadyPool();

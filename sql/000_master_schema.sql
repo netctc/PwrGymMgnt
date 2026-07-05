@@ -797,6 +797,47 @@ CREATE TABLE IF NOT EXISTS notification_preferences (
 -- 9. SECURITY & AUDIT
 -- ─────────────────────────────────────────────────────────────────────────────
 
+-- Legacy compatibility tables (used by Staff/Settings/Dashboard routes)
+CREATE TABLE IF NOT EXISTS users (
+  id         VARCHAR(255) PRIMARY KEY,
+  email      VARCHAR(255) NULL,
+  role       VARCHAR(100) NULL,
+  created_at TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  data       JSON         NULL,
+  INDEX idx_users_email (email),
+  INDEX idx_users_role  (role)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS staff (
+  id         VARCHAR(255) PRIMARY KEY,
+  first_name VARCHAR(100) NULL,
+  last_name  VARCHAR(100) NULL,
+  email      VARCHAR(255) NULL,
+  role       VARCHAR(100) NULL,
+  status     VARCHAR(50)  NOT NULL DEFAULT 'active',
+  created_at TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  data       JSON         NULL,
+  INDEX idx_staff_email  (email),
+  INDEX idx_staff_role   (role),
+  INDEX idx_staff_status (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS shifts (
+  id         VARCHAR(255) PRIMARY KEY,
+  data       JSON         NULL,
+  created_at TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS appSettings (
+  id         VARCHAR(255) PRIMARY KEY,
+  data       JSON         NULL,
+  created_at TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS audit_logs (
   id           INT          AUTO_INCREMENT PRIMARY KEY,
   action       VARCHAR(255) NOT NULL,

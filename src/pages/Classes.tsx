@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { format, startOfWeek, addDays, subWeeks, addWeeks, isSameDay } from 'date-fns';
-import { CalendarDays, Printer, Trash2, UserPlus } from 'lucide-react';
+import { CalendarDays, Printer, Trash2, UserPlus, Edit3, Users, ToggleLeft, List } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '../contexts/AuthContext';
 import { Card, CardContent } from '../components/ui/card';
@@ -168,6 +168,88 @@ export default function Classes() {
     }
   };
 
+  // --- List/Management view state ---
+  const [viewMode, setViewMode] = useState<'calendar' | 'list'>('calendar');
+  const [editingClass, setEditingClass] = useState<ClassSession | null>(null);
+  const [editForm, setEditForm] = useState({ title: '', type: '', capacity: '', room: '', level: '', branch: '', trainerId: '', startTime: '', duration: '60' });
+  const [participantsClass, setParticipantsClass] = useState<ClassSession | null>(null);
+  const [bookings, setBookings] = useState<Array<{ id: string; memberId: string; memberName?: string; status: string; bookedAt?: string }>>([]);
+  const [bookingsLoading, setBookingsLoading] = useState(false);
+
+  const openEdit = (classSession: ClassSession) => {
+    setEditForm({
+      title: classSession.title || '',
+      type: classSession.type || '',
+      capacity: String(classSession.capacity || 12),
+      room: classSession.room || '',
+      level: classSession.level || '',
+      branch: classSession.branch || '',
+      trainerId: classSession.trainerId || '',
+      startTime: classSession.startTime ? classSession.startTime.slice(0, 16) : '',
+      duration: '60',
+    });
+    setEditingClass(classSession);
+  };
+
+  const handleUpdate = async () => {
+    if (!editingClass) return;
+    try {
+      const selectedTrainer = trainers.find((t) => t.id === editForm.trainerId);
+      await schedulingApi.updateClass(editingClass.id, {
+        title: editForm.title,
+        type: editForm.type,
+        capacity: Number(editForm.capacity),
+        room: editForm.room,
+        level: editForm.level,
+        branch: editForm.branch,
+        trainerId: editForm.trainerId,
+        trainerName: fullName(selectedTrainer),
+        startTime: new Date(editForm.startTime).toISOString(),
+        durationMinutes: Number(editForm.duration),
+      });
+      toast.success('Class updated');
+      setEditingClass(null);
+      await fetchClasses();
+    } catch (error) {
+      toast.error(formatConflictMessage(error));
+    }
+  };
+
+  const handleDeactivate = async (classSession: ClassSession) => {
+    if (!isScheduler) return;
+    try {
+      await schedulingApi.updateClass(classSession.id, { status: 'inactive' });
+      toast.success('Class deactivated');
+      await fetchClasses();
+    } catch (error) {
+      toast.error(formatConflictMessage(error));
+    }
+  };
+
+  const openParticipants = async (classSession: ClassSession) => {
+    setParticipantsClass(classSession);
+    setBookingsLoading(true);
+    try {
+      const response = await schedulingApi.listBookings(classSession.id);
+      setBookings(response.bookings);
+    } catch (error) {
+      toast.error(formatConflictMessage(error));
+    } finally {
+      setBookingsLoading(false);
+    }
+  };
+
+  const handleCancelBooking = async (bookingId: string) => {
+    try {
+      await schedulingApi.cancelBooking(bookingId);
+      toast.success('Booking cancelled');
+      if (participantsClass) await openParticipants(participantsClass);
+      await fetchClasses();
+    } catch (error) {
+      toast.error(formatConflictMessage(error));
+    }
+  };
+
   return (
     <div className="flex flex-col lg:flex-row gap-6 h-full p-2">
       {isScheduler && (
@@ -255,14 +337,22 @@ export default function Classes() {
       <div className="flex-1 flex flex-col min-w-0">
         <div className="bg-white rounded-2xl p-4 mb-4 shadow-sm border border-slate-100">
           <div className="flex flex-wrap items-center justify-between gap-4">
-            <div className="flex items-center bg-slate-100 rounded-lg p-1">
-              <button type="button" onClick={() => setCurrentDate(subWeeks(currentDate, 1))} className="px-4 py-2 text-sm font-medium text-slate-500 hover:text-slate-800">Prev Week</button>
-              <button type="button" onClick={() => setCurrentDate(new Date())} className="px-5 py-2 text-sm font-bold bg-white text-slate-900 rounded-md shadow-sm">Today</button>
-              <button type="button" onClick={() => setCurrentDate(addWeeks(currentDate, 1))} className="px-4 py-2 text-sm font-medium text-slate-500 hover:text-slate-800">Next Week</button>
+            <div className="flex items-center gap-2">
+              <div className="flex items-center bg-slate-100 rounded-lg p-1">
+                <button type="button" onClick={() => setViewMode('calendar')} className={`px-3 py-2 text-sm font-medium rounded-md ${viewMode === 'calendar' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}><CalendarDays className="h-4 w-4 inline mr-1" />Calendar</button>
+                <button type="button" onClick={() => setViewMode('list')} className={`px-3 py-2 text-sm font-medium rounded-md ${viewMode === 'list' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}><List className="h-4 w-4 inline mr-1" />List</button>
+              </div>
+              {viewMode === 'calendar' && (
+                <div className="flex items-center bg-slate-100 rounded-lg p-1">
+                  <button type="button" onClick={() => setCurrentDate(subWeeks(currentDate, 1))} className="px-4 py-2 text-sm font-medium text-slate-500 hover:text-slate-800">Prev Week</button>
+                  <button type="button" onClick={() => setCurrentDate(new Date())} className="px-5 py-2 text-sm font-bold bg-white text-slate-900 rounded-md shadow-sm">Today</button>
+                  <button type="button" onClick={() => setCurrentDate(addWeeks(currentDate, 1))} className="px-4 py-2 text-sm font-medium text-slate-500 hover:text-slate-800">Next Week</button>
+                </div>
+              )}
             </div>
             <div className="flex flex-col sm:flex-row sm:items-end gap-3">
               <div className="text-lg font-bold text-slate-800 sm:pb-2">
-                {format(weekDays[0], 'MMM d')} – {format(weekDays[6], 'MMM d, yyyy')}
+                {format(weekDays[0], 'dd/MM/yyyy')} – {format(weekDays[6], 'dd/MM/yyyy')}
               </div>
               <div className="flex flex-wrap items-end gap-2">
                 <div className="space-y-1">
@@ -294,6 +384,7 @@ export default function Classes() {
           defaultTo={format(weekDays[6], 'yyyy-MM-dd')}
         />
 
+        {viewMode === 'calendar' && (
         <div className="grid grid-cols-1 xl:grid-cols-7 gap-3">
           {weekDays.map((day) => {
             const dayClasses = classes.filter((item) => item.startTime && isSameDay(new Date(item.startTime), day));
@@ -327,34 +418,19 @@ export default function Classes() {
                             </div>
                             <p className="text-xs text-slate-500 mt-2">{classSession.type} • {classSession.level} • {classSession.room}</p>
                             <p className="text-xs text-slate-500">Trainer: {classSession.trainerName || classSession.trainerId || 'Unassigned'}</p>
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="outline"
-                              className="mt-3 w-full text-xs"
-                              onClick={() => handlePrintSingleClass(classSession)}
-                            >
+                            <Button type="button" size="sm" variant="outline" className="mt-3 w-full text-xs" onClick={() => handlePrintSingleClass(classSession)}>
                               <Printer className="h-3.5 w-3.5" /> Print Class
                             </Button>
 
                             {isScheduler && classSession.status !== 'cancelled' && (
                               <div className="mt-3 space-y-2">
-                                <select
-                                  className="h-9 w-full rounded-md border border-slate-200 px-2 text-xs"
-                                  value={bookingMemberByClass[classSession.id] || ''}
-                                  onChange={(event) => setBookingMemberByClass((current) => ({ ...current, [classSession.id]: event.target.value }))}
-                                  disabled={full}
-                                >
+                                <select className="h-9 w-full rounded-md border border-slate-200 px-2 text-xs" value={bookingMemberByClass[classSession.id] || ''} onChange={(event) => setBookingMemberByClass((current) => ({ ...current, [classSession.id]: event.target.value }))} disabled={full}>
                                   <option value="">Book member</option>
                                   {members.map((member) => <option key={member.id} value={member.id}>{fullName(member)}</option>)}
                                 </select>
                                 <div className="flex gap-2">
-                                  <Button type="button" size="sm" className="flex-1" onClick={() => handleBookMember(classSession)} disabled={full}>
-                                    <UserPlus className="h-3.5 w-3.5" /> Book
-                                  </Button>
-                                  <Button type="button" size="sm" variant="destructive" onClick={() => handleCancelClass(classSession.id)}>
-                                    <Trash2 className="h-3.5 w-3.5" />
-                                  </Button>
+                                  <Button type="button" size="sm" className="flex-1" onClick={() => handleBookMember(classSession)} disabled={full}><UserPlus className="h-3.5 w-3.5" /> Book</Button>
+                                  <Button type="button" size="sm" variant="destructive" onClick={() => handleCancelClass(classSession.id)}><Trash2 className="h-3.5 w-3.5" /></Button>
                                 </div>
                               </div>
                             )}
@@ -368,7 +444,134 @@ export default function Classes() {
             );
           })}
         </div>
+        )}
+
+        {viewMode === 'list' && (
+          <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 border-b">
+                <tr>
+                  <th className="text-left px-4 py-3 font-semibold text-slate-600">Class</th>
+                  <th className="text-left px-4 py-3 font-semibold text-slate-600">Date & Time</th>
+                  <th className="text-left px-4 py-3 font-semibold text-slate-600">Trainer</th>
+                  <th className="text-left px-4 py-3 font-semibold text-slate-600">Room</th>
+                  <th className="text-center px-4 py-3 font-semibold text-slate-600">Capacity</th>
+                  <th className="text-center px-4 py-3 font-semibold text-slate-600">Status</th>
+                  <th className="text-right px-4 py-3 font-semibold text-slate-600">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {loading ? (
+                  <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-500">Loading...</td></tr>
+                ) : classes.length === 0 ? (
+                  <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-400">No classes found for this week</td></tr>
+                ) : (
+                  classes.map((classSession) => {
+                    const freeSpots = classSession.capacity - classSession.enrolledCount;
+                    return (
+                      <tr key={classSession.id} className="hover:bg-slate-50/60">
+                        <td className="px-4 py-3">
+                          <p className="font-semibold text-slate-900">{classSession.title}</p>
+                          <p className="text-xs text-slate-500">{classSession.type} • {classSession.level}</p>
+                        </td>
+                        <td className="px-4 py-3 text-slate-700">
+                          {classSession.startTime && format(new Date(classSession.startTime), 'EEE, dd/MM/yyyy')}
+                          <br />
+                          <span className="text-xs text-slate-500">{classSession.startTime && format(new Date(classSession.startTime), 'hh:mm a')} – {classSession.endTime && format(new Date(classSession.endTime), 'hh:mm a')}</span>
+                        </td>
+                        <td className="px-4 py-3 text-slate-700">{classSession.trainerName || classSession.trainerId || 'Unassigned'}</td>
+                        <td className="px-4 py-3 text-slate-700">{classSession.room}</td>
+                        <td className="px-4 py-3 text-center">
+                          <span className={`text-xs font-semibold ${freeSpots <= 0 ? 'text-red-600' : 'text-green-600'}`}>{classSession.enrolledCount}/{classSession.capacity}</span>
+                        </td>
+                        <td className="px-4 py-3 text-center">
+                          <Badge variant={classSession.status === 'cancelled' ? 'destructive' : classSession.status === 'inactive' ? 'outline' : 'secondary'}>{classSession.status}</Badge>
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <div className="flex items-center justify-end gap-1">
+                            <Button type="button" size="sm" variant="ghost" onClick={() => openParticipants(classSession)} title="View Participants"><Users className="h-4 w-4" /></Button>
+                            {isScheduler && classSession.status !== 'cancelled' && (
+                              <>
+                                <Button type="button" size="sm" variant="ghost" onClick={() => openEdit(classSession)} title="Edit"><Edit3 className="h-4 w-4" /></Button>
+                                <Button type="button" size="sm" variant="ghost" onClick={() => handleDeactivate(classSession)} title="Deactivate"><ToggleLeft className="h-4 w-4" /></Button>
+                                <Button type="button" size="sm" variant="ghost" className="text-red-500 hover:text-red-700" onClick={() => handleCancelClass(classSession.id)} title="Cancel"><Trash2 className="h-4 w-4" /></Button>
+                              </>
+                            )}
+                            <Button type="button" size="sm" variant="ghost" onClick={() => handlePrintSingleClass(classSession)} title="Print PDF"><Printer className="h-4 w-4" /></Button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
+
+      {/* Edit Class Modal */}
+      {editingClass && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setEditingClass(null)}>
+          <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-bold text-slate-900 mb-4">Edit Class: {editingClass.title}</h3>
+            <div className="space-y-3">
+              <div><Label>Title</Label><Input value={editForm.title} onChange={(e) => setEditForm({ ...editForm, title: e.target.value })} /></div>
+              <div className="grid grid-cols-2 gap-3">
+                <div><Label>Type</Label><select className="h-10 w-full rounded-md border border-slate-200 px-3 text-sm" value={editForm.type} onChange={(e) => setEditForm({ ...editForm, type: e.target.value })}><option value="HIIT">HIIT</option><option value="Yoga">Yoga</option><option value="Crossfit">Crossfit</option><option value="Spinning">Spinning</option><option value="Strength">Strength</option></select></div>
+                <div><Label>Level</Label><select className="h-10 w-full rounded-md border border-slate-200 px-3 text-sm" value={editForm.level} onChange={(e) => setEditForm({ ...editForm, level: e.target.value })}><option value="General">General</option><option value="Beginner">Beginner</option><option value="Intermediate">Intermediate</option><option value="Advanced">Advanced</option></select></div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div><Label>Start Time</Label><Input type="datetime-local" value={editForm.startTime} onChange={(e) => setEditForm({ ...editForm, startTime: e.target.value })} /></div>
+                <div><Label>Duration (min)</Label><Input type="number" value={editForm.duration} onChange={(e) => setEditForm({ ...editForm, duration: e.target.value })} /></div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div><Label>Capacity</Label><Input type="number" value={editForm.capacity} onChange={(e) => setEditForm({ ...editForm, capacity: e.target.value })} /></div>
+                <div><Label>Room</Label><select className="h-10 w-full rounded-md border border-slate-200 px-3 text-sm" value={editForm.room} onChange={(e) => setEditForm({ ...editForm, room: e.target.value })}>{rooms.map((r) => <option key={r} value={r}>{r}</option>)}</select></div>
+              </div>
+              <div><Label>Trainer</Label><select className="h-10 w-full rounded-md border border-slate-200 px-3 text-sm" value={editForm.trainerId} onChange={(e) => setEditForm({ ...editForm, trainerId: e.target.value })}><option value="">Unassigned</option>{trainers.map((t) => <option key={t.id} value={t.id}>{fullName(t)}</option>)}</select></div>
+            </div>
+            <div className="flex gap-3 mt-5">
+              <Button className="flex-1 bg-green-600 hover:bg-green-700 text-white" onClick={handleUpdate}>Save Changes</Button>
+              <Button variant="outline" onClick={() => setEditingClass(null)}>Cancel</Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Participants Modal */}
+      {participantsClass && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setParticipantsClass(null)}>
+          <div className="bg-white rounded-2xl p-6 w-full max-w-lg shadow-xl max-h-[80vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-bold text-slate-900 mb-1">Participants: {participantsClass.title}</h3>
+            <p className="text-sm text-slate-500 mb-4">{participantsClass.enrolledCount} / {participantsClass.capacity} enrolled</p>
+            {bookingsLoading ? (
+              <p className="text-sm text-slate-500">Loading participants...</p>
+            ) : bookings.length === 0 ? (
+              <p className="text-sm text-slate-400">No participants booked yet</p>
+            ) : (
+              <table className="w-full text-sm">
+                <thead className="bg-slate-50 border-b"><tr><th className="text-left px-3 py-2">Member</th><th className="text-left px-3 py-2">Status</th><th className="text-left px-3 py-2">Booked At</th><th className="text-right px-3 py-2">Action</th></tr></thead>
+                <tbody className="divide-y divide-slate-100">
+                  {bookings.map((booking) => (
+                    <tr key={booking.id}>
+                      <td className="px-3 py-2 font-medium">{booking.memberName || booking.memberId}</td>
+                      <td className="px-3 py-2"><Badge variant={booking.status === 'cancelled' ? 'destructive' : 'secondary'}>{booking.status}</Badge></td>
+                      <td className="px-3 py-2 text-slate-500">{booking.bookedAt ? format(new Date(booking.bookedAt), 'dd/MM/yyyy, hh:mm a') : '-'}</td>
+                      <td className="px-3 py-2 text-right">
+                        {isScheduler && booking.status === 'booked' && (
+                          <Button type="button" size="sm" variant="ghost" className="text-red-500" onClick={() => handleCancelBooking(booking.id)}>Cancel</Button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            <Button variant="outline" className="mt-4 w-full" onClick={() => setParticipantsClass(null)}>Close</Button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { addDays, addWeeks, format, isSameDay, startOfWeek, subWeeks } from 'date-fns';
-import { AlertTriangle, Printer, Trash2, UserRoundCheck } from 'lucide-react';
+import { AlertTriangle, Printer, Trash2, UserRoundCheck, Edit3, ToggleLeft, List, CalendarDays } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '../contexts/AuthContext';
 import { Card, CardContent } from '../components/ui/card';
@@ -157,6 +157,61 @@ export default function PrivateClasses() {
     }
   };
 
+  // --- List/Management view state ---
+  const [viewMode, setViewMode] = useState<'calendar' | 'list'>('calendar');
+  const [editingSession, setEditingSession] = useState<PrivateClassSession | null>(null);
+  const [editForm, setEditForm] = useState({ memberId: '', trainerId: '', startTime: '', duration: '60', room: '', level: '', branch: '', notes: '' });
+
+  const openEdit = (session: PrivateClassSession) => {
+    setEditForm({
+      memberId: session.memberId || '',
+      trainerId: session.trainerId || '',
+      startTime: session.startTime ? session.startTime.slice(0, 16) : '',
+      duration: '60',
+      room: session.room || '',
+      level: session.level || '',
+      branch: session.branch || '',
+      notes: session.notes || '',
+    });
+    setEditingSession(session);
+  };
+
+  const handleUpdate = async () => {
+    if (!editingSession) return;
+    try {
+      const member = members.find((m) => m.id === editForm.memberId);
+      const trainer = trainers.find((t) => t.id === editForm.trainerId);
+      await schedulingApi.updatePrivateClass(editingSession.id, {
+        memberId: editForm.memberId,
+        memberName: fullName(member),
+        trainerId: editForm.trainerId,
+        trainerName: fullName(trainer),
+        startTime: new Date(editForm.startTime).toISOString(),
+        durationMinutes: Number(editForm.duration),
+        room: editForm.room,
+        level: editForm.level,
+        branch: editForm.branch,
+        notes: editForm.notes,
+      });
+      toast.success('Private session updated');
+      setEditingSession(null);
+      await fetchPrivateClasses();
+    } catch (error) {
+      toast.error(errorMessage(error));
+    }
+  };
+
+  const handleDeactivate = async (session: PrivateClassSession) => {
+    if (!isScheduler) return;
+    try {
+      await schedulingApi.updatePrivateClass(session.id, { status: 'inactive' });
+      toast.success('Private session deactivated');
+      await fetchPrivateClasses();
+    } catch (error) {
+      toast.error(errorMessage(error));
+    }
+  };
+
 
   const handlePrintScheduledSessions = async () => {
     try {
@@ -282,14 +337,22 @@ export default function PrivateClasses() {
       <div className="flex-1 flex flex-col min-w-0">
         <div className="bg-white rounded-2xl p-4 mb-4 shadow-sm border border-slate-100">
           <div className="flex flex-wrap items-center justify-between gap-4">
-            <div className="flex items-center bg-slate-100 rounded-lg p-1">
-              <button type="button" onClick={() => setCurrentDate(subWeeks(currentDate, 1))} className="px-4 py-2 text-sm font-medium text-slate-500 hover:text-slate-800">Prev Week</button>
-              <button type="button" onClick={() => setCurrentDate(new Date())} className="px-5 py-2 text-sm font-bold bg-white text-slate-900 rounded-md shadow-sm">Today</button>
-              <button type="button" onClick={() => setCurrentDate(addWeeks(currentDate, 1))} className="px-4 py-2 text-sm font-medium text-slate-500 hover:text-slate-800">Next Week</button>
+            <div className="flex items-center gap-2">
+              <div className="flex items-center bg-slate-100 rounded-lg p-1">
+                <button type="button" onClick={() => setViewMode('calendar')} className={`px-3 py-2 text-sm font-medium rounded-md ${viewMode === 'calendar' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}><CalendarDays className="h-4 w-4 inline mr-1" />Calendar</button>
+                <button type="button" onClick={() => setViewMode('list')} className={`px-3 py-2 text-sm font-medium rounded-md ${viewMode === 'list' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}><List className="h-4 w-4 inline mr-1" />List</button>
+              </div>
+              {viewMode === 'calendar' && (
+                <div className="flex items-center bg-slate-100 rounded-lg p-1">
+                  <button type="button" onClick={() => setCurrentDate(subWeeks(currentDate, 1))} className="px-4 py-2 text-sm font-medium text-slate-500 hover:text-slate-800">Prev Week</button>
+                  <button type="button" onClick={() => setCurrentDate(new Date())} className="px-5 py-2 text-sm font-bold bg-white text-slate-900 rounded-md shadow-sm">Today</button>
+                  <button type="button" onClick={() => setCurrentDate(addWeeks(currentDate, 1))} className="px-4 py-2 text-sm font-medium text-slate-500 hover:text-slate-800">Next Week</button>
+                </div>
+              )}
             </div>
             <div className="flex flex-col sm:flex-row sm:items-end gap-3">
               <div className="text-lg font-bold text-slate-800 sm:pb-2">
-                {format(weekDays[0], 'MMM d')} – {format(weekDays[6], 'MMM d, yyyy')}
+                {format(weekDays[0], 'dd/MM/yyyy')} – {format(weekDays[6], 'dd/MM/yyyy')}
               </div>
               <div className="flex flex-wrap items-end gap-2">
                 <div className="space-y-1">
@@ -321,6 +384,7 @@ export default function PrivateClasses() {
           defaultTo={format(weekDays[6], 'yyyy-MM-dd')}
         />
 
+        {viewMode === 'calendar' && (
         <div className="grid grid-cols-1 xl:grid-cols-7 gap-3">
           {weekDays.map((day) => {
             const dayClasses = classes.filter((item) => item.startTime && isSameDay(new Date(item.startTime), day));
@@ -374,7 +438,92 @@ export default function PrivateClasses() {
             );
           })}
         </div>
+        )}
+
+        {viewMode === 'list' && (
+          <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 border-b">
+                <tr>
+                  <th className="text-left px-4 py-3 font-semibold text-slate-600">Member</th>
+                  <th className="text-left px-4 py-3 font-semibold text-slate-600">Trainer</th>
+                  <th className="text-left px-4 py-3 font-semibold text-slate-600">Date & Time</th>
+                  <th className="text-left px-4 py-3 font-semibold text-slate-600">Room</th>
+                  <th className="text-center px-4 py-3 font-semibold text-slate-600">Level</th>
+                  <th className="text-center px-4 py-3 font-semibold text-slate-600">Status</th>
+                  <th className="text-right px-4 py-3 font-semibold text-slate-600">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {loading ? (
+                  <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-500">Loading...</td></tr>
+                ) : classes.length === 0 ? (
+                  <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-400">No private sessions for this week</td></tr>
+                ) : (
+                  classes.map((session) => (
+                    <tr key={session.id} className="hover:bg-slate-50/60">
+                      <td className="px-4 py-3">
+                        <p className="font-semibold text-slate-900">{session.memberName || session.memberId}</p>
+                      </td>
+                      <td className="px-4 py-3 text-slate-700">{session.trainerName || session.trainerId}</td>
+                      <td className="px-4 py-3 text-slate-700">
+                        {session.startTime && format(new Date(session.startTime), 'EEE, dd/MM/yyyy')}
+                        <br />
+                        <span className="text-xs text-slate-500">{session.startTime && format(new Date(session.startTime), 'hh:mm a')} – {session.endTime && format(new Date(session.endTime), 'hh:mm a')}</span>
+                      </td>
+                      <td className="px-4 py-3 text-slate-700">{session.room}</td>
+                      <td className="px-4 py-3 text-center text-slate-700">{session.level}</td>
+                      <td className="px-4 py-3 text-center">
+                        <Badge variant={session.status === 'cancelled' ? 'destructive' : session.status === 'inactive' ? 'outline' : 'secondary'}>{session.status}</Badge>
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <div className="flex items-center justify-end gap-1">
+                          {isScheduler && session.status !== 'cancelled' && (
+                            <>
+                              <Button type="button" size="sm" variant="ghost" onClick={() => openEdit(session)} title="Edit"><Edit3 className="h-4 w-4" /></Button>
+                              <Button type="button" size="sm" variant="ghost" onClick={() => handleDeactivate(session)} title="Deactivate"><ToggleLeft className="h-4 w-4" /></Button>
+                              <Button type="button" size="sm" variant="ghost" className="text-red-500 hover:text-red-700" onClick={() => handleCancel(session, 'single')} title="Cancel"><Trash2 className="h-4 w-4" /></Button>
+                              {session.seriesId && (
+                                <Button type="button" size="sm" variant="ghost" className="text-red-500 hover:text-red-700" onClick={() => handleCancel(session, 'series')} title="Cancel Series">Series</Button>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
+
+      {/* Edit Private Session Modal */}
+      {editingSession && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setEditingSession(null)}>
+          <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-bold text-slate-900 mb-4">Edit Private Session</h3>
+            <div className="space-y-3">
+              <div><Label>Member</Label><select className="h-10 w-full rounded-md border border-slate-200 px-3 text-sm" value={editForm.memberId} onChange={(e) => setEditForm({ ...editForm, memberId: e.target.value })}><option value="">Select member</option>{members.map((m) => <option key={m.id} value={m.id}>{fullName(m)}</option>)}</select></div>
+              <div><Label>Trainer</Label><select className="h-10 w-full rounded-md border border-slate-200 px-3 text-sm" value={editForm.trainerId} onChange={(e) => setEditForm({ ...editForm, trainerId: e.target.value })}><option value="">Select trainer</option>{trainers.map((t) => <option key={t.id} value={t.id}>{fullName(t)}</option>)}</select></div>
+              <div className="grid grid-cols-2 gap-3">
+                <div><Label>Start Time</Label><Input type="datetime-local" value={editForm.startTime} onChange={(e) => setEditForm({ ...editForm, startTime: e.target.value })} /></div>
+                <div><Label>Duration (min)</Label><Input type="number" value={editForm.duration} onChange={(e) => setEditForm({ ...editForm, duration: e.target.value })} /></div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div><Label>Level</Label><select className="h-10 w-full rounded-md border border-slate-200 px-3 text-sm" value={editForm.level} onChange={(e) => setEditForm({ ...editForm, level: e.target.value })}><option value="Beginner">Beginner</option><option value="Intermediate">Intermediate</option><option value="Advanced">Advanced</option></select></div>
+                <div><Label>Room</Label><select className="h-10 w-full rounded-md border border-slate-200 px-3 text-sm" value={editForm.room} onChange={(e) => setEditForm({ ...editForm, room: e.target.value })}>{rooms.map((r) => <option key={r} value={r}>{r}</option>)}</select></div>
+              </div>
+              <div><Label>Notes</Label><Input value={editForm.notes} onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })} placeholder="Optional notes" /></div>
+            </div>
+            <div className="flex gap-3 mt-5">
+              <Button className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white" onClick={handleUpdate}>Save Changes</Button>
+              <Button variant="outline" onClick={() => setEditingSession(null)}>Cancel</Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

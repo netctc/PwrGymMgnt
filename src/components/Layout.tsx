@@ -20,6 +20,7 @@ export default function Layout() {
   const { t, direction, formatDateTime } = useLocalization();
   const location = useLocation();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
@@ -163,8 +164,30 @@ export default function Layout() {
 
   return (
     <div className="flex h-screen bg-[#f8f9fa] font-sans" dir={direction}>
-      <aside className="hidden md:flex w-64 bg-[#2b2b2b] text-slate-300 flex-col">
-        <SidebarContent />
+      <aside className={cn('hidden md:flex bg-[#2b2b2b] text-slate-300 flex-col transition-all duration-200', sidebarCollapsed ? 'w-16' : 'w-64')}>
+        {!sidebarCollapsed && <SidebarContent />}
+        {sidebarCollapsed && (
+          <div className="flex flex-col items-center py-4 flex-1 overflow-y-auto">
+            {allowedNavItems.map((item) => {
+              const isActive = isNavigationItemActive(item.path);
+              return (
+                <Link key={item.labelKey} to={item.path} className="block w-full" onClick={() => setMobileOpen(false)}>
+                  <div className={cn('flex items-center justify-center py-3 transition-colors', isActive ? 'text-[#6bfb53]' : 'text-slate-400 hover:text-white')} title={t(item.labelKey)}>
+                    {item.icon}
+                  </div>
+                </Link>
+              );
+            })}
+          </div>
+        )}
+        <button
+          type="button"
+          onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+          className="flex items-center justify-center py-3 text-slate-400 hover:text-white hover:bg-white/5 transition-colors border-t border-white/10"
+          title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+        >
+          {sidebarCollapsed ? <Menu className="w-4 h-4" /> : <X className="w-4 h-4" />}
+        </button>
       </aside>
 
       {mobileOpen && (

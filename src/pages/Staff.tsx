@@ -825,7 +825,7 @@ export default function Staff() {
                           )}
                         </TableCell>
                         <TableCell className="text-slate-500 text-sm">
-                          {member.startDate ? format(new Date(member.startDate), 'MMM d, yyyy') : member.createdAt?.toDate ? format(member.createdAt.toDate(), 'MMM d, yyyy') : 'Unknown'}
+                          {member.startDate ? format(new Date(member.startDate), 'dd/MM/yyyy') : member.createdAt?.toDate ? format(member.createdAt.toDate(), 'dd/MM/yyyy') : 'Unknown'}
                         </TableCell>
                         <TableCell className="text-right whitespace-nowrap">
                           {canManageStaff ? (
@@ -1045,8 +1045,8 @@ export default function Staff() {
                       <div className="ml-4 font-semibold text-slate-800 flex items-center">
                         <CalendarIcon className="h-4 w-4 mr-2 text-indigo-500" />
                         {viewMode === 'month' 
-                          ? format(currentDate, 'MMMM yyyy') 
-                          : `${format(currentDate, 'MMM d, yyyy')} - ${format(addDays(currentDate, 6), 'MMM d, yyyy')}`}
+                          ? format(currentDate, 'MM/yyyy') 
+                          : `${format(currentDate, 'dd/MM/yyyy')} - ${format(addDays(currentDate, 6), 'dd/MM/yyyy')}`}
                       </div>
                     </div>
                     <div className="flex items-center space-x-2">
@@ -1104,7 +1104,7 @@ export default function Staff() {
                           <div key={i} className={`flex flex-col border rounded-lg overflow-hidden ${isToday ? 'border-indigo-300 ring-1 ring-indigo-300' : 'border-slate-200'}`}>
                             <div className={`p-2 text-center text-sm font-medium ${isToday ? 'bg-indigo-50 text-indigo-700' : 'bg-slate-50 text-slate-700'} border-b border-slate-100`}>
                               <div>{format(date, 'EEEE')}</div>
-                              <div className="text-xs text-slate-500 font-normal">{format(date, 'MMM d, yyyy')}</div>
+                              <div className="text-xs text-slate-500 font-normal">{format(date, 'dd/MM/yyyy')}</div>
                             </div>
                             <div className="p-2 space-y-2 min-h-[120px] bg-white">
                               {dayShifts.map(shift => (

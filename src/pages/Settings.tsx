@@ -136,11 +136,11 @@ function DatabaseBackup({ activeTab }: { activeTab: string }) {
   }, [activeTab]);
 
   // Aggregate sizes by day (last 30 days) for chart
-  const last30Days = Array.from({ length: 30 }).map((_, i) => format(subDays(new Date(), i), 'MMM dd')).reverse();
+  const last30Days = Array.from({ length: 30 }).map((_, i) => format(subDays(new Date(), i), 'dd/MM')).reverse();
   const backupChartData = last30Days.map(date => ({ name: date, sizeMB: 0 }));
 
   backups.forEach(b => {
-    const dateStr = format(new Date(b.createdAt), 'MMM dd');
+    const dateStr = format(new Date(b.createdAt), 'dd/MM');
     const dayData = backupChartData.find(d => d.name === dateStr);
     if (dayData) {
       dayData.sizeMB += b.size / (1024 * 1024);
@@ -217,7 +217,7 @@ function DatabaseBackup({ activeTab }: { activeTab: string }) {
                       <input type="checkbox" checked={selectedBackups.has(b.name)} onChange={() => toggleSelection(b.name)} className="rounded border-slate-300" />
                     </TableCell>
                     <TableCell className="font-mono text-sm text-indigo-600 font-medium">{b.name}</TableCell>
-                    <TableCell>{format(new Date(b.createdAt), 'MMM dd, yyyy HH:mm')}</TableCell>
+                    <TableCell>{format(new Date(b.createdAt), 'dd/MM/yyyy HH:mm')}</TableCell>
                     <TableCell className="text-right text-slate-500">{(b.size / 1024).toFixed(1)} KB</TableCell>
                     <TableCell className="text-center">
                       <span className="inline-flex items-center justify-center gap-1 text-xs font-medium text-emerald-600 bg-emerald-50 px-2 py-1 rounded-full">
@@ -451,7 +451,7 @@ function formatUserDate(value?: string | null) {
   if (!value) return '-';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '-';
-  return format(date, 'MMM dd, yyyy HH:mm');
+  return format(date, 'dd/MM/yyyy HH:mm');
 }
 
 function labelRole(role: string) {
@@ -1011,10 +1011,12 @@ export default function Settings() {
   const formatDate = (timestamp: any) => {
     if (!timestamp) return 'N/A';
     const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
-    return new Intl.DateTimeFormat('en-US', {
-      dateStyle: 'medium',
-      timeStyle: 'short'
-    }).format(date);
+    const d = String(date.getDate()).padStart(2, '0');
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const y = date.getFullYear();
+    const h = String(date.getHours()).padStart(2, '0');
+    const min = String(date.getMinutes()).padStart(2, '0');
+    return `${d}/${m}/${y} ${h}:${min}`;
   };
 
   if (loading) return <div className="p-8 text-center text-slate-500">Loading settings...</div>;
@@ -1047,7 +1049,7 @@ export default function Settings() {
   });
 
   // Prepare chart data for last 7 days from filtered logs
-  const last7Days = Array.from({ length: 7 }).map((_, i) => format(subDays(new Date(), i), 'MMM dd')).reverse();
+  const last7Days = Array.from({ length: 7 }).map((_, i) => format(subDays(new Date(), i), 'dd/MM')).reverse();
   const chartData = last7Days.map(date => ({
     name: date,
     API_GET: 0,
@@ -1059,7 +1061,7 @@ export default function Settings() {
 
   filteredAuditLogs.forEach(log => {
     const logDate = new Date(log.createdAt?.toDate ? log.createdAt.toDate() : log.createdAt);
-    const dateStr = format(logDate, 'MMM dd');
+    const dateStr = format(logDate, 'dd/MM');
     const dayData = chartData.find(d => d.name === dateStr);
     if (dayData) {
        const action = typeof log.action === 'string' ? log.action.toUpperCase() : '';

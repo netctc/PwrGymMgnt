@@ -92,7 +92,10 @@ function formatDate(value?: string | null) {
   if (!value) return '—';
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return String(value).slice(0, 10);
-  return parsed.toLocaleDateString();
+  const day = String(parsed.getDate()).padStart(2, '0');
+  const month = String(parsed.getMonth() + 1).padStart(2, '0');
+  const year = parsed.getFullYear();
+  return `${day}/${month}/${year}`;
 }
 
 function addDaysToDate(date: string, days: number) {
@@ -238,11 +241,28 @@ export default function Members() {
     setSaving(true);
     const isCreating = !memberForm.id;
     try {
+      const firstName = memberForm.firstName.trim();
+      const lastName = memberForm.lastName.trim();
+      let email = memberForm.email.trim();
+      const phone = memberForm.phone.trim();
+
+      // Validate: at least email or phone must be present
+      if (!email && !phone) {
+        toast.error('At least an email or phone number is required');
+        setSaving(false);
+        return;
+      }
+
+      // Auto-generate email if not provided
+      if (!email && firstName && lastName) {
+        email = `${firstName.toLowerCase()}.${lastName.toLowerCase()}@powergym.local`;
+      }
+
       const payload = {
-        firstName: memberForm.firstName.trim(),
-        lastName: memberForm.lastName.trim(),
-        email: memberForm.email.trim(),
-        phone: memberForm.phone.trim(),
+        firstName,
+        lastName,
+        email,
+        phone,
         status: isCreating ? 'inactive' : memberForm.status,
         joinDate: memberForm.joinDate,
       };
@@ -671,11 +691,12 @@ The secure QR token is embedded in the attached PDF/QR image.`;
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
               <div className="space-y-2">
                 <Label htmlFor="email">Email</Label>
-                <Input id="email" type="email" value={memberForm.email} onChange={(event) => updateMemberForm('email', event.target.value)} required />
+                <Input id="email" type="email" value={memberForm.email} onChange={(event) => updateMemberForm('email', event.target.value)} placeholder="optional if phone provided" />
+                <p className="text-xs text-slate-500">If not provided, auto-generated as firstname.lastname@powergym.local</p>
               </div>
               <div className="space-y-2">
                 <Label htmlFor="phone">Phone</Label>
-                <Input id="phone" value={memberForm.phone} onChange={(event) => updateMemberForm('phone', event.target.value)} />
+                <Input id="phone" value={memberForm.phone} onChange={(event) => updateMemberForm('phone', event.target.value)} placeholder="optional if email provided" />
               </div>
             </div>
             <div className={`grid grid-cols-1 gap-4 ${memberForm.id ? 'md:grid-cols-2' : ''}`}>
@@ -735,16 +756,16 @@ The secure QR token is embedded in the attached PDF/QR image.`;
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
               <div className="space-y-2">
                 <Label>Current Expiry</Label>
-                <Input value={renewCurrentExpiry || 'No active subscription'} readOnly disabled />
+                <Input value={renewCurrentExpiry ? formatDate(renewCurrentExpiry) : 'No active subscription'} readOnly disabled />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="startDate">Start Date</Label>
-                <Input id="startDate" type="date" value={renewStartDate} readOnly disabled />
+                <Input id="startDate" value={formatDate(renewStartDate)} readOnly disabled />
               </div>
             </div>
             <div className="space-y-2">
               <Label htmlFor="endDate">End Date</Label>
-              <Input id="endDate" type="date" value={renewEndDate} readOnly disabled />
+              <Input id="endDate" value={formatDate(renewEndDate)} readOnly disabled />
               <p className="text-xs text-slate-500">End Date is calculated automatically from the renewal start date plus the selected plan duration.</p>
             </div>
             <div className="flex justify-end gap-2 pt-2">

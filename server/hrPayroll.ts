@@ -301,6 +301,44 @@ async function ensureHrTablesNow(pool: Pool) {
       CONSTRAINT fk_payroll_items_run FOREIGN KEY (payroll_run_id) REFERENCES payroll_runs(id) ON DELETE CASCADE
     )
   `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS hr_departments (
+      id VARCHAR(64) PRIMARY KEY,
+      name VARCHAR(120) NOT NULL,
+      code VARCHAR(10) NOT NULL,
+      status VARCHAR(32) NOT NULL DEFAULT 'active',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY uq_hr_departments_name (name),
+      UNIQUE KEY uq_hr_departments_code (code)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS hr_job_titles (
+      id VARCHAR(64) PRIMARY KEY,
+      name VARCHAR(120) NOT NULL,
+      department_id VARCHAR(64) NULL,
+      status VARCHAR(32) NOT NULL DEFAULT 'active',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY uq_hr_job_titles_name (name)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+
+  // Seed default departments if empty
+  const [deptCount]: any = await pool.query("SELECT COUNT(*) AS c FROM hr_departments");
+  if (Number(deptCount[0]?.c || 0) === 0) {
+    await pool.query(`INSERT IGNORE INTO hr_departments (id, name, code) VALUES
+      ('dept_gen', 'General', 'GEN'),
+      ('dept_adm', 'Administration', 'ADM'),
+      ('dept_fit', 'Fitness', 'FIT'),
+      ('dept_sal', 'Sales', 'SAL'),
+      ('dept_mnt', 'Maintenance', 'MNT'),
+      ('dept_rec', 'Reception', 'REC')
+    `);
+  }
 }
 
 function employeeSelectSql(whereClause = "") {
@@ -759,5 +797,124 @@ export function registerHrPayrollRoutes(app: Express, poolProvider: PoolProvider
     } catch (error) {
       handleRouteError(res, error);
     }
+  });
+
+  // --- Departments CRUD ---
+  app.get("/api/hr/departments", async (_req, res) => {
+    try {
+      const pool = requirePool(poolProvider);
+      await ensureHrTables(pool);
+      const [rows]: any = await pool.query("SELECT * FROM hr_departments ORDER BY name ASC");
+      res.json({ departments: rows.map((r: any) => ({ id: r.id, name: r.name, code: r.code, status: r.status })) });
+    } catch (error) { handleRouteError(res, error); }
+  });
+
+  app.post("/api/hr/departments", requireHrWrite, async (req: AuthenticatedRequest, res) => {
+    try {
+      const pool = requirePool(poolProvider);
+      await ensureHrTables(pool);
+      const name = normalizeString(req.body.name);
+      const code = normalizeString(req.body.code).toUpperCase().slice(0, 10);
+      if (!name || !code) return res.status(400).json({ error: "Name and code are required" });
+      const id = createId("dept");
+      await pool.query("INSERT INTO hr_departments (id, name, code, status) VALUES (?, ?, ?, 'active')", [id, name, code]);
+      res.status(201).json({ department: { id, name, code, status: "active" } });
+    } catch (error) { handleRouteError(res, error); }
+  });
+
+  app.put("/api/hr/departments/:id", requireHrWrite, async (req: AuthenticatedRequest, res) => {
+    try {
+      const pool = requirePool(poolProvider);
+      await ensureHrTables(pool);
+      const name = normalizeString(req.body.name);
+      const code = normalizeString(req.body.code).toUpperCase().slice(0, 10);
+      const status = normalizeString(req.body.status) || "active";
+      if (!name) return res.status(400).json({ error: "Name is required" });
+      await pool.query("UPDATE hr_departments SET name = ?, code = ?, status = ? WHERE id = ?", [name, code, status, req.params.id]);
+      res.json({ department: { id: req.params.id, name, code, status } });
+    } catch (error) { handleRouteError(res, error); }
+  });
+
+  app.delete("/api/hr/departments/:id", requireHrWrite, async (req: AuthenticatedRequest, res) => {
+    try {
+      const pool = requirePool(poolProvider);
+      await ensureHrTables(pool);
+      await pool.query("DELETE FROM hr_departments WHERE id = ?", [req.params.id]);
+      res.json({ ok: true });
+    } catch (error) { handleRouteError(res, error); }
+  });
+
+  // --- Job Titles CRUD ---
+  app.get("/api/hr/job-titles", async (_req, res) => {
+    try {
+      const pool = requirePool(poolProvider);
+      await ensureHrTables(pool);
+      const [rows]: any = await pool.query("SELECT * FROM hr_job_titles ORDER BY name ASC");
+      res.json({ jobTitles: rows.map((r: any) => ({ id: r.id, name: r.name, departmentId: r.department_id, status: r.status })) });
+    } catch (error) { handleRouteError(res, error); }
+  });
+
+  app.post("/api/hr/job-titles", requireHrWrite, async (req: AuthenticatedRequest, res) => {
+    try {
+      const pool = requirePool(poolProvider);
+      await ensureHrTables(pool);
+      const name = normalizeString(req.body.name);
+      if (!name) return res.status(400).json({ error: "Name is required" });
+      const id = createId("jt");
+      const departmentId = normalizeString(req.body.departmentId) || null;
+      await pool.query("INSERT INTO hr_job_titles (id, name, department_id, status) VALUES (?, ?, ?, 'active')", [id, name, departmentId]);
+      res.status(201).json({ jobTitle: { id, name, departmentId, status: "active" } });
+    } catch (error) { handleRouteError(res, error); }
+  });
+
+  app.put("/api/hr/job-titles/:id", requireHrWrite, async (req: AuthenticatedRequest, res) => {
+    try {
+      const pool = requirePool(poolProvider);
+      await ensureHrTables(pool);
+      const name = normalizeString(req.body.name);
+      const status = normalizeString(req.body.status) || "active";
+      if (!name) return res.status(400).json({ error: "Name is required" });
+      const departmentId = normalizeString(req.body.departmentId) || null;
+      await pool.query("UPDATE hr_job_titles SET name = ?, department_id = ?, status = ? WHERE id = ?", [name, departmentId, status, req.params.id]);
+      res.json({ jobTitle: { id: req.params.id, name, departmentId, status } });
+    } catch (error) { handleRouteError(res, error); }
+  });
+
+  app.delete("/api/hr/job-titles/:id", requireHrWrite, async (req: AuthenticatedRequest, res) => {
+    try {
+      const pool = requirePool(poolProvider);
+      await ensureHrTables(pool);
+      await pool.query("DELETE FROM hr_job_titles WHERE id = ?", [req.params.id]);
+      res.json({ ok: true });
+    } catch (error) { handleRouteError(res, error); }
+  });
+
+  // --- Employee Code Auto-Generation ---
+  app.get("/api/hr/next-employee-code", async (req, res) => {
+    try {
+      const pool = requirePool(poolProvider);
+      await ensureHrTables(pool);
+      const department = normalizeString(req.query.department);
+      // Look up the department code
+      let deptCode = "GEN";
+      if (department) {
+        const [deptRows]: any = await pool.query("SELECT code FROM hr_departments WHERE name = ? OR id = ? LIMIT 1", [department, department]);
+        if (deptRows.length > 0) deptCode = deptRows[0].code;
+      }
+      const year = new Date().getFullYear();
+      const prefix = `EMP-${year}-${deptCode}-`;
+      const [rows]: any = await pool.query(
+        "SELECT employee_code FROM employees WHERE employee_code LIKE ? ORDER BY employee_code DESC LIMIT 1",
+        [`${prefix}%`],
+      );
+      let sequence = 1;
+      if (rows.length > 0) {
+        const lastCode = String(rows[0].employee_code || "");
+        const lastSeq = Number.parseInt(lastCode.slice(prefix.length), 10);
+        if (Number.isFinite(lastSeq)) sequence = lastSeq + 1;
+      }
+      const code = `${prefix}${String(sequence).padStart(3, "0")}`;
+      res.json({ code });
+    } catch (error) { handleRouteError(res, error); }
   });
 }

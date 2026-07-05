@@ -48,7 +48,7 @@ import {
   type WarehouseSummary,
 } from '../lib/warehouseApi';
 
-const POS_TAX_RATE = 0.085;
+const POS_TAX_RATE_DEFAULT = 0.11;
 
 const sections: ReadonlyArray<{ id: string; label: string; icon: ReactNode; permission: ClientPermission }> = [
   { id: 'dashboard', label: 'Warehouse', icon: <WarehouseIcon className="h-5 w-5" />, permission: 'warehouse.read' },
@@ -157,7 +157,11 @@ function numberValue(value: string | number | undefined) {
 function dateShort(value?: string) {
   if (!value) return '-';
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+  if (Number.isNaN(date.getTime())) return value;
+  const day = String(date.getDate()).padStart(2, '0');
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const year = date.getFullYear();
+  return `${day}/${month}/${year}`;
 }
 
 function normalizedStatus(value?: string) {
@@ -266,18 +270,20 @@ export default function Warehouse() {
   const [productModal, setProductModal] = useState<WarehouseProductDetail | null>(null);
   const [poModal, setPoModal] = useState<PurchaseOrderDetail | null>(null);
   const [modalLoading, setModalLoading] = useState(false);
+  const [taxRate, setTaxRate] = useState(POS_TAX_RATE_DEFAULT);
 
   const loadAll = async () => {
     setLoading(true);
     setError('');
     try {
-      const [summaryData, productData, supplierData, poData, salesData, categoryData] = await Promise.all([
+      const [summaryData, productData, supplierData, poData, salesData, categoryData, taxData] = await Promise.all([
         warehouseApi.getSummary(),
         warehouseApi.listProducts({ limit: 500 }),
         warehouseApi.listSuppliers({ limit: 500 }),
         warehouseApi.listPurchaseOrders({ limit: 250 }),
         warehouseApi.listSales({ limit: 250 }),
         warehouseApi.listCategories(),
+        fetch('/api/warehouse/tax-settings', { credentials: 'include' }).then((r) => r.ok ? r.json() : { taxRate: POS_TAX_RATE_DEFAULT }),
       ]);
       setSummary(summaryData.summary);
       setProducts(productData.products);
@@ -285,6 +291,7 @@ export default function Warehouse() {
       setPurchaseOrders(poData.purchaseOrders);
       setSales(salesData.sales);
       setCategories(categoryData.categories);
+      if (typeof taxData.taxRate === 'number' && taxData.taxRate > 0) setTaxRate(taxData.taxRate);
     } catch (err: any) {
       setError(err?.message || 'Failed to load warehouse data');
     } finally {
@@ -331,9 +338,9 @@ export default function Warehouse() {
     const subtotal = cart.reduce((sum, item) => sum + Math.max(0, item.quantity * productPrice(item.product) - item.discount), 0);
     const cogs = cart.reduce((sum, item) => sum + item.quantity * Number(item.product.costPrice || 0), 0);
     const memberDiscount = Math.max(0, retailSubtotal - subtotal);
-    const tax = subtotal * POS_TAX_RATE;
+    const tax = subtotal * taxRate;
     return { retailSubtotal, subtotal, memberDiscount, tax, total: subtotal + tax, cogs };
-  }, [cart]);
+  }, [cart, taxRate]);
 
   const inventoryKpis = useMemo(() => {
     const out = products.filter((product) => normalizedStatus(product.stockStatus || product.status) === 'out_of_stock').length;
@@ -678,7 +685,7 @@ export default function Warehouse() {
       const response = await warehouseApi.postSale({
         paymentMethod,
         priceTier: 'member',
-        taxRate: POS_TAX_RATE,
+        taxRate: taxRate,
         items: cart.map((item) => ({ productId: item.product.id, quantity: item.quantity, unitPrice: productPrice(item.product), discount: item.discount })),
       });
       toast.success(`Sale posted: ${response.sale.receiptNumber}`);
@@ -881,7 +888,7 @@ export default function Warehouse() {
             </div>
             <div className="border-t border-slate-200 p-4">
               <select className="mb-3 h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-700" value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value)}><option value="cash">Cash</option><option value="card">Card</option><option value="wallet">Digital Wallet</option><option value="bank_transfer">Bank Transfer</option></select>
-              <div className="space-y-2 text-sm"><LineTotal label="Subtotal" value={money(cartTotals.subtotal)} /><LineTotal label="Member Discount" value={`-${money(cartTotals.memberDiscount)}`} highlight /><LineTotal label="Tax (8.5%)" value={money(cartTotals.tax)} /><LineTotal label="TOTAL" value={money(cartTotals.total)} large /></div>
+              <div className="space-y-2 text-sm"><LineTotal label="Subtotal" value={money(cartTotals.subtotal)} /><LineTotal label="Member Discount" value={`-${money(cartTotals.memberDiscount)}`} highlight /><LineTotal label={`Tax (${(taxRate * 100).toFixed(0)}%)`} value={money(cartTotals.tax)} /><LineTotal label="TOTAL" value={money(cartTotals.total)} large /></div>
               <Button className="mt-4 h-14 w-full bg-[#44e878] text-lg font-black text-[#04130b] hover:bg-[#32d967]" onClick={postSale}><ShoppingCart className="mr-2 h-5 w-5" /> PAY NOW</Button>
             </div>
           </aside>
