@@ -1,0 +1,24 @@
+{
+  "generatedAt": "2026-06-10T14:25:35Z",
+  "application": {
+    "name": "react-example",
+    "version": "0.0.0",
+    "environment": "development"
+  },
+  "posture": "warn",
+  "preflight": {
+    "posture": "warn"
+  },
+  "evidence": {
+    "checks": [
+      {
+        "id": "phase10-artifact",
+        "ok": true,
+        "message": "Initial Phase 10 artifact generated."
+      }
+    ],
+    "failed": 0,
+    "openApiPaths": 52
+  },
+  "recommendedReleaseCommand": "npm run ops:release-readiness"
+}

@@ -1,0 +1,42 @@
+services:
+  - type: web
+    name: powergym-management
+    runtime: node
+    plan: starter
+    buildCommand: npm run render:build
+    preDeployCommand: npm run render:predeploy
+    startCommand: npm run render:start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: 22.22.0
+      - key: NODE_ENV
+        value: production
+      - key: NPM_CONFIG_REGISTRY
+        value: https://registry.npmjs.org/
+      - key: NPM_CONFIG_REPLACE_REGISTRY_HOST
+        value: always
+      - key: NODE_OPTIONS
+        value: --max-old-space-size=384
+      - key: PORT
+        value: 10000
+      - key: DATABASE_HOSTNAME
+        sync: false
+      - key: DATABASE_PORT
+        value: 3306
+      - key: DATABASE_USER_NAME
+        sync: false
+      - key: DATABASE_PASSWORD
+        sync: false
+      - key: DATABASE_NAME
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: ADMIN_SETUP_TOKEN
+        sync: false
+      - key: CORS_ORIGIN
+        sync: false

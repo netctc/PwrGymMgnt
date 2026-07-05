@@ -1,0 +1,156 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "A user of the application, either a gym member or employee.",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string", "description": "User email address (PII)" },
+        "firstName": { "type": "string" },
+        "lastName": { "type": "string" },
+        "phone": { "type": "string", "description": "Phone number (PII)" },
+        "dateOfBirth": { "type": "string", "format": "date" },
+        "documentId": { "type": "string", "description": "National ID number (PII)" },
+        "photoUrl": { "type": "string" },
+        "role": { "type": "string", "enum": ["client", "admin", "reception", "trainer", "accounting"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["email", "firstName", "lastName", "role", "createdAt", "updatedAt"]
+    },
+    "Plan": {
+      "title": "Gym Plan",
+      "description": "Available subscription plans.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "price": { "type": "number" },
+        "period": { "type": "string", "enum": ["monthly", "quarterly", "annual"] },
+        "description": { "type": "string" },
+        "classLimit": { "type": "number", "description": "Max classes per period" },
+        "isActive": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "price", "period", "isActive", "createdAt", "updatedAt"]
+    },
+    "Subscription": {
+      "title": "Subscription",
+      "description": "A member's subscription to a plan.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Ref to User" },
+        "planId": { "type": "string", "description": "Ref to Plan" },
+        "status": { "type": "string", "enum": ["active", "pending", "suspended", "expired", "canceled"] },
+        "startDate": { "type": "string", "format": "date-time" },
+        "endDate": { "type": "string", "format": "date-time" },
+        "renewalDate": { "type": "string", "format": "date-time" },
+        "paymentMethod": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "planId", "status", "startDate", "endDate", "createdAt", "updatedAt"]
+    },
+    "Class": {
+      "title": "Class Session",
+      "description": "A scheduled class.",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "trainerId": { "type": "string", "description": "Ref to User with trainer role" },
+        "room": { "type": "string" },
+        "capacity": { "type": "number" },
+        "enrolledCount": { "type": "number" },
+        "startTime": { "type": "string", "format": "date-time" },
+        "endTime": { "type": "string", "format": "date-time" },
+        "status": { "type": "string", "enum": ["scheduled", "completed", "canceled"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["title", "trainerId", "capacity", "enrolledCount", "startTime", "endTime", "status", "createdAt", "updatedAt"]
+    },
+    "Booking": {
+      "title": "Class Booking",
+      "description": "A member's reservation for a class.",
+      "type": "object",
+      "properties": {
+        "classId": { "type": "string" },
+        "userId": { "type": "string" },
+        "status": { "type": "string", "enum": ["confirmed", "waitlist", "canceled", "attended", "noshow"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["classId", "userId", "status", "createdAt", "updatedAt"]
+    },
+    "Invoice": {
+      "title": "Invoice",
+      "description": "Billing record.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "subscriptionId": { "type": "string" },
+        "amount": { "type": "number" },
+        "status": { "type": "string", "enum": ["paid", "pending", "failed"] },
+        "issueDate": { "type": "string", "format": "date-time" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "amount", "status", "issueDate", "createdAt"]
+    },
+    "Admin": {
+      "title": "Admin Record",
+      "description": "Record to identify admins.",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" }
+      },
+      "required": ["email"]
+    },
+    "Shift": {
+      "title": "Employee Shift",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "startTime": { "type": "string", "format": "date-time" },
+        "endTime": { "type": "string", "format": "date-time" },
+        "notes": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "startTime", "endTime", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "Stores user profiles including members and employees. Contains PII."
+    },
+    "/plans/{planId}": {
+      "schema": { "$ref": "#/entities/Plan" },
+      "description": "Subscription plans."
+    },
+    "/subscriptions/{subscriptionId}": {
+      "schema": { "$ref": "#/entities/Subscription" },
+      "description": "Active and past subscriptions for users."
+    },
+    "/classes/{classId}": {
+      "schema": { "$ref": "#/entities/Class" },
+      "description": "Gym class schedules."
+    },
+    "/bookings/{bookingId}": {
+      "schema": { "$ref": "#/entities/Booking" },
+      "description": "Reservations for classes."
+    },
+    "/invoices/{invoiceId}": {
+      "schema": { "$ref": "#/entities/Invoice" },
+      "description": "Invoices and billing."
+    },
+    "/admins/{userId}": {
+      "schema": { "$ref": "#/entities/Admin" },
+      "description": "Admin verification."
+    },
+    "/shifts/{shiftId}": {
+      "schema": { "$ref": "#/entities/Shift" },
+      "description": "Employee shifts."
+    }
+  }
+}

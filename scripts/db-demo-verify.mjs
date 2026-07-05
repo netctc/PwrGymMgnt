@@ -1,0 +1,179 @@
+import mysql from 'mysql2/promise';
+import process from 'node:process';
+import 'dotenv/config';
+import { getDatabaseEnv, getMissingDatabaseEnv } from './db-env.mjs';
+import { formatDemoReadiness, makeDemoCheck, summarizeDemoReadiness } from './db-demo-verify-utils.mjs';
+
+function parseArgs(argv = process.argv.slice(2)) {
+  const args = { json: false, strict: true };
+  for (const arg of argv) {
+    if (arg === '--json') args.json = true;
+    else if (arg === '--strict=false' || arg === '--warn-only') args.strict = false;
+  }
+  return args;
+}
+
+async function tableExists(connection, tableName) {
+  const [rows] = await connection.query('SHOW TABLES LIKE ?', [tableName]);
+  return Array.isArray(rows) && rows.length > 0;
+}
+
+async function countQuery(connection, id, label, sql, params = [], expected = 1, severity = 'critical', hint = '') {
+  try {
+    const [rows] = await connection.query(sql, params);
+    const first = Array.isArray(rows) ? rows[0] : undefined;
+    const actual = Number(first?.count ?? first?.value ?? first?.actual ?? 0);
+    return makeDemoCheck({ id, label, actual, expected, severity, details: { hint } });
+  } catch (error) {
+    return makeDemoCheck({
+      id,
+      label,
+      actual: 0,
+      expected,
+      severity,
+      details: { hint: hint || String(error?.message || error) },
+    });
+  }
+}
+
+async function verifyDemoScenario(connection) {
+  const requiredTables = [
+    'admin_users',
+    'members',
+    'member_subscriptions',
+    'invoices',
+    'access_tokens',
+    'employees',
+    'private_sessions',
+    'class_sessions',
+    'class_bookings',
+    'warehouse_products',
+    'warehouse_suppliers',
+    'warehouse_purchase_orders',
+    'warehouse_pos_sales',
+    'warehouse_stock_movements',
+    'finance_transactions',
+    'support_tickets',
+    'notifications',
+    'audit_logs',
+  ];
+
+  const checks = [];
+  for (const table of requiredTables) {
+    const exists = await tableExists(connection, table);
+    checks.push(makeDemoCheck({
+      id: `table.${table}`,
+      label: `Table exists: ${table}`,
+      actual: exists ? 1 : 0,
+      expected: 1,
+      severity: 'critical',
+      details: { hint: `Run npm run db:migrate before demo reset if ${table} is missing.` },
+    }));
+  }
+
+  const scenarioChecks = [
+    ['users.roles', 'Demo admin/user roles', 'SELECT COUNT(*) AS count FROM admin_users WHERE email LIKE ?', ['%@powergym.demo'], 8, 'critical', 'Run npm run db:reset-demo -- --confirm=RESET_DEMO_DATA.'],
+    ['members.total', 'Members', 'SELECT COUNT(*) AS count FROM members', [], 20, 'critical', 'The demo seed should create at least 20 members.'],
+    ['members.active.future', 'Active members with future subscriptions', "SELECT COUNT(*) AS count FROM member_subscriptions WHERE LOWER(TRIM(status)) = 'active' AND DATE(end_date) >= CURDATE()", [], 14, 'critical', 'Active QR/e-card scenarios require active future subscriptions.'],
+    ['members.expired', 'Expired subscription scenarios', "SELECT COUNT(*) AS count FROM member_subscriptions WHERE DATE(end_date) < CURDATE() OR LOWER(TRIM(status)) = 'expired'", [], 3, 'critical', 'Expired scenarios are needed for status and access-denied testing.'],
+    ['members.pending.paused', 'Pending or paused member scenarios', "SELECT COUNT(*) AS count FROM members WHERE LOWER(TRIM(status)) IN ('pending','paused')", [], 2, 'warning', 'Pending/paused scenarios improve UI and access workflow testing.'],
+    ['billing.invoices', 'Membership invoices', 'SELECT COUNT(*) AS count FROM invoices', [], 20, 'critical', 'Receipt and renewal screens need invoices.'],
+    ['access.tokens', 'Active QR/e-card tokens', "SELECT COUNT(*) AS count FROM access_tokens WHERE LOWER(TRIM(status)) = 'active' AND expires_at > NOW()", [], 14, 'critical', 'QR Access needs active demo tokens.'],
+    ['employees.total', 'Employees', 'SELECT COUNT(*) AS count FROM employees', [], 10, 'critical', 'HR scenarios need 10 employees.'],
+    ['employees.trainers', 'Trainers', "SELECT COUNT(*) AS count FROM employees WHERE LOWER(TRIM(department)) = 'trainer'", [], 5, 'critical', 'Scheduling and PT need 5 trainers.'],
+    ['training.private', 'Private training sessions', 'SELECT COUNT(*) AS count FROM private_sessions', [], 10, 'critical', 'PT screens need 10 sessions.'],
+    ['classes.sessions', 'Group classes', 'SELECT COUNT(*) AS count FROM class_sessions', [], 6, 'critical', 'Class scheduling needs group classes.'],
+    ['classes.bookings', 'Class bookings', 'SELECT COUNT(*) AS count FROM class_bookings', [], 20, 'critical', 'Class capacity and enrollment reports need bookings.'],
+    ['warehouse.products', 'Warehouse products', 'SELECT COUNT(*) AS count FROM warehouse_products', [], 30, 'critical', 'Warehouse/POS requires 30 products.'],
+    ['warehouse.categories', 'Product categories', 'SELECT COUNT(DISTINCT category) AS count FROM warehouse_products', [], 3, 'critical', 'The catalog should contain at least 3 categories.'],
+    ['warehouse.suppliers', 'Suppliers', 'SELECT COUNT(*) AS count FROM warehouse_suppliers', [], 6, 'critical', 'Purchasing scenarios need suppliers.'],
+    ['warehouse.purchaseOrders', 'Purchase orders', 'SELECT COUNT(*) AS count FROM warehouse_purchase_orders', [], 6, 'critical', 'Supplier and purchasing screens need POs.'],
+    ['warehouse.receivedPOs', 'Received/invoiced POs', "SELECT COUNT(*) AS count FROM warehouse_purchase_orders WHERE LOWER(TRIM(status)) IN ('received','invoiced')", [], 3, 'critical', 'Accounting integration needs received/invoiced POs.'],
+    ['warehouse.posSales', 'POS sales', 'SELECT COUNT(*) AS count FROM warehouse_pos_sales', [], 10, 'critical', 'POS summaries and accounting sync require sale history.'],
+    ['warehouse.stockMovements', 'Stock movements', 'SELECT COUNT(*) AS count FROM warehouse_stock_movements', [], 20, 'critical', 'Inventory audit trail needs stock movements.'],
+    ['accounting.transactions', 'Accounting transactions', 'SELECT COUNT(*) AS count FROM finance_transactions', [], 30, 'critical', 'Financial dashboards need demo transaction history.'],
+    ['accounting.membership', 'Membership income transactions', "SELECT COUNT(*) AS count FROM finance_transactions WHERE source = 'membership' AND category = 'Membership Renewal'", [], 14, 'critical', 'Paid membership invoices should be mirrored in accounting.'],
+    ['accounting.posIncome', 'POS income transactions', "SELECT COUNT(*) AS count FROM finance_transactions WHERE source = 'warehouse_pos' AND type = 'income' AND category = 'POS Sales'", [], 10, 'critical', 'Each POS sale should create income.'],
+    ['accounting.cogs', 'COGS expense transactions', "SELECT COUNT(*) AS count FROM finance_transactions WHERE source = 'warehouse_pos' AND type = 'expense' AND category = 'Cost of Goods Sold'", [], 10, 'critical', 'Each POS sale should create COGS.'],
+    ['accounting.purchases', 'Inventory purchase expenses', "SELECT COUNT(*) AS count FROM finance_transactions WHERE source = 'warehouse' AND type = 'expense' AND category = 'Inventory Purchase'", [], 3, 'critical', 'Received/invoiced POs should post purchase expenses.'],
+    ['warehouse.lowOrOut', 'Low/out-of-stock products', 'SELECT COUNT(*) AS count FROM warehouse_products WHERE stock_quantity <= min_stock', [], 5, 'warning', 'Low/out-of-stock scenarios support replenishment alerts.'],
+    ['support.tickets', 'Support tickets', 'SELECT COUNT(*) AS count FROM support_tickets', [], 4, 'warning', 'Support screens work better with demo tickets.'],
+    ['notifications.total', 'Notifications', 'SELECT COUNT(*) AS count FROM notifications', [], 6, 'warning', 'Notification center should have sample items.'],
+    ['audit.logs', 'Audit logs', 'SELECT COUNT(*) AS count FROM audit_logs', [], 8, 'warning', 'Security observability should have sample activity.'],
+  ];
+
+  for (const [id, label, sql, params, expected, severity, hint] of scenarioChecks) {
+    checks.push(await countQuery(connection, id, label, sql, params, expected, severity, hint));
+  }
+
+  checks.push(await countQuery(
+    connection,
+    'sync.pos.accounting',
+    'POS sales mirrored by income and COGS entries',
+    `SELECT LEAST(
+      (SELECT COUNT(*) FROM warehouse_pos_sales WHERE status = 'paid'),
+      (SELECT COUNT(*) FROM finance_transactions WHERE source = 'warehouse_pos' AND type = 'income'),
+      (SELECT COUNT(*) FROM finance_transactions WHERE source = 'warehouse_pos' AND type = 'expense' AND category = 'Cost of Goods Sold')
+    ) AS count`,
+    [],
+    10,
+    'critical',
+    'Every paid POS sale should have income and COGS finance entries.',
+  ));
+
+  checks.push(await countQuery(
+    connection,
+    'sync.paidInvoices.accounting',
+    'Paid membership invoices mirrored in accounting',
+    `SELECT LEAST(
+      (SELECT COUNT(*) FROM invoices WHERE status = 'paid'),
+      (SELECT COUNT(*) FROM finance_transactions WHERE source = 'membership' AND reference_type = 'membership_invoice')
+    ) AS count`,
+    [],
+    14,
+    'critical',
+    'Paid invoices should create Membership Renewal income transactions.',
+  ));
+
+  const summary = summarizeDemoReadiness(checks);
+  return { summary, checks };
+}
+
+async function main() {
+  const args = parseArgs();
+  const dbConfig = getDatabaseEnv();
+  const missing = getMissingDatabaseEnv(dbConfig);
+  if (missing.length > 0) {
+    const output = { status: 'fail', error: `Missing database environment variables: ${missing.join(', ')}` };
+    console.error(args.json ? JSON.stringify(output, null, 2) : output.error);
+    process.exit(1);
+  }
+
+  const connection = await mysql.createConnection({
+    host: dbConfig.host,
+    port: dbConfig.port,
+    user: dbConfig.user,
+    password: dbConfig.password,
+    database: dbConfig.database,
+    connectTimeout: dbConfig.connectTimeout,
+  });
+
+  try {
+    const result = await verifyDemoScenario(connection);
+    const output = {
+      database: `${dbConfig.database}@${dbConfig.host}:${dbConfig.port}`,
+      ...result,
+    };
+    if (args.json) console.log(JSON.stringify(output, null, 2));
+    else console.log(formatDemoReadiness(result.summary, result.checks));
+
+    if (args.strict && result.summary.status === 'fail') process.exitCode = 1;
+  } finally {
+    await connection.end();
+  }
+}
+
+main().catch((error) => {
+  console.error(error?.message || error);
+  process.exit(1);
+});

@@ -1,0 +1,989 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "PowerGym Management API",
+    "version": "0.0.0",
+    "description": "Phase 10 API-first OpenAPI artifact generated from the route-permission matrix."
+  },
+  "servers": [
+    {
+      "url": "http://localhost:3000"
+    }
+  ],
+  "paths": {
+    "/api/dashboard/summary": {
+      "get": {
+        "summary": "GET /api/dashboard/summary",
+        "description": "Protected by permission `dashboard.read`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/dashboard/trainer-utilization": {
+      "get": {
+        "summary": "GET /api/dashboard/trainer-utilization",
+        "description": "Protected by permission `dashboard.read`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/dashboard/action-center": {
+      "get": {
+        "summary": "GET /api/dashboard/action-center",
+        "description": "Protected by permission `dashboard.read`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/membership/plans": {
+      "post": {
+        "summary": "POST /api/membership/plans",
+        "description": "Protected by permission `membership.write`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/membership/plans/{id}": {
+      "put": {
+        "summary": "PUT /api/membership/plans/:id",
+        "description": "Protected by permission `membership.write`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/membership/members": {
+      "post": {
+        "summary": "POST /api/membership/members",
+        "description": "Protected by permission `membership.write`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/membership/members/{id}": {
+      "put": {
+        "summary": "PUT /api/membership/members/:id",
+        "description": "Protected by permission `membership.write`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      },
+      "delete": {
+        "summary": "DELETE /api/membership/members/:id",
+        "description": "Protected by permission `membership.write`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/membership/members/{id}/subscriptions": {
+      "post": {
+        "summary": "POST /api/membership/members/:id/subscriptions",
+        "description": "Protected by permission `membership.write`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/membership/invoices/{id}/mark-paid": {
+      "post": {
+        "summary": "POST /api/membership/invoices/:id/mark-paid",
+        "description": "Protected by permission `membership.write`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/membership/members/{id}/access-token": {
+      "post": {
+        "summary": "POST /api/membership/members/:id/access-token",
+        "description": "Protected by permission `membership.ecard.generate`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/membership/validate-access": {
+      "post": {
+        "summary": "POST /api/membership/validate-access",
+        "description": "Protected by permission `membership.access.validate`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/scheduling/classes": {
+      "post": {
+        "summary": "POST /api/scheduling/classes",
+        "description": "Protected by permission `scheduling.write`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/scheduling/classes/{id}": {
+      "put": {
+        "summary": "PUT /api/scheduling/classes/:id",
+        "description": "Protected by permission `scheduling.write`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      },
+      "delete": {
+        "summary": "DELETE /api/scheduling/classes/:id",
+        "description": "Protected by permission `scheduling.write`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/scheduling/classes/{id}/bookings": {
+      "post": {
+        "summary": "POST /api/scheduling/classes/:id/bookings",
+        "description": "Protected by permission `scheduling.write`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/scheduling/bookings/{id}": {
+      "delete": {
+        "summary": "DELETE /api/scheduling/bookings/:id",
+        "description": "Protected by permission `scheduling.write`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/scheduling/private-classes": {
+      "post": {
+        "summary": "POST /api/scheduling/private-classes",
+        "description": "Protected by permission `scheduling.write`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/scheduling/private-classes/{id}": {
+      "delete": {
+        "summary": "DELETE /api/scheduling/private-classes/:id",
+        "description": "Protected by permission `scheduling.write`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/hr/employees": {
+      "post": {
+        "summary": "POST /api/hr/employees",
+        "description": "Protected by permission `hr.write`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/hr/employees/{id}": {
+      "put": {
+        "summary": "PUT /api/hr/employees/:id",
+        "description": "Protected by permission `hr.write`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/hr/attendance": {
+      "post": {
+        "summary": "POST /api/hr/attendance",
+        "description": "Protected by permission `hr.write`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/hr/payroll/runs": {
+      "post": {
+        "summary": "POST /api/hr/payroll/runs",
+        "description": "Protected by permission `hr.write`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/hr/payroll/runs/{id}/approve": {
+      "post": {
+        "summary": "POST /api/hr/payroll/runs/:id/approve",
+        "description": "Protected by permission `payroll.approve`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/hr/payroll/runs/{id}/mark-paid": {
+      "post": {
+        "summary": "POST /api/hr/payroll/runs/:id/mark-paid",
+        "description": "Protected by permission `payroll.approve`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/finance/transactions": {
+      "post": {
+        "summary": "POST /api/finance/transactions",
+        "description": "Protected by permission `finance.write`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/finance/transactions/{id}": {
+      "put": {
+        "summary": "PUT /api/finance/transactions/:id",
+        "description": "Protected by permission `finance.write`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      },
+      "delete": {
+        "summary": "DELETE /api/finance/transactions/:id",
+        "description": "Protected by permission `finance.write`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/finance/transactions/{id}/approve": {
+      "post": {
+        "summary": "POST /api/finance/transactions/:id/approve",
+        "description": "Protected by permission `finance.write`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/finance/loans": {
+      "post": {
+        "summary": "POST /api/finance/loans",
+        "description": "Protected by permission `finance.write`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/finance/loans/{id}": {
+      "put": {
+        "summary": "PUT /api/finance/loans/:id",
+        "description": "Protected by permission `finance.write`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/finance/rentals": {
+      "post": {
+        "summary": "POST /api/finance/rentals",
+        "description": "Protected by permission `finance.write`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/finance/rentals/{id}": {
+      "put": {
+        "summary": "PUT /api/finance/rentals/:id",
+        "description": "Protected by permission `finance.write`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/finance/budgets": {
+      "post": {
+        "summary": "POST /api/finance/budgets",
+        "description": "Protected by permission `finance.write`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/finance/payroll-runs/{id}/post": {
+      "post": {
+        "summary": "POST /api/finance/payroll-runs/:id/post",
+        "description": "Protected by permission `payroll.approve`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/finance/recurring/process": {
+      "post": {
+        "summary": "POST /api/finance/recurring/process",
+        "description": "Protected by permission `finance.write`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/warehouse/categories": {
+      "post": {
+        "summary": "POST /api/warehouse/categories",
+        "description": "Protected by permission `warehouse.write`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/warehouse/categories/{id}": {
+      "put": {
+        "summary": "PUT /api/warehouse/categories/:id",
+        "description": "Protected by permission `warehouse.write`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      },
+      "delete": {
+        "summary": "DELETE /api/warehouse/categories/:id",
+        "description": "Protected by permission `warehouse.write`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/warehouse/products": {
+      "post": {
+        "summary": "POST /api/warehouse/products",
+        "description": "Protected by permission `warehouse.write`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/warehouse/products/{id}": {
+      "put": {
+        "summary": "PUT /api/warehouse/products/:id",
+        "description": "Protected by permission `warehouse.write`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      },
+      "delete": {
+        "summary": "DELETE /api/warehouse/products/:id",
+        "description": "Protected by permission `warehouse.write`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/warehouse/suppliers": {
+      "post": {
+        "summary": "POST /api/warehouse/suppliers",
+        "description": "Protected by permission `warehouse.purchase`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/warehouse/suppliers/{id}": {
+      "put": {
+        "summary": "PUT /api/warehouse/suppliers/:id",
+        "description": "Protected by permission `warehouse.purchase`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/warehouse/stock-adjustments": {
+      "post": {
+        "summary": "POST /api/warehouse/stock-adjustments",
+        "description": "Protected by permission `warehouse.write`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/warehouse/purchase-orders": {
+      "post": {
+        "summary": "POST /api/warehouse/purchase-orders",
+        "description": "Protected by permission `warehouse.purchase`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/warehouse/purchase-orders/{id}/receive": {
+      "post": {
+        "summary": "POST /api/warehouse/purchase-orders/:id/receive",
+        "description": "Protected by permission `warehouse.purchase`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/warehouse/purchase-orders/{id}/status": {
+      "post": {
+        "summary": "POST /api/warehouse/purchase-orders/:id/status",
+        "description": "Protected by permission `warehouse.purchase`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/warehouse/pos/catalog": {
+      "get": {
+        "summary": "GET /api/warehouse/pos/catalog",
+        "description": "Protected by permission `warehouse.pos`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/warehouse/pos/sales": {
+      "post": {
+        "summary": "POST /api/warehouse/pos/sales",
+        "description": "Protected by permission `warehouse.pos`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      },
+      "get": {
+        "summary": "GET /api/warehouse/pos/sales",
+        "description": "Protected by permission `warehouse.pos`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/warehouse/reports/{reportId}.{format}": {
+      "get": {
+        "summary": "GET /api/warehouse/reports/:reportId.:format",
+        "description": "Protected by permission `warehouse.reports`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/engagement/notifications": {
+      "post": {
+        "summary": "POST /api/engagement/notifications",
+        "description": "Protected by permission `support.write`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/engagement/support/tickets/{id}/status": {
+      "put": {
+        "summary": "PUT /api/engagement/support/tickets/:id/status",
+        "description": "Protected by permission `support.write`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/engagement/deployment-readiness": {
+      "get": {
+        "summary": "GET /api/engagement/deployment-readiness",
+        "description": "Protected by permission `support.write`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/platform/production-readiness": {
+      "get": {
+        "summary": "GET /api/platform/production-readiness",
+        "description": "Protected by permission `platform.health.detail`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/audit-logs": {
+      "get": {
+        "summary": "GET /api/audit-logs",
+        "description": "Protected by permission `platform.audit.read`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    },
+    "/api/trigger-backup": {
+      "post": {
+        "summary": "POST /api/trigger-backup",
+        "description": "Protected by permission `platform.backups.manage`.",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        }
+      }
+    }
+  }
+}

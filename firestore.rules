@@ -1,0 +1,357 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- PRIMITIVES ---
+    function isSignedIn() { return request.auth != null; }
+    function isVerified() { return isSignedIn() && request.auth.token.email_verified == true; }
+    function isValidId(id) { return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); }
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+
+    function isAdmin() {
+      // NOTE: During setup, the first user won't have an admin doc.
+      // So we fallback to checking if their email matches our known dev email or allow them to bootstrap.
+      // Because we don't know the prod setup, we'll allow an admin doc lookup.
+      return isSignedIn() && (request.auth.token.email == 'netctc@gmail.com' || request.auth.token.email == 'admin@gym.com' || exists(/databases/$(database)/documents/admins/$(request.auth.uid)));
+    }
+
+    // Check if the user is the owner
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function getUserRole() {
+      return exists(/databases/$(database)/documents/users/$(request.auth.uid)) 
+        ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role 
+        : null;
+    }
+
+    function isReception() {
+      return getUserRole() == 'reception';
+    }
+
+    function isTrainer() {
+      return getUserRole() == 'trainer';
+    }
+
+    function isAccounting() {
+      return getUserRole() == 'accounting';
+    }
+
+    function isHR() {
+      return getUserRole() == 'hr';
+    }
+
+    function hasAccountingAccess() {
+       return isAdmin() || isAccounting();
+    }
+
+    function hasHRAccess() {
+       return isAdmin() || isHR() || isAccounting();
+    }
+
+    // --- VALIDATORS ---
+
+    function isValidAdmin(data) {
+      return data.keys().hasAll(['email']) && data.keys().size() == 1
+        && data.email is string && data.email.size() <= 200;
+    }
+
+    function isValidUser(data, isCreate) {
+      let requiredFields = ['email', 'firstName', 'lastName', 'role', 'createdAt', 'updatedAt'];
+      let hasRequired = data.keys().hasAll(requiredFields);
+      let allFields = ['email', 'firstName', 'lastName', 'role', 'createdAt', 'updatedAt', 'phone', 'dateOfBirth', 'documentId', 'photoUrl', 'notes', 'address', 'startDate', 'department', 'subStartDate', 'subPlan', 'subFrom', 'subTo', 'historicalSubs', 'subStatus', 'lastVisit'];
+      let optFields = data.keys().hasOnly(allFields);
+      
+      let validTypes = data.email is string && data.email.size() <= 150
+        && data.firstName is string && data.firstName.size() <= 100
+        && data.lastName is string && data.lastName.size() <= 100
+        && data.role in ['client', 'admin', 'reception', 'trainer', 'accounting']
+        && (isCreate ? data.createdAt == request.time : true)
+        && data.updatedAt == request.time;
+        
+      return hasRequired && optFields && validTypes;
+    }
+
+    function isValidPlan(data, isCreate) {
+      let requiredFields = ['name', 'price', 'period', 'isActive', 'createdAt', 'updatedAt'];
+      let hasRequired = data.keys().hasAll(requiredFields);
+      let optFields = data.keys().hasOnly(requiredFields.concat(['description', 'classLimit']));
+      
+      let validTypes = data.name is string && data.name.size() <= 100
+        && data.price is number && data.price >= 0
+        && data.period in ['monthly', 'quarterly', 'annual']
+        && data.isActive is bool
+        && (isCreate ? data.createdAt == request.time : true)
+        && data.updatedAt == request.time;
+        
+      let optDesc = !('description' in data) || (data.description is string && data.description.size() <= 1000);
+      let optLim = !('classLimit' in data) || data.classLimit is number;
+      
+      return hasRequired && optFields && validTypes && optDesc && optLim;
+    }
+
+    function isValidSubscription(data, isCreate) {
+      let requiredFields = ['userId', 'planId', 'status', 'startDate', 'endDate', 'createdAt', 'updatedAt'];
+      let hasRequired = data.keys().hasAll(requiredFields);
+      let optFields = data.keys().hasOnly(requiredFields.concat(['renewalDate', 'paymentMethod']));
+      
+      let validTypes = data.userId is string && data.userId.size() <= 128
+        && data.planId is string && data.planId.size() <= 128
+        && data.status in ['active', 'pending', 'suspended', 'expired', 'canceled']
+        && data.startDate is string && data.startDate.size() <= 50
+        && data.endDate is string && data.endDate.size() <= 50
+        && (isCreate ? data.createdAt == request.time : true)
+        && data.updatedAt == request.time;
+        
+      let optRen = !('renewalDate' in data) || (data.renewalDate is string && data.renewalDate.size() <= 50);
+      let optPay = !('paymentMethod' in data) || (data.paymentMethod is string && data.paymentMethod.size() <= 50);
+      
+      return hasRequired && optFields && validTypes && optRen && optPay;
+    }
+
+    function isValidClass(data, isCreate) {
+      let requiredFields = ['title', 'trainerId', 'capacity', 'enrolledCount', 'startTime', 'endTime', 'status', 'createdAt', 'updatedAt'];
+      let hasRequired = data.keys().hasAll(requiredFields);
+      let optFields = data.keys().hasOnly(requiredFields.concat(['room', 'type', 'level', 'branch']));
+      
+      let validTypes = data.title is string && data.title.size() <= 100
+        && data.trainerId is string && data.trainerId.size() <= 128
+        && data.capacity is number && data.capacity >= 1
+        && data.enrolledCount is number && data.enrolledCount >= 0 && data.enrolledCount <= data.capacity
+        && data.startTime is string && data.startTime.size() <= 50
+        && data.endTime is string && data.endTime.size() <= 50
+        && data.status in ['scheduled', 'completed', 'canceled']
+        && (isCreate ? data.createdAt == request.time : true)
+        && data.updatedAt == request.time;
+        
+      let optRoom = !('room' in data) || (data.room is string && data.room.size() <= 100);
+      let optType = !('type' in data) || (data.type is string && data.type.size() <= 100);
+      let optLevel = !('level' in data) || (data.level is string && data.level.size() <= 100);
+      let optBranch = !('branch' in data) || (data.branch is string && data.branch.size() <= 100);
+      
+      return hasRequired && optFields && validTypes && optRoom && optType && optLevel && optBranch;
+    }
+
+    function isValidBooking(data, isCreate) {
+      let requiredFields = ['classId', 'userId', 'status', 'createdAt', 'updatedAt'];
+      let hasRequired = data.keys().hasAll(requiredFields);
+      let optFields = data.keys().hasOnly(requiredFields);
+      
+      let validTypes = data.classId is string && data.classId.size() <= 128
+        && data.userId is string && data.userId.size() <= 128
+        && data.status in ['confirmed', 'waitlist', 'canceled', 'attended', 'noshow']
+        && (isCreate ? data.createdAt == request.time : true)
+        && data.updatedAt == request.time;
+        
+      return hasRequired && optFields && validTypes;
+    }
+
+    function isValidInvoice(data, isCreate) {
+      let requiredFields = ['userId', 'amount', 'status', 'issueDate', 'createdAt'];
+      let hasRequired = data.keys().hasAll(requiredFields);
+      let optFields = data.keys().hasOnly(requiredFields.concat(['subscriptionId']));
+      
+      let validTypes = data.userId is string && data.userId.size() <= 128
+        && data.amount is number && data.amount >= 0
+        && data.status in ['paid', 'pending', 'failed']
+        && data.issueDate is string && data.issueDate.size() <= 50
+        && (isCreate ? data.createdAt == request.time : true);
+        
+      let optSub = !('subscriptionId' in data) || (data.subscriptionId is string && data.subscriptionId.size() <= 128);
+      
+      return hasRequired && optFields && validTypes && optSub;
+    }
+
+    function isValidShift(data, isCreate) {
+      let requiredFields = ['userId', 'startTime', 'endTime', 'createdAt', 'updatedAt'];
+      let hasRequired = data.keys().hasAll(requiredFields);
+      let optFields = data.keys().hasOnly(requiredFields.concat(['notes']));
+      
+      let validTypes = data.userId is string && data.userId.size() <= 128
+        && data.startTime is string && data.startTime.size() <= 50
+        && data.endTime is string && data.endTime.size() <= 50
+        && (isCreate ? data.createdAt == request.time : true)
+        && data.updatedAt == request.time;
+        
+      let optNotes = !('notes' in data) || (data.notes is string && data.notes.size() <= 1000);
+      
+      return hasRequired && optFields && validTypes && optNotes;
+    }
+
+    function isValidAuditLog(data, isCreate) {
+      let requiredFields = ['action', 'performedBy', 'targetId', 'details', 'createdAt'];
+      let hasRequired = data.keys().hasAll(requiredFields);
+      let optFields = data.keys().hasOnly(requiredFields);
+      
+      let validTypes = data.action is string && data.action.size() <= 100
+        && data.performedBy is string && data.performedBy.size() <= 128
+        && data.targetId is string && data.targetId.size() <= 128
+        && data.details is string && data.details.size() <= 2000
+        && (isCreate ? data.createdAt == request.time : true);
+        
+      return hasRequired && optFields && validTypes;
+    }
+
+    function isValidPrivateClass(data, isCreate) {
+      let requiredFields = ['memberId', 'trainerId', 'startTime', 'endTime', 'status', 'createdAt', 'updatedAt'];
+      let hasRequired = data.keys().hasAll(requiredFields);
+      let optFields = data.keys().hasOnly(requiredFields.concat(['room', 'level']));
+      
+      let validTypes = data.memberId is string && data.memberId.size() <= 128
+        && data.trainerId is string && data.trainerId.size() <= 128
+        && data.startTime is string && data.startTime.size() <= 50
+        && data.endTime is string && data.endTime.size() <= 50
+        && data.status in ['scheduled', 'completed', 'canceled']
+        && (isCreate ? data.createdAt == request.time : true)
+        && data.updatedAt == request.time;
+        
+      let optRoom = !('room' in data) || (data.room is string && data.room.size() <= 100);
+      let optLevel = !('level' in data) || (data.level is string && data.level.size() <= 100);
+      
+      return hasRequired && optFields && validTypes && optRoom && optLevel;
+    }
+
+    // --- RULES ---
+
+    match /admins/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      // For initial setup we might need a way, but let's strictly protect it
+      allow write: if isAdmin();
+    }
+
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin() || isAccounting());
+      allow list: if isAdmin() || isAccounting(); // admin and accounting can list all users
+      allow create: if isValidId(userId) && isValidUser(incoming(), true)
+                    && ( (isOwner(userId) && incoming().role == 'client') || isAdmin() );
+      allow update: if isValidId(userId) && (isOwner(userId) || isAdmin()) && isValidUser(incoming(), false)
+                    // Immutable fields
+                    && incoming().createdAt == existing().createdAt
+                    && incoming().email == existing().email
+                    // Only admin can change role
+                    && (isAdmin() || incoming().role == existing().role);
+    }
+
+    match /plans/{planId} {
+      allow get: if isValidId(planId);
+      allow list: if true; // anyone can list active plans, filter applied inside the rule is better but client can filter. Wait, rules say "resource.data" check
+      // For plans, we allow reading all. Let's allow read for all authenticated or public? App requires login.
+      // Wait: "allow list: if true;" is a blanket read. "The rule itself must validate the resource being queried (e.g. allow list: if resource.data.isActive == true..."
+      // But we may want admin to list inactive plans. 
+      // allow list: if isAdmin() || (resource.data.isActive == true);
+      // Wait, is it ok if anonymous user sees plan? Yes, signup page needs plans.
+      
+      allow read: if isValidId(planId) || isAdmin() || existing().isActive == true;
+      allow create: if isAdmin() && isValidPlan(incoming(), true);
+      allow update: if isAdmin() && isValidPlan(incoming(), false)
+                    && incoming().createdAt == existing().createdAt;
+      allow delete: if isAdmin();
+    }
+
+    match /subscriptions/{subId} {
+      allow get: if isValidId(subId) && (isAdmin() || existing().userId == request.auth.uid);
+      allow list: if isAdmin() || resource.data.userId == request.auth.uid;
+      allow create: if isValidId(subId) && (isAdmin() || (incoming().userId == request.auth.uid && isValidSubscription(incoming(), true)));
+      allow update: if isValidId(subId) && isValidSubscription(incoming(), false) && incoming().createdAt == existing().createdAt
+                    && incoming().userId == existing().userId
+                    && (isAdmin() || (existing().userId == request.auth.uid && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt', 'paymentMethod']) && incoming().status == 'canceled')); 
+                    // users can only cancel their own sub
+    }
+
+    match /classes/{classId} {
+      allow get: if isValidId(classId) && isSignedIn();
+      allow list: if isSignedIn(); // We can let any signed-in user list classes to book
+      allow create: if isAdmin() && isValidClass(incoming(), true);
+      allow update: if isValidId(classId) && isValidClass(incoming(), false) && incoming().createdAt == existing().createdAt
+                    && (
+                      isAdmin() || 
+                      (isSignedIn() && incoming().diff(existing()).affectedKeys().hasOnly(['enrolledCount', 'updatedAt']))
+                      // Allow concurrent enrolledCount increment? It's better controlled by a Cloud Function, but allow for now.
+                    );
+      allow delete: if isAdmin();
+    }
+
+    match /private_classes/{classId} {
+      allow get: if isValidId(classId) && isSignedIn();
+      allow list: if isSignedIn();
+      allow create: if isSignedIn() && (isAdmin() || isReception() || (isTrainer() && incoming().trainerId == request.auth.uid)) && isValidPrivateClass(incoming(), true);
+      allow update: if isValidId(classId) && isSignedIn() && (isAdmin() || isReception() || (isTrainer() && existing().trainerId == request.auth.uid)) && isValidPrivateClass(incoming(), false) && incoming().createdAt == existing().createdAt;
+      allow delete: if isValidId(classId) && isSignedIn() && (isAdmin() || isReception() || (isTrainer() && existing().trainerId == request.auth.uid));
+    }
+
+    match /bookings/{bookingId} {
+      allow get: if isValidId(bookingId) && (isAdmin() || existing().userId == request.auth.uid);
+      allow list: if isAdmin() || resource.data.userId == request.auth.uid;
+      allow create: if isValidId(bookingId) && (isAdmin() || (incoming().userId == request.auth.uid && isValidBooking(incoming(), true)));
+      allow update: if isValidId(bookingId) && isValidBooking(incoming(), false) && incoming().createdAt == existing().createdAt
+                    && incoming().userId == existing().userId
+                    && incoming().classId == existing().classId
+                    && (isAdmin() || (existing().userId == request.auth.uid && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])));
+    }
+
+    match /invoices/{invoiceId} {
+      allow get: if isValidId(invoiceId) && (isAdmin() || existing().userId == request.auth.uid);
+      allow list: if isAdmin() || resource.data.userId == request.auth.uid;
+      allow create: if isAdmin() && isValidInvoice(incoming(), true);
+      // Invoices shouldn't be generally updated, but if payment status changes:
+      allow update: if isAdmin() && isValidInvoice(incoming(), false) && incoming().createdAt == existing().createdAt;
+    }
+
+    match /shifts/{shiftId} {
+      allow get: if isValidId(shiftId) && (isAdmin() || isReception() || existing().userId == request.auth.uid);
+      allow list: if isSignedIn(); // Let's allow users to query shifts for scheduling
+      allow create: if (isAdmin() || isReception()) && isValidShift(incoming(), true);
+      allow update: if isValidId(shiftId) && (isAdmin() || isReception()) && isValidShift(incoming(), false) && incoming().createdAt == existing().createdAt;
+      allow delete: if isAdmin() || isReception();
+    }
+
+    match /settings/{settingId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    match /auditLogs/{logId} {
+      allow get: if isAdmin();
+      allow list: if isAdmin();
+      allow create: if isValidId(logId) && isSignedIn() && incoming().performedBy == request.auth.uid && isValidAuditLog(incoming(), true);
+      allow update: if false; // Immutable
+      allow delete: if false; // Immutable
+    }
+
+    match /accounting_tx/{docId} {
+      allow read, write: if hasAccountingAccess();
+    }
+    match /accounting_payroll/{docId} {
+      allow read, write: if hasAccountingAccess();
+    }
+    match /accounting_loans/{docId} {
+      allow read, write: if hasAccountingAccess();
+    }
+    match /accounting_rentals/{docId} {
+      allow read, write: if hasAccountingAccess();
+    }
+    match /accounting_recurring/{docId} {
+      allow read, write: if hasAccountingAccess();
+    }
+    match /accounting_budgets/{docId} {
+      allow read, write: if hasAccountingAccess();
+    }
+    match /accounting_audit_logs/{docId} {
+      allow read, write: if hasAccountingAccess();
+    }
+    match /accounting_settings/{docId} {
+      allow read, write: if hasAccountingAccess();
+    }
+    match /accounting_tx_archive/{docId} {
+      allow read, write: if hasAccountingAccess();
+    }
+    match /hr_profiles/{docId} {
+      allow read, write: if hasHRAccess();
+    }
+  }
+}

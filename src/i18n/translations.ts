@@ -1,0 +1,148 @@
+import type { SupportedLocale } from './config';
+
+export const englishTranslations = {
+  'app.adminTerminal': 'Admin Terminal',
+  'app.language': 'Language',
+  'app.loading': 'Loading...',
+  'breadcrumb.management': 'Management',
+  'breadcrumb.page': 'Page',
+  'nav.dashboard': 'Dashboard',
+  'nav.members': 'Members',
+  'nav.plans': 'Plans',
+  'nav.classes': 'Classes',
+  'nav.privatePt': 'Private PT',
+  'nav.employees': 'Employees',
+  'nav.hrPayroll': 'HR & Payroll',
+  'nav.accounting': 'Accounting',
+  'nav.warehouse': 'Warehouse',
+  'nav.inventory': 'Inventory',
+  'nav.pos': 'POS',
+  'nav.suppliers': 'Suppliers',
+  'nav.warehouseReports': 'Warehouse Reports',
+  'nav.reports': 'Reports',
+  'nav.qrAccess': 'QR Access',
+  'nav.settings': 'Settings',
+  'nav.support': 'Support',
+  'notifications.title': 'Notifications',
+  'notifications.markRead': 'Mark read',
+  'notifications.empty': 'No notifications.',
+  'notifications.new': 'new',
+  'user.logout': 'Log Out',
+  'role.superAdmin': 'Super Admin',
+  'role.staff': 'Staff',
+} as const;
+
+export type TranslationKey = keyof typeof englishTranslations;
+export type TranslationDictionary = Record<TranslationKey, string>;
+
+const frenchTranslations: TranslationDictionary = {
+  'app.adminTerminal': 'Terminal admin',
+  'app.language': 'Langue',
+  'app.loading': 'Chargement...',
+  'breadcrumb.management': 'Gestion',
+  'breadcrumb.page': 'Page',
+  'nav.dashboard': 'Tableau de bord',
+  'nav.members': 'Membres',
+  'nav.plans': 'Abonnements',
+  'nav.classes': 'Cours',
+  'nav.privatePt': 'Coaching privé',
+  'nav.employees': 'Employés',
+  'nav.hrPayroll': 'RH & paie',
+  'nav.accounting': 'Comptabilité',
+  'nav.warehouse': 'Entrepôt',
+  'nav.inventory': 'Inventaire',
+  'nav.pos': 'PDV',
+  'nav.suppliers': 'Fournisseurs',
+  'nav.warehouseReports': 'Rapports entrepôt',
+  'nav.reports': 'Rapports',
+  'nav.qrAccess': 'Accès QR',
+  'nav.settings': 'Paramètres',
+  'nav.support': 'Support',
+  'notifications.title': 'Notifications',
+  'notifications.markRead': 'Marquer lu',
+  'notifications.empty': 'Aucune notification.',
+  'notifications.new': 'nouveau',
+  'user.logout': 'Se déconnecter',
+  'role.superAdmin': 'Super administrateur',
+  'role.staff': 'Personnel',
+};
+
+const arabicTranslations: TranslationDictionary = {
+  'app.adminTerminal': 'لوحة الإدارة',
+  'app.language': 'اللغة',
+  'app.loading': 'جار التحميل...',
+  'breadcrumb.management': 'الإدارة',
+  'breadcrumb.page': 'صفحة',
+  'nav.dashboard': 'لوحة التحكم',
+  'nav.members': 'الأعضاء',
+  'nav.plans': 'الاشتراكات',
+  'nav.classes': 'الحصص',
+  'nav.privatePt': 'تدريب خاص',
+  'nav.employees': 'الموظفون',
+  'nav.hrPayroll': 'الموارد البشرية والرواتب',
+  'nav.accounting': 'المحاسبة',
+  'nav.warehouse': 'المستودع',
+  'nav.inventory': 'المخزون',
+  'nav.pos': 'نقطة البيع',
+  'nav.suppliers': 'الموردون',
+  'nav.warehouseReports': 'تقارير المستودع',
+  'nav.reports': 'التقارير',
+  'nav.qrAccess': 'دخول QR',
+  'nav.settings': 'الإعدادات',
+  'nav.support': 'الدعم',
+  'notifications.title': 'الإشعارات',
+  'notifications.markRead': 'تحديد كمقروء',
+  'notifications.empty': 'لا توجد إشعارات.',
+  'notifications.new': 'جديد',
+  'user.logout': 'تسجيل الخروج',
+  'role.superAdmin': 'مدير عام',
+  'role.staff': 'الموظفون',
+};
+
+
+const spanishTranslations: TranslationDictionary = {
+  'app.adminTerminal': 'Terminal de administración',
+  'app.language': 'Idioma',
+  'app.loading': 'Cargando...',
+  'breadcrumb.management': 'Gestión',
+  'breadcrumb.page': 'Página',
+  'nav.dashboard': 'Panel',
+  'nav.members': 'Miembros',
+  'nav.plans': 'Planes',
+  'nav.classes': 'Clases',
+  'nav.privatePt': 'Entrenamiento privado',
+  'nav.employees': 'Empleados',
+  'nav.hrPayroll': 'RR. HH. y nómina',
+  'nav.accounting': 'Contabilidad',
+  'nav.warehouse': 'Almacén',
+  'nav.inventory': 'Inventario',
+  'nav.pos': 'TPV',
+  'nav.suppliers': 'Proveedores',
+  'nav.warehouseReports': 'Informes de almacén',
+  'nav.reports': 'Informes',
+  'nav.qrAccess': 'Acceso QR',
+  'nav.settings': 'Configuración',
+  'nav.support': 'Soporte',
+  'notifications.title': 'Notificaciones',
+  'notifications.markRead': 'Marcar leído',
+  'notifications.empty': 'No hay notificaciones.',
+  'notifications.new': 'nuevo',
+  'user.logout': 'Cerrar sesión',
+  'role.superAdmin': 'Superadministrador',
+  'role.staff': 'Personal',
+};
+
+export const translations: Record<SupportedLocale, TranslationDictionary> = {
+  en: englishTranslations,
+  fr: frenchTranslations,
+  ar: arabicTranslations,
+  es: spanishTranslations,
+};
+
+export function translate(locale: SupportedLocale, key: TranslationKey, fallback?: string): string {
+  return translations[locale]?.[key] || englishTranslations[key] || fallback || key;
+}
+
+export function interpolate(template: string, values: Record<string, string | number> = {}) {
+  return template.replace(/\{(\w+)\}/g, (_match, token: string) => String(values[token] ?? `{${token}}`));
+}
