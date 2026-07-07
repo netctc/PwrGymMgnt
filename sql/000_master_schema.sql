@@ -389,6 +389,35 @@ CREATE TABLE IF NOT EXISTS payroll_items (
     FOREIGN KEY (employee_id) REFERENCES employees(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS hr_departments (
+  id         VARCHAR(64)  PRIMARY KEY,
+  name       VARCHAR(120) NOT NULL,
+  code       VARCHAR(10)  NOT NULL,
+  status     VARCHAR(32)  NOT NULL DEFAULT 'active',
+  created_at TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_hr_departments_name (name),
+  UNIQUE KEY uq_hr_departments_code (code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+INSERT IGNORE INTO hr_departments (id, name, code) VALUES
+  ('dept_gen', 'General', 'GEN'),
+  ('dept_adm', 'Administration', 'ADM'),
+  ('dept_fit', 'Fitness', 'FIT'),
+  ('dept_sal', 'Sales', 'SAL'),
+  ('dept_mnt', 'Maintenance', 'MNT'),
+  ('dept_rec', 'Reception', 'REC');
+
+CREATE TABLE IF NOT EXISTS hr_job_titles (
+  id            VARCHAR(64)  PRIMARY KEY,
+  name          VARCHAR(120) NOT NULL,
+  department_id VARCHAR(64)  NULL,
+  status        VARCHAR(32)  NOT NULL DEFAULT 'active',
+  created_at    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_hr_job_titles_name (name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- ─────────────────────────────────────────────────────────────────────────────
 -- 6. FINANCE & ACCOUNTING
 -- ─────────────────────────────────────────────────────────────────────────────
@@ -875,6 +904,20 @@ CREATE TABLE IF NOT EXISTS security_audit_events (
   INDEX idx_security_audit_range_module_severity (created_at, module, severity)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS security_events (
+  id           BIGINT       AUTO_INCREMENT PRIMARY KEY,
+  event_type   VARCHAR(100) NOT NULL,
+  severity     VARCHAR(32)  NOT NULL DEFAULT 'info',
+  actor_email  VARCHAR(255) NULL,
+  ip_address   VARCHAR(128) NULL,
+  details      TEXT         NULL,
+  metadata     JSON         NULL,
+  created_at   TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_security_events_created  (created_at),
+  INDEX idx_security_events_type     (event_type),
+  INDEX idx_security_events_severity (severity)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- ─────────────────────────────────────────────────────────────────────────────
 -- 10. DATA INTEGRITY TRACKING
 -- ─────────────────────────────────────────────────────────────────────────────
@@ -892,6 +935,24 @@ CREATE TABLE IF NOT EXISTS data_integrity_runs (
   created_at      TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_data_integrity_runs_created  (created_at),
   INDEX idx_data_integrity_runs_posture  (posture)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- 11. LEGACY COMPAT TABLES (referenced by dashboard/compat routes)
+-- ─────────────────────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS hr_profiles (
+  id         VARCHAR(255) PRIMARY KEY,
+  data       JSON         NULL,
+  created_at TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS private_classes (
+  id         VARCHAR(255) PRIMARY KEY,
+  data       JSON         NULL,
+  created_at TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 SET FOREIGN_KEY_CHECKS = 1;

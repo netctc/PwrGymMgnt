@@ -266,7 +266,7 @@ export function registerEngagementRoutes(app: Express, poolProvider: PoolProvide
   app.get("/api/engagement/contact-channels", (req, res) => {
     res.json({
       channels: {
-        email: process.env.SUPPORT_EMAIL || "assaf@gmail.com",
+        email: process.env.SUPPORT_EMAIL || "maassaf@gmail.com",
         phone: process.env.SUPPORT_PHONE || "+96179107040",
         whatsapp: process.env.SUPPORT_WHATSAPP || "+96179107040",
         officeHours: process.env.SUPPORT_OFFICE_HOURS || "Mon - Fri: 9:00 AM - 6:00 PM",

@@ -30,7 +30,7 @@ export default function Support() {
     description: '',
   });
   const [channels, setChannels] = useState({
-    email: 'assaf@gmail.com',
+    email: 'maassaf@gmail.com',
     phone: '+96179107040',
     whatsapp: '+96179107040',
     officeHours: 'Mon - Fri: 9:00 AM - 6:00 PM',

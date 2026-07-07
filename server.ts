@@ -171,10 +171,11 @@ async function startServer() {
   app.use(createApiPerformanceMiddleware({ slowResponseMs: Number(process.env.SLOW_RESPONSE_LOG_MS || 1500) }));
   app.use(createApiStructuredLogMiddleware());
 
-  // Rate Limiting
+  // Rate Limiting — relaxed in development, strict in production
+  const isDev = process.env.NODE_ENV !== "production";
   const apiLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 100, // Limit each IP to 100 requests per `window` (here, per 15 minutes)
+    max: isDev ? 1000 : 300, // Development: 1000 req/15min, Production: 300 req/15min
     standardHeaders: true,
     legacyHeaders: false
   });
@@ -184,7 +185,7 @@ async function startServer() {
 
   const authLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
-    max: 15,
+    max: isDev ? 100 : 15,
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: "Too many authentication attempts. Please try again later." },
