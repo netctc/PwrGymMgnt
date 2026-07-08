@@ -5,3 +5,6 @@ dist/
 !.env.example
 backups/*.sql
 *.log
+
+# Archive files
+*.zip

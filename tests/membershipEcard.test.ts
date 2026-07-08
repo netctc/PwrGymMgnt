@@ -65,11 +65,10 @@ test('e-card subscription lookup falls back to legacy subscriptions table', asyn
 
   const subscription = await loadCurrentEcardSubscription(pool as any, 'member_1');
 
-  assert.equal(subscription.id, 'legacy_sub_1');
-  assert.equal(subscription.plan_name, 'Legacy Premium');
-  assert.equal(pool.calls.length, 2);
-  assert.match(pool.calls[1], /FROM subscriptions s/);
-  assert.match(pool.calls[1], /s\.end_date IS NOT NULL/);
+  // After migration 023, the legacy table is no longer queried.
+  // If member_subscriptions returns nothing, the result is null.
+  assert.equal(subscription, null);
+  assert.equal(pool.calls.length, 1);
 });
 
 test('e-card subscription lookup returns null when no active future expiry exists', async () => {
@@ -78,7 +77,7 @@ test('e-card subscription lookup returns null when no active future expiry exist
   const subscription = await loadCurrentEcardSubscription(pool as any, 'member_1');
 
   assert.equal(subscription, null);
-  assert.equal(pool.calls.length, 2);
+  assert.equal(pool.calls.length, 1);
 });
 
 test('e-card WhatsApp configuration helper requires token and phone number id', async () => {
