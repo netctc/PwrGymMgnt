@@ -21,6 +21,7 @@
     "db:repair": "node --import tsx scripts/db-integrity-repair.ts",
     "db:diagnose": "node scripts/db-diagnose.mjs",
     "db:seed": "node scripts/apply-seed.mjs",
+    "db:init-users": "node scripts/db-init-users.mjs",
     "render:build": "npm run lockfile:check && npm ci --include=dev --registry=https://registry.npmjs.org/ --replace-registry-host=always && npm run build:render && npm run render:ui-check",
     "render:predeploy": "npm run db:diagnose && npm run db:migrate && npm run db:verify",
     "render:start": "node dist/server.cjs",
