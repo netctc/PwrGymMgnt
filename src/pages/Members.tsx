@@ -5,6 +5,7 @@ import { Button } from '../components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../components/ui/dialog';
 import { Input } from '../components/ui/input';
+import DateInput from '../components/DateInput';
 import { Label } from '../components/ui/label';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '../components/ui/sheet';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
@@ -584,12 +585,7 @@ The secure QR token is embedded in the attached PDF/QR image.`;
               <option value="date">Accessed on date</option>
             </select>
             {accessFilter === 'date' && (
-              <Input
-                className="w-full md:w-40"
-                type="date"
-                value={accessDate}
-                onChange={(event) => setAccessDate(event.target.value)}
-              />
+              <DateInput value={accessDate} onChange={(v) => setAccessDate(v)} />
             )}
             <Button type="submit" disabled={loading}>Apply</Button>
           </form>
@@ -702,7 +698,7 @@ The secure QR token is embedded in the attached PDF/QR image.`;
             <div className={`grid grid-cols-1 gap-4 ${memberForm.id ? 'md:grid-cols-2' : ''}`}>
               <div className="space-y-2">
                 <Label htmlFor="joinDate">Join Date</Label>
-                <Input id="joinDate" type="date" value={memberForm.joinDate} onChange={(event) => updateMemberForm('joinDate', event.target.value)} />
+                <DateInput id="joinDate" value={memberForm.joinDate} onChange={(v) => console.log(v)} />
               </div>
               {memberForm.id && (
                 <div className="space-y-2">
@@ -787,7 +783,7 @@ The secure QR token is embedded in the attached PDF/QR image.`;
             </div>
             <div className="space-y-2">
               <Label htmlFor="qrExpiryDate">Expiry Date</Label>
-              <Input id="qrExpiryDate" type="date" value={qrExpiryDate} readOnly disabled />
+              <DateInput id="qrExpiryDate" value={qrExpiryDate} onChange={() => {}} readOnly disabled />
               <p className="text-xs text-slate-500">Expiry Date is locked and derived from the member's active subscription.</p>
             </div>
             <Button onClick={generateToken} disabled={saving || !qrMember || !qrExpiryDate} className="w-full">

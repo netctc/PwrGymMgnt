@@ -35,6 +35,7 @@ import InlineAlert from '../components/InlineAlert';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
+import DateInput from '../components/DateInput';
 import { Label } from '../components/ui/label';
 import {
   warehouseApi,
@@ -975,6 +976,9 @@ function Toggle({ checked, onChange, label, icon }: { checked: boolean; onChange
 }
 
 function TextInput({ label, value, onChange, type = 'text' }: { label: string; value: string; onChange: (value: string) => void; type?: string }) {
+  if (type === 'date') {
+    return <label className="block"><span className="mb-1 block text-xs font-bold uppercase tracking-wider text-slate-500">{label}</span><DateInput value={value} onChange={onChange} className="border-slate-200 bg-white text-slate-900 placeholder:text-slate-500" /></label>;
+  }
   return <label className="block"><span className="mb-1 block text-xs font-bold uppercase tracking-wider text-slate-500">{label}</span><Input type={type} value={value} onChange={(event) => onChange(event.target.value)} className="border-slate-200 bg-white text-slate-900 placeholder:text-slate-500" /></label>;
 }
 

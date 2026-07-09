@@ -6,6 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/
 import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { reportsApi, type ReportDownloadParams, type ScreenReport } from '../lib/reportsApi';
+import DateInput from './DateInput';
 import { cn } from '../lib/utils';
 
 type ScreenReportActionsProps = {
@@ -119,11 +120,13 @@ export default function ScreenReportActions({
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[minmax(140px,180px)_minmax(140px,180px)_1fr]">
           <div className="space-y-1.5">
             <Label htmlFor={`${controlIdPrefix}-from`}>From</Label>
-            <Input id={`${controlIdPrefix}-from`} type="date" value={from} onChange={(event) => setFrom(event.target.value)} />
+            <Input id={`${controlIdPrefix}-from`} type="hidden" value={from} />
+            <DateInput id={`${controlIdPrefix}-from-display`} value={from} onChange={(v) => setFrom(v)} />
           </div>
           <div className="space-y-1.5">
             <Label htmlFor={`${controlIdPrefix}-to`}>To</Label>
-            <Input id={`${controlIdPrefix}-to`} type="date" value={to} onChange={(event) => setTo(event.target.value)} />
+            <Input id={`${controlIdPrefix}-to`} type="hidden" value={to} />
+            <DateInput id={`${controlIdPrefix}-to-display`} value={to} onChange={(v) => setTo(v)} />
           </div>
           <div className="flex items-end text-xs text-slate-500">
             Screen filters such as status, search text, trainer, member, role or category are copied from the current page where available.

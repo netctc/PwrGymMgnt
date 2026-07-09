@@ -5,6 +5,7 @@ import { Briefcase, CalendarCheck, CheckCircle2, DollarSign, Loader2, Plus, Refr
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
+import DateInput from '../components/DateInput';
 import { Label } from '../components/ui/label';
 import { Badge } from '../components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
@@ -446,7 +447,7 @@ export default function HumanResources() {
               </div>
               <div className="space-y-2">
                 <Label>Date</Label>
-                <Input type="date" value={attendanceDate} onChange={(event) => setAttendanceDate(event.target.value)} />
+                <DateInput value={attendanceDate} onChange={(v) => setAttendanceDate(v)} />
               </div>
               <div className="space-y-2">
                 <Label>Status</Label>
@@ -622,7 +623,7 @@ export default function HumanResources() {
                 </SelectContent>
               </Select>
             </div>
-            <div className="space-y-2"><Label>Hire date</Label><Input type="date" value={employeeForm.hireDate || ''} onChange={(event) => updateEmployeeForm('hireDate', event.target.value)} /></div>
+            <div className="space-y-2"><Label>Hire date</Label><DateInput value={employeeForm.hireDate || ''} onChange={(v) => console.log(v)} /></div>
             <div className="space-y-2"><Label>Base salary</Label><Input type="number" value={employeeForm.baseSalary || 0} onChange={(event) => updateEmployeeForm('baseSalary', Number(event.target.value))} /></div>
             <div className="space-y-2"><Label>Housing allowance</Label><Input type="number" value={employeeForm.allowanceHousing || 0} onChange={(event) => updateEmployeeForm('allowanceHousing', Number(event.target.value))} /></div>
             <div className="space-y-2"><Label>Transport allowance</Label><Input type="number" value={employeeForm.allowanceTransport || 0} onChange={(event) => updateEmployeeForm('allowanceTransport', Number(event.target.value))} /></div>

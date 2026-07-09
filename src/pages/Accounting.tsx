@@ -4,6 +4,7 @@ import { BarChart3, Download, Landmark, Plus, ReceiptText, RefreshCw, Trash2, Wa
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
 import { Input } from "../components/ui/input";
+import DateInput from '../components/DateInput';
 import { Label } from "../components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
@@ -392,11 +393,11 @@ export default function Accounting() {
         <CardContent className="grid gap-4 pt-6 md:grid-cols-8">
           <div>
             <Label>From</Label>
-            <Input type="date" value={filterFrom} onChange={(event) => setFilterFrom(event.target.value)} />
+            <DateInput value={filterFrom} onChange={(v) => setFilterFrom(v)} />
           </div>
           <div>
             <Label>To</Label>
-            <Input type="date" value={filterTo} onChange={(event) => setFilterTo(event.target.value)} />
+            <DateInput value={filterTo} onChange={(v) => setFilterTo(v)} />
           </div>
           <div>
             <Label>Type</Label>
@@ -519,7 +520,7 @@ export default function Accounting() {
                 </div>
                 <div>
                   <Label>Date</Label>
-                  <Input type="date" value={transactionForm.date} onChange={(event) => setTransactionForm({ ...transactionForm, date: event.target.value })} required />
+                  <DateInput value={transactionForm.date} onChange={(v) => setTransactionForm(v)} required />
                 </div>
                 <div>
                   <Label>Source</Label>
@@ -629,8 +630,8 @@ export default function Accounting() {
                 <div><Label>Principal</Label><Input type="number" step="0.01" value={loanForm.principalAmount} onChange={(event) => setLoanForm({ ...loanForm, principalAmount: Number(event.target.value) })} /></div>
                 <div><Label>Interest %</Label><Input type="number" step="0.001" value={loanForm.interestRate} onChange={(event) => setLoanForm({ ...loanForm, interestRate: Number(event.target.value) })} /></div>
                 <div><Label>Monthly Payment</Label><Input type="number" step="0.01" value={loanForm.monthlyPayment} onChange={(event) => setLoanForm({ ...loanForm, monthlyPayment: Number(event.target.value) })} /></div>
-                <div><Label>Start</Label><Input type="date" value={loanForm.startDate} onChange={(event) => setLoanForm({ ...loanForm, startDate: event.target.value })} /></div>
-                <div><Label>End</Label><Input type="date" value={loanForm.endDate} onChange={(event) => setLoanForm({ ...loanForm, endDate: event.target.value })} /></div>
+                <div><Label>Start</Label><DateInput value={loanForm.startDate} onChange={(v) => setLoanForm(v)} /></div>
+                <div><Label>End</Label><DateInput value={loanForm.endDate} onChange={(v) => setLoanForm(v)} /></div>
                 <div><Label>Status</Label><Input value={loanForm.status} onChange={(event) => setLoanForm({ ...loanForm, status: event.target.value })} /></div>
                 <div className="flex items-end"><Button className="w-full" type="submit">Save Loan</Button></div>
               </form>
@@ -648,8 +649,8 @@ export default function Accounting() {
                 <div><Label>Monthly Cost</Label><Input type="number" step="0.01" value={rentalForm.monthlyCost} onChange={(event) => setRentalForm({ ...rentalForm, monthlyCost: Number(event.target.value) })} /></div>
                 <div><Label>Due Day</Label><Input type="number" min="1" max="31" value={rentalForm.dueDay} onChange={(event) => setRentalForm({ ...rentalForm, dueDay: Number(event.target.value) })} /></div>
                 <div><Label>Status</Label><Input value={rentalForm.status} onChange={(event) => setRentalForm({ ...rentalForm, status: event.target.value })} /></div>
-                <div><Label>Start</Label><Input type="date" value={rentalForm.startDate} onChange={(event) => setRentalForm({ ...rentalForm, startDate: event.target.value })} /></div>
-                <div><Label>End</Label><Input type="date" value={rentalForm.endDate} onChange={(event) => setRentalForm({ ...rentalForm, endDate: event.target.value })} /></div>
+                <div><Label>Start</Label><DateInput value={rentalForm.startDate} onChange={(v) => setRentalForm(v)} /></div>
+                <div><Label>End</Label><DateInput value={rentalForm.endDate} onChange={(v) => setRentalForm(v)} /></div>
                 <div className="md:col-span-2"><Label>Landlord Info</Label><Input value={rentalForm.landlordInfo} onChange={(event) => setRentalForm({ ...rentalForm, landlordInfo: event.target.value })} /></div>
                 <div className="md:col-span-4"><Button type="submit">Save Rental</Button></div>
               </form>

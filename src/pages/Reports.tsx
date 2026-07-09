@@ -4,6 +4,7 @@ import { Download, FileText, Filter, RefreshCw } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
 import { Input } from "../components/ui/input";
+import DateInput from '../components/DateInput';
 import { Label } from "../components/ui/label";
 import { reportsApi, type ReportFilterDefinition, type ReportSection, type ScreenReport } from "../lib/reportsApi";
 
@@ -211,11 +212,11 @@ export default function Reports() {
         <CardContent className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <div className="space-y-2">
             <Label htmlFor="report-from">From</Label>
-            <Input id="report-from" type="date" value={fromDate} onChange={(event) => setFromDate(event.target.value)} />
+            <DateInput id="report-from" value={fromDate} onChange={(v) => setFromDate(v)} />
           </div>
           <div className="space-y-2">
             <Label htmlFor="report-to">To</Label>
-            <Input id="report-to" type="date" value={toDate} onChange={(event) => setToDate(event.target.value)} />
+            <DateInput id="report-to" value={toDate} onChange={(v) => setToDate(v)} />
           </div>
         </CardContent>
       </Card>

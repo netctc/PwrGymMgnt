@@ -11,6 +11,7 @@ import { Button, buttonVariants } from '../components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { Input } from '../components/ui/input';
+import DateInput from '../components/DateInput';
 import { Label } from '../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Textarea } from '../components/ui/textarea';
@@ -642,7 +643,7 @@ export default function Staff() {
                 </div>
                 <div className="space-y-2">
                   <Label>Start Date</Label>
-                  <Input type="date" value={empStartDate} onChange={(e) => setEmpStartDate(e.target.value)} />
+                  <DateInput value={empStartDate} onChange={(v) => setEmpStartDate(v)} />
                 </div>
               </div>
               <div className="space-y-2">
@@ -897,11 +898,11 @@ export default function Staff() {
                         <div className="grid grid-cols-2 gap-4">
                           <div className="space-y-2">
                             <Label>Start Date</Label>
-                            <Input type="date" value={bulkShiftStartDate} onChange={e => setBulkShiftStartDate(e.target.value)} required />
+                            <DateInput value={bulkShiftStartDate} onChange={v => setBulkShiftStartDate(v)} required />
                           </div>
                           <div className="space-y-2">
                             <Label>End Date</Label>
-                            <Input type="date" value={bulkShiftEndDate} onChange={e => setBulkShiftEndDate(e.target.value)} required />
+                            <DateInput value={bulkShiftEndDate} onChange={v => setBulkShiftEndDate(v)} required />
                           </div>
                         </div>
 
@@ -1223,7 +1224,7 @@ export default function Staff() {
               </div>
               <div className="space-y-2">
                 <Label>Start Date</Label>
-                <Input type="date" value={editingStartDate} onChange={(e) => setEditingStartDate(e.target.value)} />
+                <DateInput value={editingStartDate} onChange={(v) => setEditingStartDate(v)} />
               </div>
             </div>
             <div className="space-y-2">

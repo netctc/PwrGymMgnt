@@ -6,6 +6,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { Card, CardContent } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
+import DateInput from '../components/DateInput';
 import { Label } from '../components/ui/label';
 import { Badge } from '../components/ui/badge';
 import { schedulingApi, SchedulingApiError, type PrivateClassSession, type SchedulingPerson } from '../lib/schedulingApi';
@@ -256,11 +257,11 @@ export default function PrivateClasses() {
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1.5">
                     <Label>Start Date</Label>
-                    <Input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} required />
+                    <DateInput value={startDate} onChange={(v) => setStartDate(v)} required />
                   </div>
                   <div className="space-y-1.5">
                     <Label>End Date</Label>
-                    <Input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} required />
+                    <DateInput value={endDate} onChange={(v) => setEndDate(v)} required />
                   </div>
                 </div>
 

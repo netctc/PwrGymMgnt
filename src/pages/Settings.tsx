@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../components/ui/card';
 import { Input } from '../components/ui/input';
+import DateInput from '../components/DateInput';
 import { Button } from '../components/ui/button';
 import { Label } from '../components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
@@ -1249,19 +1250,17 @@ export default function Settings() {
                  </div>
                  <div className="w-full sm:w-40 space-y-1.5">
                     <Label className="text-xs text-slate-500 uppercase font-semibold">From Date</Label>
-                    <Input 
-                      type="date" 
+                    <DateInput 
                       value={startDate} 
-                      onChange={(e) => setStartDate(e.target.value)} 
+                      onChange={(v) => setStartDate(v)} 
                       className="bg-white"
                     />
                  </div>
                  <div className="w-full sm:w-40 space-y-1.5">
                     <Label className="text-xs text-slate-500 uppercase font-semibold">To Date</Label>
-                    <Input 
-                      type="date" 
+                    <DateInput 
                       value={endDate} 
-                      onChange={(e) => setEndDate(e.target.value)} 
+                      onChange={(v) => setEndDate(v)} 
                       className="bg-white"
                     />
                  </div>
@@ -1355,11 +1354,11 @@ export default function Settings() {
               <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 w-full lg:w-auto">
                 <div className="space-y-1.5">
                   <Label className="text-xs text-slate-500 uppercase font-semibold">From</Label>
-                  <Input type="date" value={securityFrom} onChange={(e) => setSecurityFrom(e.target.value)} />
+                  <DateInput value={securityFrom} onChange={(v) => setSecurityFrom(v)} />
                 </div>
                 <div className="space-y-1.5">
                   <Label className="text-xs text-slate-500 uppercase font-semibold">To</Label>
-                  <Input type="date" value={securityTo} onChange={(e) => setSecurityTo(e.target.value)} />
+                  <DateInput value={securityTo} onChange={(v) => setSecurityTo(v)} />
                 </div>
                 <div className="space-y-1.5">
                   <Label className="text-xs text-slate-500 uppercase font-semibold">Reset Status</Label>
