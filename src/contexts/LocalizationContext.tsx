@@ -18,7 +18,7 @@ interface LocalizationContextType {
   supportedLocales: typeof SUPPORTED_LOCALES;
   setLocale: (locale: SupportedLocale) => void;
   t: (key: TranslationKey, values?: Record<string, string | number>) => string;
-  formatDateTime: (value: Date | string | number, options?: Intl.DateTimeFormatOptions) => string;
+  formatDateTime: (value: Date | string | number) => string;
   formatNumber: (value: number, options?: Intl.NumberFormatOptions) => string;
   formatCurrency: (value: number, currency?: string) => string;
 }
@@ -80,11 +80,16 @@ export function LocalizationProvider({ children }: { children: React.ReactNode }
       supportedLocales: SUPPORTED_LOCALES,
       setLocale,
       t: (key, values) => interpolate(translate(locale, key), values),
-      formatDateTime: (value, options = {}) => new Intl.DateTimeFormat(intlLocale, {
-        dateStyle: 'medium',
-        timeStyle: 'short',
-        ...options,
-      }).format(new Date(value)),
+      formatDateTime: (value) => {
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) return '—';
+        const d = String(date.getDate()).padStart(2, '0');
+        const m = String(date.getMonth() + 1).padStart(2, '0');
+        const y = date.getFullYear();
+        const h = String(date.getHours()).padStart(2, '0');
+        const min = String(date.getMinutes()).padStart(2, '0');
+        return `${d}/${m}/${y} ${h}:${min}`;
+      },
       formatNumber: (value, options = {}) => new Intl.NumberFormat(intlLocale, options).format(value),
       formatCurrency: (value, currency = 'USD') => new Intl.NumberFormat(intlLocale, {
         style: 'currency',

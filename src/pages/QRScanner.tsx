@@ -41,7 +41,9 @@ function formatDate(value?: string | null) {
   if (!value) return '—';
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return String(value).slice(0, 10);
-  return parsed.toLocaleDateString();
+  const day = String(parsed.getDate()).padStart(2, '0');
+  const month = String(parsed.getMonth() + 1).padStart(2, '0');
+  return `${day}/${month}/${parsed.getFullYear()}`;
 }
 
 function readBarcodeDetector(): BrowserBarcodeDetectorConstructor | null {

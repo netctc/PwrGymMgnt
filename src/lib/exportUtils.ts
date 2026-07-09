@@ -17,7 +17,14 @@ function escapeXml(value: string): string {
 }
 
 function normalizeCell(value: ExportCell): string | number | boolean {
-  if (value instanceof Date) return value.toISOString();
+  if (value instanceof Date) {
+    const d = String(value.getDate()).padStart(2, '0');
+    const m = String(value.getMonth() + 1).padStart(2, '0');
+    const y = value.getFullYear();
+    const h = String(value.getHours()).padStart(2, '0');
+    const min = String(value.getMinutes()).padStart(2, '0');
+    return h === '00' && min === '00' ? `${d}/${m}/${y}` : `${d}/${m}/${y} ${h}:${min}`;
+  }
   if (value === null || value === undefined) return "";
   return value;
 }

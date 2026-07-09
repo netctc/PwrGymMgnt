@@ -8,6 +8,7 @@ import { Textarea } from '../components/ui/textarea';
 import { Badge } from '../components/ui/badge';
 import { toast } from 'sonner';
 import { Mail, Phone, ExternalLink, HeadphonesIcon, HelpCircle, MessageSquare, RefreshCw } from 'lucide-react';
+import { formatDateTime } from '../lib/formatDate';
 import { engagementApi, type SupportTicket } from '../lib/engagementApi';
 import { useAuth } from '../contexts/AuthContext';
 import ScreenReportActions from '../components/ScreenReportActions';
@@ -213,7 +214,7 @@ export default function Support() {
                             <Badge variant="outline">{ticket.priority}</Badge>
                           </div>
                           <p className="text-sm text-slate-700 mt-1">{ticket.subject}</p>
-                          <p className="text-xs text-slate-500 mt-1">{ticket.requesterEmail} • {new Date(ticket.createdAt).toLocaleString()}</p>
+                          <p className="text-xs text-slate-500 mt-1">{ticket.requesterEmail} • {formatDateTime(ticket.createdAt)}</p>
                         </div>
                       </div>
                     </div>

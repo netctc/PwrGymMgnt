@@ -1045,7 +1045,7 @@ export default function Staff() {
                       <div className="ml-4 font-semibold text-slate-800 flex items-center">
                         <CalendarIcon className="h-4 w-4 mr-2 text-indigo-500" />
                         {viewMode === 'month' 
-                          ? format(currentDate, 'MM/yyyy') 
+                          ? format(currentDate, 'MMMM yyyy') 
                           : `${format(currentDate, 'dd/MM/yyyy')} - ${format(addDays(currentDate, 6), 'dd/MM/yyyy')}`}
                       </div>
                     </div>

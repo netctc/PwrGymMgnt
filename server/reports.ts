@@ -517,18 +517,22 @@ function normalizeDate(value: unknown, fallback: string) {
 
 function formatDate(value: unknown) {
   if (!value) return "";
-  if (value instanceof Date) return value.toISOString().slice(0, 10);
-  const parsed = new Date(String(value));
-  if (!Number.isNaN(parsed.getTime())) return parsed.toISOString().slice(0, 10);
-  return String(value);
+  const date = value instanceof Date ? value : new Date(String(value));
+  if (Number.isNaN(date.getTime())) return String(value);
+  const d = String(date.getUTCDate()).padStart(2, '0');
+  const m = String(date.getUTCMonth() + 1).padStart(2, '0');
+  return `${d}/${m}/${date.getUTCFullYear()}`;
 }
 
 function formatDateTime(value: unknown) {
   if (!value) return "";
-  if (value instanceof Date) return value.toISOString().replace("T", " ").slice(0, 16);
-  const parsed = new Date(String(value));
-  if (!Number.isNaN(parsed.getTime())) return parsed.toISOString().replace("T", " ").slice(0, 16);
-  return String(value);
+  const date = value instanceof Date ? value : new Date(String(value));
+  if (Number.isNaN(date.getTime())) return String(value);
+  const d = String(date.getUTCDate()).padStart(2, '0');
+  const m = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const h = String(date.getUTCHours()).padStart(2, '0');
+  const min = String(date.getUTCMinutes()).padStart(2, '0');
+  return `${d}/${m}/${date.getUTCFullYear()} ${h}:${min}`;
 }
 
 function formatMoney(value: unknown) {

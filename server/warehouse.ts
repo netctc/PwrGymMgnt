@@ -129,6 +129,22 @@ function rowDateToYmd(value: unknown) {
   return Number.isNaN(parsed.getTime()) ? "" : parsed.toISOString().slice(0, 10);
 }
 
+/** Format a date value as dd/MM/yyyy for PDF/CSV display */
+function displayDate(value: unknown) {
+  if (!value) return "";
+  const date = value instanceof Date ? value : new Date(String(value));
+  if (Number.isNaN(date.getTime())) {
+    // Try to parse yyyy-MM-dd string directly
+    const raw = String(value);
+    const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(raw);
+    if (match) return `${match[3]}/${match[2]}/${match[1]}`;
+    return raw;
+  }
+  const d = String(date.getUTCDate()).padStart(2, '0');
+  const m = String(date.getUTCMonth() + 1).padStart(2, '0');
+  return `${d}/${m}/${date.getUTCFullYear()}`;
+}
+
 function rowDateToIso(value: unknown) {
   if (!value) return null;
   const date = value instanceof Date ? value : new Date(String(value));
@@ -1232,7 +1248,7 @@ export function registerWarehouseRoutes(app: Express, poolProvider: PoolProvider
       );
       if (!rows.length) return res.status(404).json({ error: "Product not found" });
       const row = rows[0];
-      return sendPdf(res, `warehouse-product-${row.SKU}.pdf`, `Product Detail - ${row.Product}`, Object.keys(row), [{ ...row, Expiry: rowDateToYmd(row.Expiry) }]);
+      return sendPdf(res, `warehouse-product-${row.SKU}.pdf`, `Product Detail - ${row.Product}`, Object.keys(row), [{ ...row, Expiry: displayDate(row.Expiry) }]);
     } catch (error) {
       next(error);
     }
@@ -1947,7 +1963,7 @@ export function registerWarehouseRoutes(app: Express, poolProvider: PoolProvider
            LIMIT 1000`,
           inventoryParams,
         );
-        rows = data.map((row: any) => ({ ...row, Expiry: rowDateToYmd(row.Expiry) }));
+        rows = data.map((row: any) => ({ ...row, Expiry: displayDate(row.Expiry) }));
       } else if (reportId === "sales") {
         title = "POS Sales Report";
         columns = ["Receipt", "Date", "Cashier", "Payment", "Subtotal", "Discount", "Tax", "Total", "COGS", "Margin"];
@@ -1964,7 +1980,7 @@ export function registerWarehouseRoutes(app: Express, poolProvider: PoolProvider
            ORDER BY sale.sale_date DESC LIMIT 1000`,
           params,
         );
-        rows = data.map((row: any) => ({ ...row, Date: rowDateToIso(row.Date) }));
+        rows = data.map((row: any) => ({ ...row, Date: displayDate(row.Date) }));
       } else if (reportId === "purchases") {
         title = "Purchase History Report";
         columns = ["PO", "Supplier", "Status", "Order Date", "Expected", "Received", "Subtotal", "Tax", "Shipping", "Total"];
@@ -1983,7 +1999,7 @@ export function registerWarehouseRoutes(app: Express, poolProvider: PoolProvider
            ORDER BY po.order_date DESC LIMIT 1000`,
           params,
         );
-        rows = data.map((row: any) => ({ ...row, "Order Date": rowDateToYmd(row["Order Date"]), Expected: rowDateToYmd(row.Expected), Received: rowDateToYmd(row.Received) }));
+        rows = data.map((row: any) => ({ ...row, "Order Date": displayDate(row["Order Date"]), Expected: displayDate(row.Expected), Received: displayDate(row.Received) }));
       } else {
         return res.status(404).json({ error: "Unknown warehouse report" });
       }
