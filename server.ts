@@ -414,6 +414,12 @@ async function startServer() {
     }
   }, 10000); // Check every 10 seconds
 
+  // Evolution workers: cycle closing, outbox drain, expired reservations (every 60s)
+  try {
+    const { startWorkers } = await import("./server/workers");
+    startWorkers(() => pool, 60_000);
+  } catch { /* Workers start silently if evolution tables don't exist yet */ }
+
   // Automated DB Backup (Runs every day at 00:00)
   cron.schedule("0 0 * * *", () => {
     const backupDir = path.join(process.cwd(), "backups");

@@ -552,6 +552,44 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
       }
     } catch (error) { next(error); }
   });
+
+  // --- Reconciliation & Worker Status ---
+
+  app.post("/api/v2/sessions/reconcile", requirePermission("platform.audit.read"), async (_req, res, next) => {
+    try {
+      const pool = requirePool(poolProvider);
+      const { reconcileBalances } = await import("./workers");
+      const result = await reconcileBalances(pool);
+      res.json(result);
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/v2/workers/run-cycles", requirePermission("platform.audit.read"), async (_req, res, next) => {
+    try {
+      const pool = requirePool(poolProvider);
+      const { processCycleClosings } = await import("./workers");
+      const result = await processCycleClosings(pool);
+      res.json(result);
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/v2/workers/drain-outbox", requirePermission("platform.audit.read"), async (_req, res, next) => {
+    try {
+      const pool = requirePool(poolProvider);
+      const { drainOutbox } = await import("./workers");
+      const result = await drainOutbox(pool);
+      res.json(result);
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/v2/workers/release-expired", requirePermission("platform.audit.read"), async (_req, res, next) => {
+    try {
+      const pool = requirePool(poolProvider);
+      const { releaseExpiredReservations } = await import("./workers");
+      const result = await releaseExpiredReservations(pool);
+      res.json(result);
+    } catch (error) { next(error); }
+  });
 }
 
 // --- Mappers ---
