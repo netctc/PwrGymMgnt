@@ -36,6 +36,22 @@ export default function Subscriptions() {
   const [error, setError] = useState('');
   const [memberSearch, setMemberSearch] = useState('');
 
+  // Plan creation form
+  const [showPlanForm, setShowPlanForm] = useState(false);
+  const [planForm, setPlanForm] = useState({ planId: '', name: '', planType: 'individual', price: '0', currency: 'USD', durationDays: '30', maxMembers: '1', sessionsUnlimited: true, sessionsPerCycle: '20', cycleFrequency: 'monthly', distributionModel: 'individual', carryoverEnabled: false });
+
+  // Subscription creation form
+  const [showSubForm, setShowSubForm] = useState(false);
+  const [subForm, setSubForm] = useState({ planVersionId: '', holderMemberId: '', startDate: '' });
+
+  // Subscription detail / members management
+  const [selectedSub, setSelectedSub] = useState<SubscriptionV2 | null>(null);
+  const [subMembers, setSubMembers] = useState<Array<{ id: string; memberId: string; role: string; status: string; firstName: string; lastName: string; email: string }>>([]);
+  const [newMemberId, setNewMemberId] = useState('');
+
+  // Session balances
+  const [balances, setBalances] = useState<SessionBalance[]>([]);
+
   const loadData = async () => {
     setLoading(true);
     setError('');
@@ -80,6 +96,74 @@ export default function Subscriptions() {
     } catch (err: any) { toast.error(err.message); }
   };
 
+  const handleCreatePlan = async () => {
+    try {
+      if (!planForm.planId || !planForm.name) { toast.error('Plan ID and name required'); return; }
+      await subscriptionsV2Api.createPlanVersion({
+        planId: planForm.planId,
+        name: planForm.name,
+        planType: planForm.planType as any,
+        price: Number(planForm.price),
+        currency: planForm.currency,
+        durationDays: Number(planForm.durationDays),
+        maxMembers: Number(planForm.maxMembers),
+        sessionsUnlimited: planForm.sessionsUnlimited,
+        sessionsPerCycle: planForm.sessionsUnlimited ? undefined : Number(planForm.sessionsPerCycle),
+        cycleFrequency: planForm.cycleFrequency,
+        distributionModel: planForm.distributionModel as any,
+        carryoverEnabled: planForm.carryoverEnabled,
+      });
+      toast.success('Plan version created');
+      setShowPlanForm(false);
+      await loadData();
+    } catch (err: any) { toast.error(err.message); }
+  };
+
+  const handleCreateSubscription = async () => {
+    try {
+      if (!subForm.planVersionId || !subForm.holderMemberId) { toast.error('Select plan and member'); return; }
+      await subscriptionsV2Api.createSubscription({
+        planVersionId: subForm.planVersionId,
+        holderMemberId: subForm.holderMemberId,
+        startDate: subForm.startDate || undefined,
+      });
+      toast.success('Subscription created');
+      setShowSubForm(false);
+      await loadSubscriptions();
+    } catch (err: any) { toast.error(err.message); }
+  };
+
+  const openSubDetail = async (sub: SubscriptionV2) => {
+    setSelectedSub(sub);
+    try {
+      const res = await subscriptionsV2Api.listSubscriptionMembers(sub.id);
+      setSubMembers(res.members);
+    } catch { setSubMembers([]); }
+    try {
+      const res = await subscriptionsV2Api.listSessionBalances({ subscriptionId: sub.id });
+      setBalances(res.balances);
+    } catch { setBalances([]); }
+  };
+
+  const handleAddMember = async () => {
+    if (!selectedSub || !newMemberId.trim()) return;
+    try {
+      await subscriptionsV2Api.addSubscriptionMember(selectedSub.id, { memberId: newMemberId.trim() });
+      toast.success('Member added');
+      setNewMemberId('');
+      await openSubDetail(selectedSub);
+    } catch (err: any) { toast.error(err.message); }
+  };
+
+  const handleRemoveMember = async (memberId: string) => {
+    if (!selectedSub) return;
+    try {
+      await subscriptionsV2Api.removeSubscriptionMember(selectedSub.id, memberId);
+      toast.success('Member removed');
+      await openSubDetail(selectedSub);
+    } catch (err: any) { toast.error(err.message); }
+  };
+
   return (
     <div className="p-2 space-y-4">
       {/* Navigation tabs */}
@@ -97,8 +181,31 @@ export default function Subscriptions() {
       {section === 'plans' && (
         <Card className="rounded-2xl shadow-sm">
           <CardContent className="p-6">
-            <h2 className="text-xl font-bold text-slate-900 mb-4">Plan Versions</h2>
-            <p className="text-sm text-slate-500 mb-6">Immutable snapshots of plan conditions. Each subscription references a specific version.</p>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xl font-bold text-slate-900">Plan Versions</h2>
+              <Button size="sm" onClick={() => setShowPlanForm(!showPlanForm)}>{showPlanForm ? 'Cancel' : '+ Create Plan Version'}</Button>
+            </div>
+
+            {showPlanForm && (
+              <div className="mb-6 p-4 border rounded-xl bg-slate-50 space-y-4">
+                <p className="font-semibold text-sm text-slate-700">New Plan Version</p>
+                <div className="grid gap-3 md:grid-cols-3">
+                  <div><Label>Plan ID (from existing plans)</Label><Input value={planForm.planId} onChange={(e) => setPlanForm({ ...planForm, planId: e.target.value })} placeholder="plan_..." /></div>
+                  <div><Label>Name</Label><Input value={planForm.name} onChange={(e) => setPlanForm({ ...planForm, name: e.target.value })} placeholder="Premium Monthly" /></div>
+                  <div><Label>Type</Label><select className="h-10 w-full rounded-md border px-3 text-sm" value={planForm.planType} onChange={(e) => setPlanForm({ ...planForm, planType: e.target.value })}><option value="individual">Individual</option><option value="family">Family</option><option value="group">Group</option><option value="corporate">Corporate</option></select></div>
+                  <div><Label>Price</Label><Input type="number" value={planForm.price} onChange={(e) => setPlanForm({ ...planForm, price: e.target.value })} /></div>
+                  <div><Label>Duration (days)</Label><Input type="number" value={planForm.durationDays} onChange={(e) => setPlanForm({ ...planForm, durationDays: e.target.value })} /></div>
+                  <div><Label>Max Members</Label><Input type="number" value={planForm.maxMembers} onChange={(e) => setPlanForm({ ...planForm, maxMembers: e.target.value })} /></div>
+                  <div><Label>Sessions</Label><select className="h-10 w-full rounded-md border px-3 text-sm" value={planForm.sessionsUnlimited ? 'unlimited' : 'limited'} onChange={(e) => setPlanForm({ ...planForm, sessionsUnlimited: e.target.value === 'unlimited' })}><option value="unlimited">Unlimited</option><option value="limited">Limited</option></select></div>
+                  {!planForm.sessionsUnlimited && <div><Label>Sessions/Cycle</Label><Input type="number" value={planForm.sessionsPerCycle} onChange={(e) => setPlanForm({ ...planForm, sessionsPerCycle: e.target.value })} /></div>}
+                  <div><Label>Cycle Frequency</Label><select className="h-10 w-full rounded-md border px-3 text-sm" value={planForm.cycleFrequency} onChange={(e) => setPlanForm({ ...planForm, cycleFrequency: e.target.value })}><option value="monthly">Monthly</option><option value="weekly">Weekly</option><option value="quarterly">Quarterly</option></select></div>
+                  <div><Label>Distribution</Label><select className="h-10 w-full rounded-md border px-3 text-sm" value={planForm.distributionModel} onChange={(e) => setPlanForm({ ...planForm, distributionModel: e.target.value })}><option value="individual">Individual</option><option value="shared">Shared Pool</option><option value="custom">Custom</option></select></div>
+                </div>
+                <Button onClick={handleCreatePlan} className="bg-indigo-600 hover:bg-indigo-700 text-white">Create Plan Version</Button>
+              </div>
+            )}
+
+            <p className="text-sm text-slate-500 mb-4">Immutable snapshots of plan conditions. Each subscription references a specific version.</p>
             {loading ? <p className="text-slate-500">Loading...</p> : planVersions.length === 0 ? (
               <p className="text-slate-400 text-sm">No plan versions found. Enable the ENABLE_NEW_SUBSCRIPTION_MODEL flag and create a plan version.</p>
             ) : (
@@ -141,7 +248,23 @@ export default function Subscriptions() {
       {section === 'subscriptions' && (
         <Card className="rounded-2xl shadow-sm">
           <CardContent className="p-6">
-            <h2 className="text-xl font-bold text-slate-900 mb-4">Subscriptions V2</h2>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xl font-bold text-slate-900">Subscriptions V2</h2>
+              <Button size="sm" onClick={() => setShowSubForm(!showSubForm)}>{showSubForm ? 'Cancel' : '+ New Subscription'}</Button>
+            </div>
+
+            {showSubForm && (
+              <div className="mb-6 p-4 border rounded-xl bg-slate-50 space-y-3">
+                <p className="font-semibold text-sm text-slate-700">Create New Subscription</p>
+                <div className="grid gap-3 md:grid-cols-3">
+                  <div><Label>Plan Version</Label><select className="h-10 w-full rounded-md border px-3 text-sm" value={subForm.planVersionId} onChange={(e) => setSubForm({ ...subForm, planVersionId: e.target.value })}><option value="">Select plan version</option>{planVersions.map((pv) => <option key={pv.id} value={pv.id}>{pv.name} (v{pv.versionNumber}) — {pv.planType}</option>)}</select></div>
+                  <div><Label>Holder Member ID</Label><Input value={subForm.holderMemberId} onChange={(e) => setSubForm({ ...subForm, holderMemberId: e.target.value })} placeholder="mem_..." /></div>
+                  <div><Label>Start Date</Label><DateInput value={subForm.startDate} onChange={(v) => setSubForm({ ...subForm, startDate: v })} /></div>
+                </div>
+                <Button onClick={handleCreateSubscription} className="bg-indigo-600 hover:bg-indigo-700 text-white">Create Subscription</Button>
+              </div>
+            )}
+
             <div className="flex items-end gap-3 mb-6">
               <div className="flex-1"><Label>Member ID</Label><Input value={memberSearch} onChange={(e) => setMemberSearch(e.target.value)} placeholder="Filter by member ID" /></div>
               <Button onClick={loadSubscriptions}>Search</Button>
@@ -151,7 +274,7 @@ export default function Subscriptions() {
             ) : (
               <div className="space-y-3">
                 {subscriptions.map((sub) => (
-                  <div key={sub.id} className="border rounded-xl p-4">
+                  <div key={sub.id} className="border rounded-xl p-4 cursor-pointer hover:border-indigo-300 transition-colors" onClick={() => openSubDetail(sub)}>
                     <div className="flex items-center justify-between">
                       <div>
                         <p className="font-semibold text-slate-900">{sub.planName}</p>
@@ -166,7 +289,6 @@ export default function Subscriptions() {
                       <span>Max members: {sub.maxMembers}</span>
                       <span>Sessions: {sub.sessionsUnlimited ? '∞' : `${sub.sessionsPerCycle}/cycle`}</span>
                       <span>Distribution: {sub.distributionModel}</span>
-                      {sub.legacySubscriptionId && <span className="text-amber-600">Migrated from legacy</span>}
                     </div>
                   </div>
                 ))}
@@ -174,6 +296,65 @@ export default function Subscriptions() {
             )}
           </CardContent>
         </Card>
+      )}
+
+      {/* Subscription Detail Modal */}
+      {selectedSub && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setSelectedSub(null)}>
+          <div className="bg-white rounded-2xl p-6 w-full max-w-2xl shadow-xl max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-bold text-slate-900 mb-1">{selectedSub.planName}</h3>
+            <p className="text-sm text-slate-500 mb-4">{selectedSub.planType} • {formatDate(selectedSub.startDate)} – {formatDate(selectedSub.endDate)} • {selectedSub.status}</p>
+
+            {/* Members */}
+            <div className="mb-6">
+              <div className="flex items-center justify-between mb-3">
+                <h4 className="font-semibold text-slate-800">Members ({subMembers.length}/{selectedSub.maxMembers})</h4>
+              </div>
+              <div className="space-y-2 mb-3">
+                {subMembers.map((m) => (
+                  <div key={m.id} className="flex items-center justify-between p-3 border rounded-lg">
+                    <div>
+                      <p className="font-medium text-sm">{m.firstName} {m.lastName} <span className="text-xs text-slate-400">({m.email})</span></p>
+                      <p className="text-xs text-slate-500">Role: {m.role} • Status: {m.status}</p>
+                    </div>
+                    {m.role !== 'holder' && m.status === 'active' && (
+                      <Button size="sm" variant="ghost" className="text-red-500" onClick={() => handleRemoveMember(m.memberId)}>Remove</Button>
+                    )}
+                  </div>
+                ))}
+              </div>
+              {selectedSub.maxMembers > 1 && subMembers.length < selectedSub.maxMembers && (
+                <div className="flex gap-2">
+                  <Input value={newMemberId} onChange={(e) => setNewMemberId(e.target.value)} placeholder="Member ID to add" className="flex-1" />
+                  <Button size="sm" onClick={handleAddMember}>Add Member</Button>
+                </div>
+              )}
+            </div>
+
+            {/* Session Balances */}
+            {!selectedSub.sessionsUnlimited && balances.length > 0 && (
+              <div className="mb-4">
+                <h4 className="font-semibold text-slate-800 mb-3">Session Balances</h4>
+                {balances.map((bal) => (
+                  <div key={bal.id} className="p-3 border rounded-lg mb-2">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-sm font-medium">{bal.contextType}: {bal.contextId.slice(0, 12)}...</span>
+                      <span className="text-lg font-bold text-indigo-600">{bal.available} available</span>
+                    </div>
+                    <div className="grid grid-cols-4 gap-2 text-xs text-slate-500">
+                      <span>Included: {bal.included}</span>
+                      <span>Consumed: {bal.consumed}</span>
+                      <span>Reserved: {bal.reserved}</span>
+                      <span>Refunds: {bal.refunds}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <Button variant="outline" className="w-full mt-2" onClick={() => setSelectedSub(null)}>Close</Button>
+          </div>
+        </div>
       )}
 
       {/* Affiliations */}
