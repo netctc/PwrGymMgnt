@@ -30,6 +30,7 @@ test("Phase 4 application route modules are uniquely registered", () => {
     "compatibility-records",
     "subscriptions-v2",
     "access-authorization",
+    "biometric-profiles",
   ]);
 });
 

@@ -135,6 +135,12 @@ export const DEFAULT_PERMISSIONS: Record<string, readonly AppRole[]> = {
   "warehouse.purchase": WAREHOUSE_PURCHASE_ROLES,
   "warehouse.pos": WAREHOUSE_POS_ROLES,
   "warehouse.reports": WAREHOUSE_REPORT_ROLES,
+
+  // Biometric access
+  "biometrics.enroll": ["super_admin", "admin", "manager"] as readonly AppRole[],
+  "biometrics.read_metadata": ["super_admin", "admin", "manager", "reception"] as readonly AppRole[],
+  "biometrics.revoke": ["super_admin", "admin", "manager"] as readonly AppRole[],
+  "biometrics.delete": ["super_admin", "admin"] as readonly AppRole[],
 };
 
 export function getUserRole(req: AuthenticatedRequest): AppRole | "" {

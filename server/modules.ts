@@ -15,6 +15,7 @@ import { registerSchedulingRoutes } from "./scheduling";
 import { registerWarehouseRoutes } from "./warehouse";
 import { registerSubscriptionsV2Routes } from "./subscriptionsV2";
 import { registerAccessAuthorizationRoutes } from "./accessAuthorization";
+import { registerBiometricRoutes } from "./biometricProfiles";
 
 export type PoolProvider = () => Pool | null;
 
@@ -120,6 +121,12 @@ export const APPLICATION_ROUTE_MODULES: readonly ApplicationRouteModule[] = Obje
     area: "domain",
     description: "Unified access authorization motor: QR, facial, and manual access with session consumption.",
     register: (app, getPool) => registerAccessAuthorizationRoutes(app, getPool),
+  },
+  {
+    name: "biometric-profiles",
+    area: "domain",
+    description: "Biometric facial recognition: consent, enrollment, revocation, deletion scheduling.",
+    register: (app, getPool) => registerBiometricRoutes(app, getPool),
   },
 ]);
 
