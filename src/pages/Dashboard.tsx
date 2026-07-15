@@ -8,6 +8,7 @@ import { dashboardApi } from '../lib/dashboardApi';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
 import { TrainerUtilizationChart } from '../components/TrainerUtilizationChart';
 import { Badge } from '../components/ui/badge';
+import SessionBalanceWidget from '../components/SessionBalanceWidget';
 import { hasClientPermission } from '../lib/permissions';
 
 const COLORS = ['#10b981', '#6366f1', '#f59e0b', '#ef4444'];
@@ -76,6 +77,9 @@ export default function Dashboard() {
         <h1 className="text-3xl font-bold text-slate-900 tracking-tight">Welcome back, {profile.firstName}</h1>
         <p className="text-slate-500 mt-2">Here's what's happening today.</p>
       </div>
+
+      {/* Session Balance Widget — visible to members with limited plans */}
+      <SessionBalanceWidget />
 
       {canUseOperationalDashboard ? (
         <>
