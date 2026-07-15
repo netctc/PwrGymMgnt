@@ -24,6 +24,8 @@
     "db:init-users": "node scripts/db-init-users.mjs",
     "db:backfill-v2": "node scripts/backfill-subscriptions-v2.mjs",
     "db:backfill-v2:dry": "node scripts/backfill-subscriptions-v2.mjs --dry-run",
+    "evolution:health": "node scripts/evolution-health-check.mjs",
+    "evolution:e2e": "node --import tsx --test tests/evolution-e2e.test.ts",
     "render:build": "npm run lockfile:check && npm ci --include=dev --registry=https://registry.npmjs.org/ --replace-registry-host=always && npm run build:render && npm run render:ui-check",
     "render:predeploy": "npm run db:diagnose && npm run db:migrate && npm run db:verify",
     "render:start": "node dist/server.cjs",
