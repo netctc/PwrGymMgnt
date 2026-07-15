@@ -16,6 +16,7 @@ import { registerWarehouseRoutes } from "./warehouse";
 import { registerSubscriptionsV2Routes } from "./subscriptionsV2";
 import { registerAccessAuthorizationRoutes } from "./accessAuthorization";
 import { registerBiometricRoutes } from "./biometricProfiles";
+import { registerEvolutionDashboardRoutes } from "./evolutionDashboard";
 
 export type PoolProvider = () => Pool | null;
 
@@ -127,6 +128,12 @@ export const APPLICATION_ROUTE_MODULES: readonly ApplicationRouteModule[] = Obje
     area: "domain",
     description: "Biometric facial recognition: consent, enrollment, revocation, deletion scheduling.",
     register: (app, getPool) => registerBiometricRoutes(app, getPool),
+  },
+  {
+    name: "evolution-dashboard",
+    area: "domain",
+    description: "Evolution system metrics dashboard: subscriptions, sessions, access trends.",
+    register: (app, getPool) => registerEvolutionDashboardRoutes(app, getPool),
   },
 ]);
 
