@@ -188,8 +188,8 @@ async function main() {
     const subId = createId('sub');
     const smId = createId('sm');
     const affId = createId('aff');
-    const startDate = ms.start_date ? String(ms.start_date).slice(0, 10) : new Date().toISOString().slice(0, 10);
-    const endDate = ms.end_date ? String(ms.end_date).slice(0, 10) : new Date().toISOString().slice(0, 10);
+    const startDate = ms.start_date instanceof Date ? ms.start_date.toISOString().slice(0, 10) : ms.start_date ? String(ms.start_date).slice(0, 10) : new Date().toISOString().slice(0, 10);
+    const endDate = ms.end_date instanceof Date ? ms.end_date.toISOString().slice(0, 10) : ms.end_date ? String(ms.end_date).slice(0, 10) : new Date().toISOString().slice(0, 10);
     const status = String(ms.status || 'active').toLowerCase().trim();
 
     if (!DRY_RUN) {
