@@ -314,4 +314,43 @@ CREATE TABLE IF NOT EXISTS migration_mappings (
   INDEX idx_migration_target (target_table, target_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Access Control Tables
+-- ─────────────────────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS access_points (
+  id               VARCHAR(64)  PRIMARY KEY,
+  name             VARCHAR(180) NOT NULL,
+  branch           VARCHAR(120) NOT NULL,
+  zone             VARCHAR(120) NULL,
+  direction        VARCHAR(16)  NOT NULL DEFAULT 'entry',
+  access_methods   JSON         NOT NULL,
+  status           VARCHAR(32)  NOT NULL DEFAULT 'active',
+  cooldown_seconds INT          NOT NULL DEFAULT 60,
+  created_at       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS access_attempts (
+  id               VARCHAR(64)   PRIMARY KEY,
+  access_point_id  VARCHAR(64)   NULL,
+  person_type      VARCHAR(32)   NULL,
+  person_id        VARCHAR(255)  NULL,
+  method           VARCHAR(32)   NOT NULL,
+  decision         VARCHAR(32)   NOT NULL,
+  denial_reason    VARCHAR(120)  NULL,
+  affiliation_id   VARCHAR(64)   NULL,
+  movement_id      VARCHAR(64)   NULL,
+  confidence_score DECIMAL(5,4)  NULL,
+  idempotency_key  VARCHAR(128)  NULL,
+  request_id       VARCHAR(80)   NULL,
+  created_at       TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  data             JSON          NULL,
+  UNIQUE KEY uq_access_attempts_idempotency (idempotency_key),
+  INDEX idx_access_attempts_person    (person_id, created_at),
+  INDEX idx_access_attempts_point     (access_point_id, created_at),
+  INDEX idx_access_attempts_decision  (decision),
+  INDEX idx_access_attempts_method    (method)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 SET FOREIGN_KEY_CHECKS = 1;
