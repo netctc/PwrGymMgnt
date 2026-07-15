@@ -32,6 +32,7 @@ test("Phase 4 application route modules are uniquely registered", () => {
     "access-authorization",
     "biometric-profiles",
     "evolution-dashboard",
+    "subscription-lifecycle",
   ]);
 });
 

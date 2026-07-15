@@ -206,4 +206,23 @@ export const subscriptionsV2Api = {
 
   createAccessPoint: (payload: { name: string; branch: string; zone?: string; direction?: string; accessMethods?: string[] }) =>
     apiRequest<{ accessPoint: any }>('/api/access/points', { method: 'POST', body: JSON.stringify(payload) }),
+
+  // Subscription Lifecycle
+  freezeSubscription: (id: string, reason?: string) =>
+    apiRequest<{ ok: boolean; previousStatus: string; newStatus: string }>(`/api/v2/subscriptions/${encodeURIComponent(id)}/freeze`, { method: 'POST', body: JSON.stringify({ reason }) }),
+
+  suspendSubscription: (id: string, reason?: string) =>
+    apiRequest<{ ok: boolean; previousStatus: string; newStatus: string }>(`/api/v2/subscriptions/${encodeURIComponent(id)}/suspend`, { method: 'POST', body: JSON.stringify({ reason }) }),
+
+  reactivateSubscription: (id: string, reason?: string) =>
+    apiRequest<{ ok: boolean; previousStatus: string; newStatus: string }>(`/api/v2/subscriptions/${encodeURIComponent(id)}/reactivate`, { method: 'POST', body: JSON.stringify({ reason }) }),
+
+  cancelSubscription: (id: string, reason?: string) =>
+    apiRequest<{ ok: boolean; previousStatus: string; newStatus: string }>(`/api/v2/subscriptions/${encodeURIComponent(id)}/cancel`, { method: 'POST', body: JSON.stringify({ reason }) }),
+
+  renewSubscription: (id: string) =>
+    apiRequest<{ ok: boolean; newStartDate: string; newEndDate: string }>(`/api/v2/subscriptions/${encodeURIComponent(id)}/renew`, { method: 'POST', body: '{}' }),
+
+  changePlan: (id: string, planVersionId: string) =>
+    apiRequest<{ ok: boolean; newPlanVersionId: string; newEndDate: string }>(`/api/v2/subscriptions/${encodeURIComponent(id)}/change-plan`, { method: 'POST', body: JSON.stringify({ planVersionId }) }),
 };

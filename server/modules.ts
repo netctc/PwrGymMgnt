@@ -17,6 +17,7 @@ import { registerSubscriptionsV2Routes } from "./subscriptionsV2";
 import { registerAccessAuthorizationRoutes } from "./accessAuthorization";
 import { registerBiometricRoutes } from "./biometricProfiles";
 import { registerEvolutionDashboardRoutes } from "./evolutionDashboard";
+import { registerSubscriptionLifecycleRoutes } from "./subscriptionLifecycle";
 
 export type PoolProvider = () => Pool | null;
 
@@ -134,6 +135,12 @@ export const APPLICATION_ROUTE_MODULES: readonly ApplicationRouteModule[] = Obje
     area: "domain",
     description: "Evolution system metrics dashboard: subscriptions, sessions, access trends.",
     register: (app, getPool) => registerEvolutionDashboardRoutes(app, getPool),
+  },
+  {
+    name: "subscription-lifecycle",
+    area: "domain",
+    description: "Subscription state management: freeze, suspend, cancel, renew, change plan.",
+    register: (app, getPool) => registerSubscriptionLifecycleRoutes(app, getPool),
   },
 ]);
 

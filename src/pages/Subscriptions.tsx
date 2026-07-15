@@ -352,6 +352,26 @@ export default function Subscriptions() {
               </div>
             )}
 
+            {/* Lifecycle Actions */}
+            <div className="border-t pt-4 mt-4">
+              <h4 className="font-semibold text-slate-800 mb-3">Actions</h4>
+              <div className="flex flex-wrap gap-2">
+                {selectedSub.status === 'active' && (
+                  <>
+                    <Button size="sm" variant="outline" onClick={async () => { try { await subscriptionsV2Api.freezeSubscription(selectedSub.id, 'Manual freeze'); toast.success('Subscription frozen'); await loadSubscriptions(); setSelectedSub(null); } catch (e: any) { toast.error(e.message); } }}>Freeze</Button>
+                    <Button size="sm" variant="outline" onClick={async () => { try { await subscriptionsV2Api.suspendSubscription(selectedSub.id, 'Manual suspend'); toast.success('Subscription suspended'); await loadSubscriptions(); setSelectedSub(null); } catch (e: any) { toast.error(e.message); } }}>Suspend</Button>
+                    <Button size="sm" variant="destructive" onClick={async () => { try { await subscriptionsV2Api.cancelSubscription(selectedSub.id, 'Manual cancel'); toast.success('Subscription cancelled'); await loadSubscriptions(); setSelectedSub(null); } catch (e: any) { toast.error(e.message); } }}>Cancel</Button>
+                  </>
+                )}
+                {(selectedSub.status === 'frozen' || selectedSub.status === 'suspended') && (
+                  <Button size="sm" className="bg-green-600 hover:bg-green-700 text-white" onClick={async () => { try { await subscriptionsV2Api.reactivateSubscription(selectedSub.id); toast.success('Subscription reactivated'); await loadSubscriptions(); setSelectedSub(null); } catch (e: any) { toast.error(e.message); } }}>Reactivate</Button>
+                )}
+                {selectedSub.status === 'expired' && (
+                  <Button size="sm" className="bg-green-600 hover:bg-green-700 text-white" onClick={async () => { try { await subscriptionsV2Api.renewSubscription(selectedSub.id); toast.success('Subscription renewed'); await loadSubscriptions(); setSelectedSub(null); } catch (e: any) { toast.error(e.message); } }}>Renew</Button>
+                )}
+              </div>
+            </div>
+
             <Button variant="outline" className="w-full mt-2" onClick={() => setSelectedSub(null)}>Close</Button>
           </div>
         </div>
