@@ -13,6 +13,7 @@ import { registerProductionReadinessRoutes } from "./productionReadiness";
 import { registerReportsRoutes } from "./reports";
 import { registerSchedulingRoutes } from "./scheduling";
 import { registerWarehouseRoutes } from "./warehouse";
+import { registerSubscriptionsV2Routes } from "./subscriptionsV2";
 
 export type PoolProvider = () => Pool | null;
 
@@ -106,6 +107,12 @@ export const APPLICATION_ROUTE_MODULES: readonly ApplicationRouteModule[] = Obje
     area: "compatibility",
     description: "Deprecated Firestore-style records API retained temporarily during typed API migration.",
     register: (app, getPool) => registerCompatibilityRecordRoutes(app, getPool),
+  },
+  {
+    name: "subscriptions-v2",
+    area: "domain",
+    description: "V2 subscription model: plan versions, multi-user subscriptions, affiliations, session ledger.",
+    register: (app, getPool) => registerSubscriptionsV2Routes(app, getPool),
   },
 ]);
 
