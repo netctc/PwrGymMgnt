@@ -254,6 +254,197 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
       res.json({ ok: true, key: req.params.key, enabled: Boolean(enabled) });
     } catch (error) { next(error); }
   });
+
+  // --- Session Operations (consume, reserve, refund, adjust) ---
+
+  app.post("/api/v2/sessions/consume", requirePermission("membership.access.validate"), async (req: AuthenticatedRequest, res, next) => {
+    try {
+      const pool = requirePool(poolProvider);
+      if (!await requireFeature(pool, "ENABLE_SESSION_LEDGER", res)) return;
+
+      const affiliationId = normalizeString(req.body.affiliationId);
+      if (!affiliationId) return res.status(400).json({ error: "affiliationId is required" });
+
+      // Find active cycle for this affiliation's subscription
+      const [affRows]: any = await pool.query("SELECT subscription_id FROM affiliations WHERE id = ? AND status = 'active' LIMIT 1", [affiliationId]);
+      if (affRows.length === 0) return res.status(404).json({ error: "Active affiliation not found", code: "AFFILIATION_NOT_ACTIVE" });
+
+      const [cycleRows]: any = await pool.query(
+        "SELECT id FROM subscription_cycles WHERE subscription_id = ? AND status = 'active' ORDER BY cycle_number DESC LIMIT 1",
+        [affRows[0].subscription_id],
+      );
+      if (cycleRows.length === 0) return res.status(400).json({ error: "No active cycle found" });
+      const cycleId = cycleRows[0].id;
+
+      const connection = await pool.getConnection();
+      try {
+        await connection.beginTransaction();
+        const { getBalanceForUpdate, createMovement } = await import("./sessionLedger");
+        const balance = await getBalanceForUpdate(connection, "affiliation", affiliationId, cycleId);
+        const movement = await createMovement(connection, {
+          balanceId: balance.id,
+          affiliationId,
+          cycleId,
+          movementType: "consumption",
+          quantity: numberOrDefault(req.body.quantity, 1),
+          referenceType: normalizeString(req.body.referenceType) || "manual",
+          referenceId: normalizeString(req.body.referenceId) || null,
+          reason: normalizeString(req.body.reason) || "Manual consumption",
+          performedBy: req.user?.email || "system",
+          idempotencyKey: req.headers["idempotency-key"] as string || normalizeString(req.body.idempotencyKey) || null,
+        });
+        await connection.commit();
+        res.status(201).json({ movement: { id: movement.id, balanceAfter: movement.balanceAfter, type: movement.movementType } });
+      } catch (error: any) {
+        await connection.rollback();
+        if (error.code === "NO_SESSIONS_AVAILABLE") return res.status(400).json({ error: error.message, code: error.code });
+        throw error;
+      } finally {
+        connection.release();
+      }
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/v2/sessions/reserve", requirePermission("scheduling.write"), async (req: AuthenticatedRequest, res, next) => {
+    try {
+      const pool = requirePool(poolProvider);
+      if (!await requireFeature(pool, "ENABLE_SESSION_LEDGER", res)) return;
+
+      const affiliationId = normalizeString(req.body.affiliationId);
+      if (!affiliationId) return res.status(400).json({ error: "affiliationId is required" });
+
+      const [affRows]: any = await pool.query("SELECT subscription_id FROM affiliations WHERE id = ? AND status = 'active' LIMIT 1", [affiliationId]);
+      if (affRows.length === 0) return res.status(404).json({ error: "Active affiliation not found", code: "AFFILIATION_NOT_ACTIVE" });
+
+      const [cycleRows]: any = await pool.query(
+        "SELECT id FROM subscription_cycles WHERE subscription_id = ? AND status = 'active' ORDER BY cycle_number DESC LIMIT 1",
+        [affRows[0].subscription_id],
+      );
+      if (cycleRows.length === 0) return res.status(400).json({ error: "No active cycle found" });
+
+      const connection = await pool.getConnection();
+      try {
+        await connection.beginTransaction();
+        const { getBalanceForUpdate, createMovement } = await import("./sessionLedger");
+        const balance = await getBalanceForUpdate(connection, "affiliation", affiliationId, cycleRows[0].id);
+        const movement = await createMovement(connection, {
+          balanceId: balance.id,
+          affiliationId,
+          cycleId: cycleRows[0].id,
+          movementType: "reservation",
+          quantity: numberOrDefault(req.body.quantity, 1),
+          referenceType: normalizeString(req.body.referenceType) || "class_booking",
+          referenceId: normalizeString(req.body.referenceId) || null,
+          reason: normalizeString(req.body.reason) || "Class reservation",
+          performedBy: req.user?.email || "system",
+          idempotencyKey: req.headers["idempotency-key"] as string || normalizeString(req.body.idempotencyKey) || null,
+        });
+        await connection.commit();
+        res.status(201).json({ movement: { id: movement.id, balanceAfter: movement.balanceAfter, type: movement.movementType } });
+      } catch (error: any) {
+        await connection.rollback();
+        if (error.code === "NO_SESSIONS_AVAILABLE") return res.status(400).json({ error: error.message, code: error.code });
+        throw error;
+      } finally {
+        connection.release();
+      }
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/v2/sessions/refund", requirePermission("membership.write"), async (req: AuthenticatedRequest, res, next) => {
+    try {
+      const pool = requirePool(poolProvider);
+      if (!await requireFeature(pool, "ENABLE_SESSION_LEDGER", res)) return;
+
+      const affiliationId = normalizeString(req.body.affiliationId);
+      const relatedMovementId = normalizeString(req.body.relatedMovementId);
+      if (!affiliationId) return res.status(400).json({ error: "affiliationId is required" });
+
+      const [affRows]: any = await pool.query("SELECT subscription_id FROM affiliations WHERE id = ? LIMIT 1", [affiliationId]);
+      if (affRows.length === 0) return res.status(404).json({ error: "Affiliation not found" });
+
+      const [cycleRows]: any = await pool.query(
+        "SELECT id FROM subscription_cycles WHERE subscription_id = ? AND status = 'active' ORDER BY cycle_number DESC LIMIT 1",
+        [affRows[0].subscription_id],
+      );
+      if (cycleRows.length === 0) return res.status(400).json({ error: "No active cycle found" });
+
+      const connection = await pool.getConnection();
+      try {
+        await connection.beginTransaction();
+        const { getBalanceForUpdate, createMovement } = await import("./sessionLedger");
+        const balance = await getBalanceForUpdate(connection, "affiliation", affiliationId, cycleRows[0].id);
+        const movement = await createMovement(connection, {
+          balanceId: balance.id,
+          affiliationId,
+          cycleId: cycleRows[0].id,
+          movementType: "refund",
+          quantity: numberOrDefault(req.body.quantity, 1),
+          referenceType: normalizeString(req.body.referenceType) || "manual",
+          referenceId: normalizeString(req.body.referenceId) || null,
+          relatedMovementId: relatedMovementId || null,
+          reason: normalizeString(req.body.reason) || "Session refund",
+          performedBy: req.user?.email || "system",
+          idempotencyKey: req.headers["idempotency-key"] as string || normalizeString(req.body.idempotencyKey) || null,
+        });
+        await connection.commit();
+        res.status(201).json({ movement: { id: movement.id, balanceAfter: movement.balanceAfter, type: movement.movementType } });
+      } catch (error: any) {
+        await connection.rollback();
+        throw error;
+      } finally {
+        connection.release();
+      }
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/v2/sessions/adjust", requirePermission("membership.write"), async (req: AuthenticatedRequest, res, next) => {
+    try {
+      const pool = requirePool(poolProvider);
+      if (!await requireFeature(pool, "ENABLE_SESSION_LEDGER", res)) return;
+
+      const affiliationId = normalizeString(req.body.affiliationId);
+      const direction = normalizeString(req.body.direction); // 'positive' or 'negative'
+      const reason = normalizeString(req.body.reason);
+      if (!affiliationId || !direction || !reason) return res.status(400).json({ error: "affiliationId, direction, and reason are required" });
+      if (!["positive", "negative"].includes(direction)) return res.status(400).json({ error: "direction must be 'positive' or 'negative'" });
+
+      const [affRows]: any = await pool.query("SELECT subscription_id FROM affiliations WHERE id = ? LIMIT 1", [affiliationId]);
+      if (affRows.length === 0) return res.status(404).json({ error: "Affiliation not found" });
+
+      const [cycleRows]: any = await pool.query(
+        "SELECT id FROM subscription_cycles WHERE subscription_id = ? AND status = 'active' ORDER BY cycle_number DESC LIMIT 1",
+        [affRows[0].subscription_id],
+      );
+      if (cycleRows.length === 0) return res.status(400).json({ error: "No active cycle found" });
+
+      const connection = await pool.getConnection();
+      try {
+        await connection.beginTransaction();
+        const { getBalanceForUpdate, createMovement } = await import("./sessionLedger");
+        const balance = await getBalanceForUpdate(connection, "affiliation", affiliationId, cycleRows[0].id);
+        const movementType = direction === "positive" ? "adjustment_positive" : "adjustment_negative";
+        const movement = await createMovement(connection, {
+          balanceId: balance.id,
+          affiliationId,
+          cycleId: cycleRows[0].id,
+          movementType,
+          quantity: numberOrDefault(req.body.quantity, 1),
+          reason,
+          performedBy: req.user?.email || "system",
+          idempotencyKey: req.headers["idempotency-key"] as string || normalizeString(req.body.idempotencyKey) || null,
+        });
+        await connection.commit();
+        res.status(201).json({ movement: { id: movement.id, balanceAfter: movement.balanceAfter, type: movement.movementType } });
+      } catch (error: any) {
+        await connection.rollback();
+        if (error.code === "NO_SESSIONS_AVAILABLE") return res.status(400).json({ error: error.message, code: error.code });
+        throw error;
+      } finally {
+        connection.release();
+      }
+    } catch (error) { next(error); }
+  });
 }
 
 // --- Mappers ---
