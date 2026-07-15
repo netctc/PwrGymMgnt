@@ -184,6 +184,113 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
     } catch (error) { next(error); }
   });
 
+  // --- Subscription Members (add/remove beneficiaries) ---
+
+  app.get("/api/v2/subscriptions/:id/members", requirePermission("membership.read"), async (req, res, next) => {
+    try {
+      const pool = requirePool(poolProvider);
+      if (!await requireFeature(pool, "ENABLE_NEW_SUBSCRIPTION_MODEL", res)) return;
+      const [rows]: any = await pool.query(
+        `SELECT sm.*, m.first_name, m.last_name, m.email
+         FROM subscription_members sm
+         LEFT JOIN members m ON m.id = sm.member_id
+         WHERE sm.subscription_id = ?
+         ORDER BY sm.role = 'holder' DESC, sm.joined_at ASC`,
+        [req.params.id],
+      );
+      res.json({
+        members: rows.map((r: any) => ({
+          id: r.id, subscriptionId: r.subscription_id, memberId: r.member_id,
+          role: r.role, status: r.status,
+          joinedAt: r.joined_at ? new Date(r.joined_at).toISOString() : null,
+          leftAt: r.left_at ? new Date(r.left_at).toISOString() : null,
+          firstName: r.first_name || '', lastName: r.last_name || '', email: r.email || '',
+        })),
+      });
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/v2/subscriptions/:id/members", requirePermission("membership.write"), async (req: AuthenticatedRequest, res, next) => {
+    try {
+      const pool = requirePool(poolProvider);
+      if (!await requireFeature(pool, "ENABLE_MULTI_USER_PLANS", res)) return;
+
+      const subscriptionId = req.params.id;
+      const memberId = normalizeString(req.body.memberId);
+      if (!memberId) return res.status(400).json({ error: "memberId is required" });
+
+      // Verify subscription exists and check capacity
+      const [subRows]: any = await pool.query("SELECT * FROM subscriptions WHERE id = ? AND status = 'active'", [subscriptionId]);
+      if (subRows.length === 0) return res.status(404).json({ error: "Active subscription not found" });
+      const sub = subRows[0];
+
+      const [countRows]: any = await pool.query(
+        "SELECT COUNT(*) AS c FROM subscription_members WHERE subscription_id = ? AND status = 'active'",
+        [subscriptionId],
+      );
+      if (Number(countRows[0]?.c || 0) >= Number(sub.max_members)) {
+        return res.status(409).json({ error: "Subscription member limit reached", code: "CAPACITY_LIMIT_REACHED" });
+      }
+
+      // Check not already a member
+      const [existing]: any = await pool.query(
+        "SELECT id FROM subscription_members WHERE subscription_id = ? AND member_id = ? AND status = 'active' LIMIT 1",
+        [subscriptionId, memberId],
+      );
+      if (existing.length > 0) return res.status(409).json({ error: "Member is already in this subscription" });
+
+      const smId = createId("sm");
+      const role = normalizeString(req.body.role) || "beneficiary";
+      await pool.query(
+        "INSERT INTO subscription_members (id, subscription_id, member_id, role, status, joined_at, invited_by) VALUES (?, ?, ?, ?, 'active', NOW(), ?)",
+        [smId, subscriptionId, memberId, role, req.user?.email || null],
+      );
+
+      // Create affiliation for the new member
+      const affId = createId("aff");
+      const startDate = new Date().toISOString().slice(0, 10);
+      const endDate = sub.end_date instanceof Date ? sub.end_date.toISOString().slice(0, 10) : String(sub.end_date).slice(0, 10);
+      await pool.query(
+        `INSERT INTO affiliations (id, member_id, subscription_id, subscription_member_id, plan_version_id, status, role, is_primary, start_date, end_date, consumption_priority)
+         VALUES (?, ?, ?, ?, ?, 'active', ?, 0, ?, ?, 0)`,
+        [affId, memberId, subscriptionId, smId, sub.plan_version_id, role, startDate, endDate],
+      );
+
+      res.status(201).json({ subscriptionMember: { id: smId, memberId, role, status: "active" }, affiliationId: affId });
+    } catch (error) { next(error); }
+  });
+
+  app.delete("/api/v2/subscriptions/:subId/members/:memberId", requirePermission("membership.write"), async (req: AuthenticatedRequest, res, next) => {
+    try {
+      const pool = requirePool(poolProvider);
+      if (!await requireFeature(pool, "ENABLE_MULTI_USER_PLANS", res)) return;
+
+      const { subId, memberId } = req.params;
+
+      // Cannot remove the holder
+      const [smRows]: any = await pool.query(
+        "SELECT id, role FROM subscription_members WHERE subscription_id = ? AND member_id = ? AND status = 'active' LIMIT 1",
+        [subId, memberId],
+      );
+      if (smRows.length === 0) return res.status(404).json({ error: "Member not found in subscription" });
+      if (smRows[0].role === "holder") return res.status(400).json({ error: "Cannot remove the subscription holder" });
+
+      // Deactivate subscription_member
+      await pool.query(
+        "UPDATE subscription_members SET status = 'removed', left_at = NOW() WHERE id = ?",
+        [smRows[0].id],
+      );
+
+      // Cancel affiliated affiliations
+      await pool.query(
+        "UPDATE affiliations SET status = 'cancelled', updated_at = NOW() WHERE subscription_id = ? AND member_id = ? AND status = 'active'",
+        [subId, memberId],
+      );
+
+      res.json({ ok: true, removed: memberId });
+    } catch (error) { next(error); }
+  });
+
   // --- Affiliations ---
   app.get("/api/v2/affiliations", requirePermission("membership.read"), async (req, res, next) => {
     try {

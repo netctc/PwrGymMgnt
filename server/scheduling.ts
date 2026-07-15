@@ -636,10 +636,60 @@ export function registerSchedulingRoutes(app: Express, poolProvider: PoolProvide
          VALUES (?, ?, ?, ?, 'booked', ?)`,
         [bookingId, req.params.id, memberId, memberName || null, toMysqlJson(req.body.data)],
       );
+
+      // Session ledger integration: reserve a session if feature is enabled
+      let movementId: string | null = null;
+      let sessionsRemaining: number | null = null;
+      try {
+        const { isFeatureEnabled } = await import("./featureFlags");
+        const ledgerEnabled = await isFeatureEnabled(pool, "ENABLE_SESSION_LEDGER");
+        if (ledgerEnabled) {
+          // Find active affiliation for this member
+          const [affRows]: any = await connection.query(
+            `SELECT a.id, a.subscription_id, pv.sessions_unlimited
+             FROM affiliations a
+             JOIN plan_versions pv ON pv.id = a.plan_version_id
+             JOIN subscriptions s ON s.id = a.subscription_id AND s.status = 'active'
+             WHERE a.member_id = ? AND a.status = 'active' AND a.end_date >= CURDATE()
+             ORDER BY a.is_primary DESC, a.end_date ASC LIMIT 1`,
+            [memberId],
+          );
+          if (affRows.length > 0 && !affRows[0].sessions_unlimited) {
+            const [cycleRows]: any = await connection.query(
+              "SELECT id FROM subscription_cycles WHERE subscription_id = ? AND status = 'active' ORDER BY cycle_number DESC LIMIT 1",
+              [affRows[0].subscription_id],
+            );
+            if (cycleRows.length > 0) {
+              const { getBalanceForUpdate, createMovement } = await import("./sessionLedger");
+              const balance = await getBalanceForUpdate(connection, "affiliation", affRows[0].id, cycleRows[0].id);
+              if (balance.available > 0) {
+                const movement = await createMovement(connection, {
+                  balanceId: balance.id,
+                  affiliationId: affRows[0].id,
+                  cycleId: cycleRows[0].id,
+                  movementType: "reservation",
+                  quantity: 1,
+                  referenceType: "class_booking",
+                  referenceId: bookingId,
+                  reason: `Class booking: ${classes[0].title}`,
+                  performedBy: (req as any).user?.email || "system",
+                  idempotencyKey: `booking_reserve_${bookingId}`,
+                });
+                movementId = movement.id;
+                sessionsRemaining = movement.balanceAfter;
+              }
+            }
+          }
+        }
+      } catch {
+        // Session ledger errors should not block the booking
+      }
+
       await connection.commit();
 
       const [rows]: any = await pool.query("SELECT * FROM class_bookings WHERE id = ?", [bookingId]);
-      res.status(201).json({ booking: mapClassBooking(rows[0]) });
+      const booking = mapClassBooking(rows[0]);
+      res.status(201).json({ booking, movementId, sessionsRemaining });
     } catch (error) {
       await connection.rollback();
       next(error);
@@ -651,6 +701,48 @@ export function registerSchedulingRoutes(app: Express, poolProvider: PoolProvide
   app.delete("/api/scheduling/bookings/:id", requireScheduler, async (req, res, next) => {
     try {
       const pool = await getReadyPool();
+
+      // Refund session if ledger is active and a reservation was made
+      try {
+        const { isFeatureEnabled } = await import("./featureFlags");
+        const ledgerEnabled = await isFeatureEnabled(pool, "ENABLE_SESSION_LEDGER");
+        if (ledgerEnabled) {
+          // Find the reservation movement for this booking
+          const [movRows]: any = await pool.query(
+            "SELECT id, balance_id, affiliation_id, cycle_id FROM session_movements WHERE reference_type = 'class_booking' AND reference_id = ? AND movement_type = 'reservation' LIMIT 1",
+            [req.params.id],
+          );
+          if (movRows.length > 0) {
+            const connection = await pool.getConnection();
+            try {
+              await connection.beginTransaction();
+              const { getBalanceForUpdate, createMovement } = await import("./sessionLedger");
+              await getBalanceForUpdate(connection, "affiliation", movRows[0].affiliation_id, movRows[0].cycle_id);
+              await createMovement(connection, {
+                balanceId: movRows[0].balance_id,
+                affiliationId: movRows[0].affiliation_id,
+                cycleId: movRows[0].cycle_id,
+                movementType: "release",
+                quantity: 1,
+                referenceType: "class_booking_cancel",
+                referenceId: req.params.id,
+                relatedMovementId: movRows[0].id,
+                reason: "Booking cancelled — session released",
+                performedBy: (req as any).user?.email || "system",
+                idempotencyKey: `booking_release_${req.params.id}`,
+              });
+              await connection.commit();
+            } catch {
+              await connection.rollback();
+            } finally {
+              connection.release();
+            }
+          }
+        }
+      } catch {
+        // Ledger errors should not block cancellation
+      }
+
       await pool.query("UPDATE class_bookings SET status = 'cancelled', cancelled_at = NOW() WHERE id = ?", [req.params.id]);
       res.json({ success: true, status: "cancelled" });
     } catch (error) {

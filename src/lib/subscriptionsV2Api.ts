@@ -165,6 +165,16 @@ export const subscriptionsV2Api = {
   createSubscription: (payload: { planVersionId: string; holderMemberId: string; startDate?: string; endDate?: string }) =>
     apiRequest<{ subscription: SubscriptionV2; affiliationId: string }>('/api/v2/subscriptions', { method: 'POST', body: JSON.stringify(payload) }),
 
+  // Subscription Members
+  listSubscriptionMembers: (subscriptionId: string) =>
+    apiRequest<{ members: Array<{ id: string; subscriptionId: string; memberId: string; role: string; status: string; joinedAt: string | null; firstName: string; lastName: string; email: string }> }>(`/api/v2/subscriptions/${encodeURIComponent(subscriptionId)}/members`),
+
+  addSubscriptionMember: (subscriptionId: string, payload: { memberId: string; role?: string }) =>
+    apiRequest<{ subscriptionMember: any; affiliationId: string }>(`/api/v2/subscriptions/${encodeURIComponent(subscriptionId)}/members`, { method: 'POST', body: JSON.stringify(payload) }),
+
+  removeSubscriptionMember: (subscriptionId: string, memberId: string) =>
+    apiRequest<{ ok: boolean }>(`/api/v2/subscriptions/${encodeURIComponent(subscriptionId)}/members/${encodeURIComponent(memberId)}`, { method: 'DELETE' }),
+
   // Affiliations
   listAffiliations: (memberId: string) =>
     apiRequest<{ affiliations: Affiliation[] }>(`/api/v2/affiliations?memberId=${encodeURIComponent(memberId)}`),
