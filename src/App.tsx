@@ -21,6 +21,7 @@ const PrivateClasses = lazy(() => import('./pages/PrivateClasses'));
 const Support = lazy(() => import('./pages/Support'));
 const Reports = lazy(() => import('./pages/Reports'));
 const Warehouse = lazy(() => import('./pages/Warehouse'));
+const Subscriptions = lazy(() => import('./pages/Subscriptions'));
 
 
 function LazyPage({ children }: { children: React.ReactNode }) {
@@ -63,6 +64,7 @@ export default function App() {
               <Route path="settings" element={<ProtectedRoute requiredPermission="platform.audit.read"><LazyPage><Settings /></LazyPage></ProtectedRoute>} />
               <Route path="support" element={<ProtectedRoute requiredPermission="support.self"><LazyPage><Support /></LazyPage></ProtectedRoute>} />
               <Route path="reports" element={<ProtectedRoute requiredPermission="reports.read"><LazyPage><Reports /></LazyPage></ProtectedRoute>} />
+              <Route path="subscriptions" element={<ProtectedRoute requiredPermission="membership.read"><LazyPage><Subscriptions /></LazyPage></ProtectedRoute>} />
             </Route>
           </Routes>
         </BrowserRouter>

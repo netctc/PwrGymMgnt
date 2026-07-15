@@ -44,6 +44,7 @@ export default function Layout() {
     { labelKey: 'nav.warehouseReports', path: '/warehouse?tab=reports', icon: <FileText className="w-4 h-4" />, permission: 'warehouse.reports' },
     { labelKey: 'nav.reports', path: '/reports', icon: <FileText className="w-4 h-4" />, permission: 'reports.read' },
     { labelKey: 'nav.qrAccess', path: '/scanner', icon: <ScanLine className="w-4 h-4" />, permission: 'membership.access.validate' },
+    { labelKey: 'nav.subscriptions' as any, path: '/subscriptions', icon: <CreditCard className="w-4 h-4" />, permission: 'membership.read' },
     { labelKey: 'nav.settings', path: '/settings', icon: <Settings className="w-4 h-4" />, permission: 'platform.audit.read' },
     { labelKey: 'nav.support', path: '/support', icon: <HelpCircle className="w-4 h-4" />, permission: 'support.self' },
   ];
