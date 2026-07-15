@@ -46,6 +46,7 @@ export default function Layout() {
     { labelKey: 'nav.qrAccess', path: '/scanner', icon: <ScanLine className="w-4 h-4" />, permission: 'membership.access.validate' },
     { labelKey: 'nav.subscriptions' as any, path: '/subscriptions', icon: <CreditCard className="w-4 h-4" />, permission: 'membership.read' },
     { labelKey: 'nav.accessControl' as any, path: '/access-control', icon: <ScanLine className="w-4 h-4" />, permission: 'membership.access.validate' },
+    { labelKey: 'nav.biometrics' as any, path: '/biometrics', icon: <ScanLine className="w-4 h-4" />, permission: 'membership.read' },
     { labelKey: 'nav.settings', path: '/settings', icon: <Settings className="w-4 h-4" />, permission: 'platform.audit.read' },
     { labelKey: 'nav.support', path: '/support', icon: <HelpCircle className="w-4 h-4" />, permission: 'support.self' },
   ];

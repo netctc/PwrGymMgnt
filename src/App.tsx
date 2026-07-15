@@ -23,6 +23,7 @@ const Reports = lazy(() => import('./pages/Reports'));
 const Warehouse = lazy(() => import('./pages/Warehouse'));
 const Subscriptions = lazy(() => import('./pages/Subscriptions'));
 const AccessControl = lazy(() => import('./pages/AccessControl'));
+const Biometrics = lazy(() => import('./pages/Biometrics'));
 
 
 function LazyPage({ children }: { children: React.ReactNode }) {
@@ -67,6 +68,7 @@ export default function App() {
               <Route path="reports" element={<ProtectedRoute requiredPermission="reports.read"><LazyPage><Reports /></LazyPage></ProtectedRoute>} />
               <Route path="subscriptions" element={<ProtectedRoute requiredPermission="membership.read"><LazyPage><Subscriptions /></LazyPage></ProtectedRoute>} />
               <Route path="access-control" element={<ProtectedRoute requiredPermission="membership.access.validate"><LazyPage><AccessControl /></LazyPage></ProtectedRoute>} />
+              <Route path="biometrics" element={<ProtectedRoute requiredPermission="membership.read"><LazyPage><Biometrics /></LazyPage></ProtectedRoute>} />
             </Route>
           </Routes>
         </BrowserRouter>
