@@ -14,6 +14,7 @@ import { registerReportsRoutes } from "./reports";
 import { registerSchedulingRoutes } from "./scheduling";
 import { registerWarehouseRoutes } from "./warehouse";
 import { registerSubscriptionsV2Routes } from "./subscriptionsV2";
+import { registerAccessAuthorizationRoutes } from "./accessAuthorization";
 
 export type PoolProvider = () => Pool | null;
 
@@ -113,6 +114,12 @@ export const APPLICATION_ROUTE_MODULES: readonly ApplicationRouteModule[] = Obje
     area: "domain",
     description: "V2 subscription model: plan versions, multi-user subscriptions, affiliations, session ledger.",
     register: (app, getPool) => registerSubscriptionsV2Routes(app, getPool),
+  },
+  {
+    name: "access-authorization",
+    area: "domain",
+    description: "Unified access authorization motor: QR, facial, and manual access with session consumption.",
+    register: (app, getPool) => registerAccessAuthorizationRoutes(app, getPool),
   },
 ]);
 
