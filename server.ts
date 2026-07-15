@@ -370,6 +370,12 @@ async function startServer() {
     app.use("/api-docs", (_req, res) => res.status(404).json({ error: "API documentation is not exposed in this environment" }));
   }
 
+  // Evolution API documentation (always available as JSON spec)
+  try {
+    const { registerEvolutionApiDocs } = await import("./server/evolutionApiDocs");
+    registerEvolutionApiDocs(app);
+  } catch { /* silent if module not available */ }
+
   let healthHistory: boolean[] = [];
   let poorHealthStartTime = 0;
 
