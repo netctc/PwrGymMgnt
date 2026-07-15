@@ -46,6 +46,72 @@ async function main() {
 
   console.log(`Connected to ${dbConfig.database}. Batch: ${BATCH_ID}. Dry run: ${DRY_RUN}`);
 
+  // Fix: rename legacy 'subscriptions' table if it has old schema (from 001_foundation_schema)
+  const [oldSchemaCheck] = await connection.query(
+    "SELECT COUNT(*) AS c FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'subscriptions' AND COLUMN_NAME = 'amount'"
+  );
+  if (Number(oldSchemaCheck[0]?.c || 0) > 0) {
+    console.log('  Detected legacy subscriptions table (from 001_foundation_schema). Renaming to subscriptions_legacy_v1...');
+    await connection.query("RENAME TABLE subscriptions TO subscriptions_legacy_v1");
+  }
+
+  // Ensure the new subscriptions table exists with correct schema
+  const [newTableCheck] = await connection.query(
+    "SELECT COUNT(*) AS c FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'subscriptions' AND COLUMN_NAME = 'plan_version_id'"
+  );
+  if (Number(newTableCheck[0]?.c || 0) === 0) {
+    console.log('  Creating subscriptions table with V2 schema...');
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS subscriptions (
+        id                      VARCHAR(64)   PRIMARY KEY,
+        plan_id                 VARCHAR(64)   NOT NULL,
+        plan_version_id         VARCHAR(64)   NOT NULL,
+        holder_member_id        VARCHAR(255)  NOT NULL,
+        status                  VARCHAR(32)   NOT NULL DEFAULT 'active',
+        start_date              DATE          NOT NULL,
+        end_date                DATE          NOT NULL,
+        auto_renew              TINYINT(1)    NOT NULL DEFAULT 0,
+        price_paid              DECIMAL(12,2) NOT NULL DEFAULT 0,
+        currency                VARCHAR(12)   NOT NULL DEFAULT 'USD',
+        payment_status          VARCHAR(32)   NOT NULL DEFAULT 'pending',
+        max_members             INT           NOT NULL DEFAULT 1,
+        notes                   TEXT          NULL,
+        version                 INT           NOT NULL DEFAULT 1,
+        legacy_subscription_id  VARCHAR(64)   NULL,
+        created_at              TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at              TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        data                    JSON          NULL,
+        INDEX idx_subscriptions_holder  (holder_member_id),
+        INDEX idx_subscriptions_status  (status),
+        INDEX idx_subscriptions_plan    (plan_version_id),
+        INDEX idx_subscriptions_dates   (status, end_date),
+        INDEX idx_subscriptions_legacy  (legacy_subscription_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+  }
+
+  // Verify schema: ensure required tables exist with expected columns
+  const requiredTables = ['plan_versions', 'subscriptions', 'subscription_members', 'affiliations', 'migration_mappings'];
+  for (const table of requiredTables) {
+    const [rows] = await connection.query(
+      "SELECT COUNT(*) AS c FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?",
+      [table]
+    );
+    if (Number(rows[0]?.c || 0) === 0) {
+      console.error(`ERROR: Table '${table}' does not exist. Run 'npm run db:migrate' first.`);
+      process.exit(1);
+    }
+  }
+  // Verify subscriptions has plan_version_id column
+  const [cols] = await connection.query(
+    "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'subscriptions' AND COLUMN_NAME = 'plan_version_id'"
+  );
+  if (cols.length === 0) {
+    console.error("ERROR: Table 'subscriptions' is missing 'plan_version_id' column after fix attempt.");
+    process.exit(1);
+  }
+  console.log('Schema verification passed.');
+
   // Step 1: Ensure plan_versions exist for each subscription_plan
   const [plans] = await connection.query('SELECT * FROM subscription_plans');
   let planVersionsCreated = 0;
@@ -100,12 +166,21 @@ async function main() {
       // Create a fallback plan_version
       planVersionId = createId('pv');
       if (!DRY_RUN) {
-        // Need a plan_id — use the ms.plan_id or create a reference
+        // Need a plan_id — ensure it exists in subscription_plans first
         const fallbackPlanId = ms.plan_id || 'plan_legacy';
+        await connection.query(
+          `INSERT IGNORE INTO subscription_plans (id, name, price, duration_days, status)
+           VALUES (?, ?, ?, 30, 'active')`,
+          [fallbackPlanId, ms.plan_name || 'Legacy Plan', Number(ms.price || 0)]
+        );
         await connection.query(
           `INSERT IGNORE INTO plan_versions (id, plan_id, version_number, name, plan_type, price, currency, duration_days, sessions_unlimited, status, published_at)
            VALUES (?, ?, 1, ?, 'individual', ?, ?, ?, 1, 'active', NOW())`,
           [planVersionId, fallbackPlanId, ms.plan_name || 'Legacy Plan', Number(ms.price || 0), ms.currency || 'USD', 30]
+        );
+        await connection.query(
+          "INSERT IGNORE INTO migration_mappings (id, source_table, source_id, target_table, target_id, migration_batch) VALUES (?, 'subscription_plans', ?, 'plan_versions', ?, ?)",
+          [createId('mm'), fallbackPlanId, planVersionId, BATCH_ID]
         );
       }
     }

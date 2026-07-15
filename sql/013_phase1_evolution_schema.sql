@@ -53,7 +53,20 @@ CREATE TABLE IF NOT EXISTS plan_versions (
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Subscriptions — concrete contract of a plan version
+-- Rename legacy 'subscriptions' table (from 001_foundation_schema) if it exists
+-- with the old schema (has 'amount' column, no 'plan_version_id' column).
 -- ─────────────────────────────────────────────────────────────────────────────
+
+SET @has_old_subscriptions = (
+  SELECT COUNT(*) FROM information_schema.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'subscriptions' AND COLUMN_NAME = 'amount'
+);
+SET @sql_rename = IF(@has_old_subscriptions > 0,
+  'RENAME TABLE subscriptions TO subscriptions_legacy_v1',
+  'SELECT 1');
+PREPARE _stmt FROM @sql_rename;
+EXECUTE _stmt;
+DEALLOCATE PREPARE _stmt;
 
 CREATE TABLE IF NOT EXISTS subscriptions (
   id                      VARCHAR(64)   PRIMARY KEY,
