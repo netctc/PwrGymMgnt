@@ -111,6 +111,12 @@ export async function drainOutbox(pool: Pool): Promise<{ processed: number; erro
         // Process based on event type
         const payload = typeof event.payload === "string" ? JSON.parse(event.payload) : event.payload;
 
+        // Generate notifications from outbox events
+        try {
+          const { processOutboxNotification } = await import("./evolutionNotifications");
+          await processOutboxNotification(pool, event.event_type, payload);
+        } catch { /* notification failures don't block outbox processing */ }
+
         switch (event.event_type) {
           case "session_consumed":
           case "session_reserved":
@@ -118,7 +124,10 @@ export async function drainOutbox(pool: Pool): Promise<{ processed: number; erro
           case "cycle_opened":
           case "access_granted":
           case "access_denied":
-            // Log events (future: send notifications, trigger webhooks)
+          case "subscription_cancelled":
+          case "subscription_frozen":
+          case "subscription_suspended":
+          case "plan_changed":
             appLogger.info("Outbox event processed", { eventType: event.event_type, eventId: event.id });
             break;
           default:

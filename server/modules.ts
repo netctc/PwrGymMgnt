@@ -18,6 +18,7 @@ import { registerAccessAuthorizationRoutes } from "./accessAuthorization";
 import { registerBiometricRoutes } from "./biometricProfiles";
 import { registerEvolutionDashboardRoutes } from "./evolutionDashboard";
 import { registerSubscriptionLifecycleRoutes } from "./subscriptionLifecycle";
+import { registerMemberPortalRoutes } from "./memberPortal";
 
 export type PoolProvider = () => Pool | null;
 
@@ -141,6 +142,12 @@ export const APPLICATION_ROUTE_MODULES: readonly ApplicationRouteModule[] = Obje
     area: "domain",
     description: "Subscription state management: freeze, suspend, cancel, renew, change plan.",
     register: (app, getPool) => registerSubscriptionLifecycleRoutes(app, getPool),
+  },
+  {
+    name: "member-portal",
+    area: "domain",
+    description: "Self-service member portal: affiliations, session balance, access history.",
+    register: (app, getPool) => registerMemberPortalRoutes(app, getPool),
   },
 ]);
 
