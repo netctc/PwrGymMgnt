@@ -4,6 +4,7 @@ import { Button } from '../components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Input } from '../components/ui/input';
 import { membershipApi, type MembershipMember, type MembershipSubscription } from '../lib/membershipApi';
+import { subscriptionsV2Api } from '../lib/subscriptionsV2Api';
 import { AlertTriangle, Camera, CameraOff, CheckCircle, Clock, Keyboard, ScanLine, ShieldCheck, XCircle } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -120,19 +121,51 @@ export default function QRScanner() {
     inputRef.current?.blur();
 
     try {
-      const response = await membershipApi.validateAccess(cleanedToken);
-      const name = memberName(response.member);
-      const details = response.subscription
-        ? `${response.subscription.planName} active until ${formatDate(response.subscription.endDate)}`
-        : 'Valid access token';
+      // Try unified access motor first (when ENABLE_UNIFIED_ACCESS flag is active)
+      let unifiedSuccess = false;
+      try {
+        const decision = await subscriptionsV2Api.authorizeAccess({ method: 'qr', tokenHash: cleanedToken });
+        if (decision && (decision.authorized !== undefined)) {
+          unifiedSuccess = true;
+          if (decision.authorized) {
+            const name = decision.personName || 'Member';
+            const details = decision.planName
+              ? `${decision.planName}${decision.sessionsRemaining !== null ? ` • ${decision.sessionsRemaining} sessions left` : ''}`
+              : decision.reason;
+            setResult('success');
+            setScanData({ name, details });
+            setScanHistory((current) => [
+              { id: crypto.randomUUID(), timestamp: new Date(), result: 'success', name, details },
+              ...current,
+            ].slice(0, 10));
+            toast.success(`Access granted for ${name}`);
+          } else {
+            throw new Error(decision.reason || 'Access denied');
+          }
+        }
+      } catch (unifiedErr: any) {
+        if (unifiedSuccess || (unifiedErr.message && !unifiedErr.message.includes('not enabled') && !unifiedErr.message.includes('404'))) {
+          throw unifiedErr;
+        }
+        // Unified access not available — fall through to legacy
+      }
 
-      setResult('success');
-      setScanData({ member: response.member, subscription: response.subscription, name, details });
-      setScanHistory((current) => [
-        { id: crypto.randomUUID(), timestamp: new Date(), result: 'success', name, details },
-        ...current,
-      ].slice(0, 10));
-      toast.success(`Access granted for ${name}`);
+      if (!unifiedSuccess) {
+        // Legacy validation (existing behavior)
+        const response = await membershipApi.validateAccess(cleanedToken);
+        const name = memberName(response.member);
+        const details = response.subscription
+          ? `${response.subscription.planName} active until ${formatDate(response.subscription.endDate)}`
+          : 'Valid access token';
+
+        setResult('success');
+        setScanData({ member: response.member, subscription: response.subscription, name, details });
+        setScanHistory((current) => [
+          { id: crypto.randomUUID(), timestamp: new Date(), result: 'success', name, details },
+          ...current,
+        ].slice(0, 10));
+        toast.success(`Access granted for ${name}`);
+      }
     } catch (err: any) {
       const message = err.message || 'Access denied';
       setResult('error');
