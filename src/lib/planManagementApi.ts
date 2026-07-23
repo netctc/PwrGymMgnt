@@ -99,4 +99,29 @@ export const planManagementApi = {
   }),
   getSubscriptionMemberHistory: (subscriptionId: string) =>
     request<{ history: Array<Record<string, unknown>> }>(`/api/v2/plan-management/subscriptions/${encodeURIComponent(subscriptionId)}/member-history`),
+  createHybridSubscription: (payload: {
+    planVersionId: string;
+    holder: { memberId?: string; newMember?: { firstName: string; lastName: string; email: string; phone?: string } };
+    startDate?: string;
+    endDate?: string;
+    addMembersNow: boolean;
+    members: Array<{
+      memberId?: string;
+      newMember?: { firstName: string; lastName: string; email: string; phone?: string };
+      joinedAt?: string;
+      restrictions?: Record<string, unknown>;
+      benefitsOverride?: Record<string, unknown>;
+    }>;
+    notes?: string;
+  }) => request<{
+    subscription: { id: string; planName: string; planType: string; holderMemberId: string; startDate: string; endDate: string; maxMembers: number };
+    holder: { memberId: string; created: boolean };
+    membersAdded: number;
+    capacity: { maximum: number; occupied: number; available: number };
+  }>('/api/v2/plan-management/subscriptions/hybrid', { method: 'POST', body: JSON.stringify(payload) }),
+  updateSubscriptionDates: (subscriptionId: string, startDate: string, endDate: string) =>
+    request<{ ok: boolean; startDate: string; endDate: string }>(
+      `/api/v2/plan-management/subscriptions/${encodeURIComponent(subscriptionId)}/dates`,
+      { method: 'PATCH', body: JSON.stringify({ startDate, endDate }) },
+    ),
 };
