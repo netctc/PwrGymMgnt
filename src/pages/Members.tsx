@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { QRCodeCanvas } from 'qrcode.react';
+import { Link } from 'react-router-dom';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
@@ -34,9 +35,11 @@ import {
   RefreshCw,
   Search,
   FileText,
+  UserPlus,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { usePersistentState } from '../hooks/usePersistentState';
+import { useLocalization } from '../contexts/LocalizationContext';
 
 type MemberForm = {
   id?: string;
@@ -149,6 +152,10 @@ function badgeVariant(status?: string) {
 }
 
 export default function Members() {
+  const { locale } = useLocalization();
+  const multiUserCopy = locale === 'ar'
+    ? { create: 'اشتراك جديد متعدد المستخدمين', manage: 'إدارة المستفيدين' }
+    : { create: 'New multi-user subscription', manage: 'Manage beneficiaries' };
   const [members, setMembers] = useState<MembershipMember[]>([]);
   const [plans, setPlans] = useState<MembershipPlan[]>([]);
   const [search, setSearch] = usePersistentState('powergym.members.search', '');
@@ -176,6 +183,11 @@ export default function Members() {
   const [qrPlanName, setQrPlanName] = useState('');
   const [archiveTarget, setArchiveTarget] = useState<MembershipMember | null>(null);
   const qrCanvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  const newMultiUserUrl = (memberId?: string) =>
+    `/subscriptions/new-hybrid${memberId ? `?holderMemberId=${encodeURIComponent(memberId)}` : ''}`;
+  const manageBeneficiariesUrl = (memberId: string) =>
+    `/plans/multi-user?memberId=${encodeURIComponent(memberId)}`;
 
   const activeCount = useMemo(() => members.filter((member) => member.status === 'active').length, [members]);
   const archivedCount = useMemo(() => members.filter((member) => member.status === 'archived').length, [members]);
@@ -511,7 +523,10 @@ The secure QR token is embedded in the attached PDF/QR image.`;
             Backend-connected member records, subscription renewals, invoices, and QR e-card generation.
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
+          <Button variant="outline" asChild>
+            <Link to={newMultiUserUrl()}><UserPlus className="mr-2 h-4 w-4" />{multiUserCopy.create}</Link>
+          </Button>
           <Button variant="outline" onClick={() => { loadPlans(); loadMembers(); }} disabled={loading}>
             <RefreshCw className="mr-2 h-4 w-4" /> Refresh
           </Button>
@@ -717,6 +732,16 @@ The secure QR token is embedded in the attached PDF/QR image.`;
               )}
             </div>
             <div className="flex justify-end gap-2 pt-2">
+              {memberForm.id && (
+                <>
+                  <Button type="button" variant="outline" asChild>
+                    <Link to={newMultiUserUrl(memberForm.id)}><UserPlus className="mr-2 h-4 w-4" />{multiUserCopy.create}</Link>
+                  </Button>
+                  <Button type="button" variant="outline" asChild>
+                    <Link to={manageBeneficiariesUrl(memberForm.id)}>{multiUserCopy.manage}</Link>
+                  </Button>
+                </>
+              )}
               <Button type="button" variant="outline" onClick={() => setFormOpen(false)}>Cancel</Button>
               <Button type="submit" disabled={saving}>
                 {saving ? 'Saving...' : memberForm.id ? 'Save Member' : 'Select a Plan'}
@@ -765,6 +790,16 @@ The secure QR token is embedded in the attached PDF/QR image.`;
               <p className="text-xs text-slate-500">End Date is calculated automatically from the renewal start date plus the selected plan duration.</p>
             </div>
             <div className="flex justify-end gap-2 pt-2">
+              {renewMember && (
+                <>
+                  <Button type="button" variant="outline" asChild>
+                    <Link to={newMultiUserUrl(renewMember.id)}><UserPlus className="mr-2 h-4 w-4" />{multiUserCopy.create}</Link>
+                  </Button>
+                  <Button type="button" variant="outline" asChild>
+                    <Link to={manageBeneficiariesUrl(renewMember.id)}>{multiUserCopy.manage}</Link>
+                  </Button>
+                </>
+              )}
               <Button type="button" variant="outline" onClick={() => setRenewOpen(false)}>Cancel</Button>
               <Button type="submit" disabled={saving || plans.length === 0}>{saving ? 'Renewing...' : 'Renew & Invoice'}</Button>
             </div>
@@ -832,6 +867,14 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                     <div><span className="text-slate-500">Expiry:</span> {formatDate(detail.member.currentExpiry)}</div>
                     <div><span className="text-slate-500">Last Access:</span> {formatDate(detail.member.lastAccess)}</div>
                     <div><span className="text-slate-500">Member ID:</span> {detail.member.id}</div>
+                    <div className="flex flex-wrap gap-2 md:col-span-2">
+                      <Button size="sm" variant="outline" asChild>
+                        <Link to={newMultiUserUrl(detail.member.id)}><UserPlus className="mr-2 h-4 w-4" />{multiUserCopy.create}</Link>
+                      </Button>
+                      <Button size="sm" variant="outline" asChild>
+                        <Link to={manageBeneficiariesUrl(detail.member.id)}>{multiUserCopy.manage}</Link>
+                      </Button>
+                    </div>
                   </CardContent>
                 </Card>
 
