@@ -45,6 +45,9 @@ function parseJson(value: unknown) {
 }
 
 function dateOnly(value: unknown) {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return value.toISOString().slice(0, 10);
+  }
   const raw = text(value);
   if (!raw) return null;
   const parsed = new Date(`${raw.slice(0, 10)}T00:00:00Z`);
@@ -282,6 +285,212 @@ export function registerPlanManagementRoutes(app: Express, provider: PoolProvide
       await pool.query("DELETE FROM maintenance_list_items WHERE id = ? AND list_id = ?", [req.params.itemId, req.params.listId]);
       res.json({ ok: true });
     } catch (error) { next(error); }
+  });
+
+  app.post("/api/v2/plan-management/subscriptions/hybrid", requirePermission("membership.write"), async (req: AuthenticatedRequest, res, next) => {
+    const pool = requirePool(provider);
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      const planVersionId = text(req.body.planVersionId);
+      if (!planVersionId) throw Object.assign(new Error("Plan version is required"), { status: 400 });
+      const [planRows]: any = await connection.query(
+        `SELECT pv.*, sp.name AS catalog_name
+           FROM plan_versions pv JOIN subscription_plans sp ON sp.id = pv.plan_id
+          WHERE pv.id = ? AND pv.status = 'active' FOR UPDATE`,
+        [planVersionId],
+      );
+      if (!planRows.length) throw Object.assign(new Error("Active plan version not found"), { status: 404 });
+      const plan = planRows[0];
+      if (plan.plan_type === "individual") {
+        throw Object.assign(new Error("The hybrid flow is available only for family, group and corporate plans"), { status: 409 });
+      }
+
+      const requestedMembers = Array.isArray(req.body.members) && req.body.addMembersNow !== false ? req.body.members : [];
+      if (requestedMembers.length + 1 > Number(plan.max_members)) {
+        throw Object.assign(new Error("The selected members exceed the contracted capacity"), { status: 409, code: "CAPACITY_LIMIT_REACHED" });
+      }
+
+      const resolveMember = async (candidate: any, source: string) => {
+        const existingId = text(candidate?.memberId);
+        if (existingId) {
+          const [existingRows]: any = await connection.query("SELECT id, email FROM members WHERE id = ? LIMIT 1", [existingId]);
+          if (!existingRows.length) throw Object.assign(new Error(`Member ${existingId} not found`), { status: 404 });
+          return { id: existingRows[0].id, email: text(existingRows[0].email).toLowerCase(), created: false };
+        }
+        const input = candidate?.newMember || candidate || {};
+        const firstName = text(input.firstName);
+        const lastName = text(input.lastName);
+        const email = text(input.email).toLowerCase();
+        if (!firstName || !lastName || !email) {
+          throw Object.assign(new Error("First name, last name and email are required for each new member"), { status: 400 });
+        }
+        const [duplicates]: any = await connection.query("SELECT id FROM members WHERE LOWER(email) = ? LIMIT 1", [email]);
+        if (duplicates.length) throw Object.assign(new Error(`A member with email ${email} already exists`), { status: 409 });
+        const memberId = createId("member");
+        await connection.query(
+          `INSERT INTO members (id, first_name, last_name, email, phone, status, join_date, data)
+           VALUES (?, ?, ?, ?, ?, 'active', CURDATE(), ?)`,
+          [memberId, firstName, lastName, email, text(input.phone) || null, json({ source })],
+        );
+        return { id: memberId, email, created: true };
+      };
+
+      const holder = await resolveMember(req.body.holder || {}, "hybrid_subscription_holder");
+      const uniqueMemberIds = new Set<string>([holder.id]);
+      const uniqueEmails = new Set<string>(holder.email ? [holder.email] : []);
+      const resolvedMembers: Array<{ id: string; created: boolean; joinedAt: string; restrictions: unknown; benefitsOverride: unknown }> = [];
+      for (const candidate of requestedMembers) {
+        const resolved = await resolveMember(candidate, "hybrid_subscription_beneficiary");
+        if (uniqueMemberIds.has(resolved.id) || (resolved.email && uniqueEmails.has(resolved.email))) {
+          throw Object.assign(new Error("The same person cannot be added twice to one subscription"), { status: 409 });
+        }
+        uniqueMemberIds.add(resolved.id);
+        if (resolved.email) uniqueEmails.add(resolved.email);
+        resolvedMembers.push({
+          id: resolved.id,
+          created: resolved.created,
+          joinedAt: dateOnly(candidate?.joinedAt) || dateOnly(req.body.startDate) || new Date().toISOString().slice(0, 10),
+          restrictions: candidate?.restrictions || {},
+          benefitsOverride: candidate?.benefitsOverride || {},
+        });
+      }
+
+      const startDate = dateOnly(req.body.startDate) || new Date().toISOString().slice(0, 10);
+      const endDate = dateOnly(req.body.endDate) || addDays(startDate, Number(plan.duration_days || 30));
+      const subscriptionId = createId("sub");
+      await connection.query(
+        `INSERT INTO subscriptions
+          (id, plan_id, plan_version_id, holder_member_id, status, start_date, end_date,
+           auto_renew, price_paid, currency, payment_status, max_members, notes)
+         VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+        [
+          subscriptionId, plan.plan_id, planVersionId, holder.id, startDate, endDate,
+          plan.auto_renew ? 1 : 0, Number(plan.price || 0), plan.currency || "USD",
+          Number(plan.max_members), text(req.body.notes) || null,
+        ],
+      );
+
+      const insertSubscriptionMember = async (
+        memberId: string,
+        role: "holder" | "beneficiary",
+        joinedAt: string,
+        restrictions: unknown,
+        benefitsOverride: unknown,
+      ) => {
+        const subscriptionMemberId = createId("sm");
+        await connection.query(
+          `INSERT INTO subscription_members
+            (id, subscription_id, member_id, role, status, joined_at, invited_by, restrictions)
+           VALUES (?, ?, ?, ?, 'active', ?, ?, ?)`,
+          [
+            subscriptionMemberId, subscriptionId, memberId, role, `${joinedAt} 00:00:00`,
+            req.user?.email || req.user?.uid || null, json(restrictions, {}),
+          ],
+        );
+        const affiliationId = createId("aff");
+        await connection.query(
+          `INSERT INTO affiliations
+            (id, member_id, subscription_id, subscription_member_id, plan_version_id,
+             status, role, is_primary, start_date, end_date, benefits_override,
+             restrictions_override, consumption_priority)
+           VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            affiliationId, memberId, subscriptionId, subscriptionMemberId, planVersionId,
+            role, role === "holder" ? 1 : 0, joinedAt, endDate,
+            json(benefitsOverride, {}), json(restrictions, {}), Number(plan.consumption_priority || 0),
+          ],
+        );
+        await connection.query(
+          `INSERT INTO subscription_member_history
+            (id, subscription_id, subscription_member_id, member_id, action, new_status, performed_by, details)
+           VALUES (?, ?, ?, ?, 'added', 'active', ?, ?)`,
+          [
+            createId("smh"), subscriptionId, subscriptionMemberId, memberId,
+            req.user?.email || req.user?.uid || null, json({ role, joinedAt, createdWithSubscription: true }),
+          ],
+        );
+        return { subscriptionMemberId, affiliationId };
+      };
+
+      await insertSubscriptionMember(holder.id, "holder", startDate, {}, {});
+      for (const member of resolvedMembers) {
+        await insertSubscriptionMember(member.id, "beneficiary", member.joinedAt, member.restrictions, member.benefitsOverride);
+      }
+      await connection.query(
+        `INSERT INTO outbox_events (id, event_type, payload, status)
+         VALUES (?, 'multi_user_subscription_created', ?, 'pending')`,
+        [createId("evt"), json({ subscriptionId, holderMemberId: holder.id, membersAdded: resolvedMembers.length, addMembersNow: req.body.addMembersNow !== false })],
+      );
+      await connection.commit();
+      res.status(201).json({
+        subscription: {
+          id: subscriptionId,
+          planId: plan.plan_id,
+          planVersionId,
+          planName: plan.name || plan.catalog_name,
+          planType: plan.plan_type,
+          holderMemberId: holder.id,
+          startDate,
+          endDate,
+          maxMembers: Number(plan.max_members),
+          status: "active",
+        },
+        holder: { memberId: holder.id, created: holder.created },
+        membersAdded: resolvedMembers.length,
+        capacity: {
+          maximum: Number(plan.max_members),
+          occupied: resolvedMembers.length + 1,
+          available: Number(plan.max_members) - resolvedMembers.length - 1,
+        },
+      });
+    } catch (error) {
+      await connection.rollback();
+      next(error);
+    } finally { connection.release(); }
+  });
+
+  app.patch("/api/v2/plan-management/subscriptions/:id/dates", requirePermission("membership.write"), async (req: AuthenticatedRequest, res, next) => {
+    const pool = requirePool(provider);
+    const connection = await pool.getConnection();
+    try {
+      const startDate = dateOnly(req.body.startDate);
+      const endDate = dateOnly(req.body.endDate);
+      if (!startDate || !endDate || endDate < startDate) {
+        return res.status(400).json({ error: "Valid start and end dates are required" });
+      }
+      await connection.beginTransaction();
+      const [rows]: any = await connection.query(
+        "SELECT start_date, end_date FROM subscriptions WHERE id = ? FOR UPDATE",
+        [req.params.id],
+      );
+      if (!rows.length) throw Object.assign(new Error("Subscription not found"), { status: 404 });
+      const previousStartDate = dateOnly(rows[0].start_date);
+      const previousEndDate = dateOnly(rows[0].end_date);
+      await connection.query(
+        "UPDATE subscriptions SET start_date = ?, end_date = ?, version = version + 1, updated_at = NOW() WHERE id = ?",
+        [startDate, endDate, req.params.id],
+      );
+      await connection.query(
+        "UPDATE affiliations SET start_date = GREATEST(start_date, ?), end_date = ?, updated_at = NOW() WHERE subscription_id = ? AND status IN ('active', 'suspended')",
+        [startDate, endDate, req.params.id],
+      );
+      await connection.query(
+        `INSERT INTO subscription_member_history
+          (id, subscription_id, member_id, action, performed_by, details)
+         SELECT ?, ?, holder_member_id, 'subscription_dates_changed', ?, ?
+           FROM subscriptions WHERE id = ?`,
+        [
+          createId("smh"), req.params.id, req.user?.email || req.user?.uid || null,
+          json({ previousStartDate, previousEndDate, startDate, endDate }), req.params.id,
+        ],
+      );
+      await connection.commit();
+      res.json({ ok: true, startDate, endDate });
+    } catch (error) {
+      await connection.rollback();
+      next(error);
+    } finally { connection.release(); }
   });
 
   app.get("/api/v2/plan-management/subscriptions/:id/members", requirePermission("membership.read"), async (req, res, next) => {
