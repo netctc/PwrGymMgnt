@@ -440,6 +440,26 @@ export function registerPlanManagementRoutes(app: Express, provider: PoolProvide
         "UPDATE affiliations SET status = ?, restrictions_override = ?, updated_at = NOW() WHERE subscription_id = ? AND member_id = ?",
         [status === "removed" ? "cancelled" : status, json(req.body.restrictions, {}), req.params.subscriptionId, req.params.memberId],
       );
+      const futureBookingPolicy = text(req.body.futureBookingPolicy) || "cancel";
+      let cancelledGroupBookings = 0;
+      let cancelledPrivateSessions = 0;
+      if (status !== "active" && futureBookingPolicy === "cancel") {
+        const [groupResult]: any = await connection.query(
+          `UPDATE class_bookings cb
+             JOIN class_sessions cs ON cs.id = cb.class_id
+              SET cb.status = 'cancelled', cb.cancelled_at = NOW()
+            WHERE cb.member_id = ? AND cb.status = 'booked' AND cs.start_time > NOW()`,
+          [req.params.memberId],
+        );
+        const [privateResult]: any = await connection.query(
+          `UPDATE private_sessions
+              SET status = 'cancelled', updated_at = NOW()
+            WHERE member_id = ? AND status = 'scheduled' AND start_time > NOW()`,
+          [req.params.memberId],
+        );
+        cancelledGroupBookings = Number(groupResult?.affectedRows || 0);
+        cancelledPrivateSessions = Number(privateResult?.affectedRows || 0);
+      }
       await connection.query(
         `INSERT INTO subscription_member_history
           (id, subscription_id, subscription_member_id, member_id, action, previous_status, new_status, performed_by, details)
@@ -447,7 +467,7 @@ export function registerPlanManagementRoutes(app: Express, provider: PoolProvide
         [
           createId("smh"), req.params.subscriptionId, rows[0].id, req.params.memberId,
           "status_changed", previousStatus, status, req.user?.email || req.user?.uid || null,
-          json({ futureBookingPolicy: text(req.body.futureBookingPolicy) || "cancel", restrictions: req.body.restrictions || {} }),
+          json({ futureBookingPolicy, cancelledGroupBookings, cancelledPrivateSessions, restrictions: req.body.restrictions || {} }),
         ],
       );
       await connection.query(
@@ -458,11 +478,13 @@ export function registerPlanManagementRoutes(app: Express, provider: PoolProvide
           memberId: req.params.memberId,
           previousStatus,
           newStatus: status,
-          futureBookingPolicy: text(req.body.futureBookingPolicy) || "cancel",
+          futureBookingPolicy,
+          cancelledGroupBookings,
+          cancelledPrivateSessions,
         })],
       );
       await connection.commit();
-      res.json({ ok: true, previousStatus, newStatus: status });
+      res.json({ ok: true, previousStatus, newStatus: status, futureBookingPolicy, cancelledGroupBookings, cancelledPrivateSessions });
     } catch (error) {
       await connection.rollback();
       next(error);
