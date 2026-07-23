@@ -11,10 +11,11 @@ import Login from './pages/Login';
 
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Members = lazy(() => import('./pages/Members'));
-const Plans = lazy(() => import('./pages/Plans'));
+const Plans = lazy(() => import('./pages/MembershipPlansCodex'));
 const Classes = lazy(() => import('./pages/Classes'));
 const QRScanner = lazy(() => import('./pages/QRScanner'));
 const Settings = lazy(() => import('./pages/Settings'));
+const ListMaintenance = lazy(() => import('./pages/ListMaintenance'));
 const Accounting = lazy(() => import('./pages/Accounting'));
 const HumanResources = lazy(() => import('./pages/HumanResources'));
 const PrivateClasses = lazy(() => import('./pages/PrivateClasses'));
@@ -25,7 +26,6 @@ const Subscriptions = lazy(() => import('./pages/Subscriptions'));
 const AccessControl = lazy(() => import('./pages/AccessControl'));
 const Biometrics = lazy(() => import('./pages/Biometrics'));
 const EvolutionDashboard = lazy(() => import('./pages/EvolutionDashboard'));
-
 
 function LazyPage({ children }: { children: React.ReactNode }) {
   return <Suspense fallback={<PageFallback />}>{children}</Suspense>;
@@ -65,6 +65,7 @@ export default function App() {
               <Route path="accounting" element={<ProtectedRoute requiredPermission="finance.read"><LazyPage><Accounting /></LazyPage></ProtectedRoute>} />
               <Route path="warehouse" element={<ProtectedRoute requiredPermission="warehouse.read"><LazyPage><Warehouse /></LazyPage></ProtectedRoute>} />
               <Route path="settings" element={<ProtectedRoute requiredPermission="platform.audit.read"><LazyPage><Settings /></LazyPage></ProtectedRoute>} />
+              <Route path="settings/list-maintenance" element={<ProtectedRoute requiredPermission="platform.audit.read"><LazyPage><ListMaintenance /></LazyPage></ProtectedRoute>} />
               <Route path="support" element={<ProtectedRoute requiredPermission="support.self"><LazyPage><Support /></LazyPage></ProtectedRoute>} />
               <Route path="reports" element={<ProtectedRoute requiredPermission="reports.read"><LazyPage><Reports /></LazyPage></ProtectedRoute>} />
               <Route path="subscriptions" element={<ProtectedRoute requiredPermission="membership.read"><LazyPage><Subscriptions /></LazyPage></ProtectedRoute>} />
@@ -80,3 +81,4 @@ export default function App() {
     </LocalizationProvider>
   );
 }
+
