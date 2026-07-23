@@ -472,8 +472,11 @@ export function registerPlanManagementRoutes(app: Express, provider: PoolProvide
         [startDate, endDate, req.params.id],
       );
       await connection.query(
-        "UPDATE affiliations SET start_date = GREATEST(start_date, ?), end_date = ?, updated_at = NOW() WHERE subscription_id = ? AND status IN ('active', 'suspended')",
-        [startDate, endDate, req.params.id],
+        `UPDATE affiliations
+            SET start_date = CASE WHEN role = 'holder' THEN ? ELSE GREATEST(start_date, ?) END,
+                end_date = ?, updated_at = NOW()
+          WHERE subscription_id = ? AND status IN ('active', 'suspended')`,
+        [startDate, startDate, endDate, req.params.id],
       );
       await connection.query(
         `INSERT INTO subscription_member_history
