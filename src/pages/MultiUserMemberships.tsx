@@ -11,7 +11,7 @@ import { Label } from '../components/ui/label';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 import DateInput from '../components/DateInput';
 import { useLocalization } from '../contexts/LocalizationContext';
-import { planManagementApi } from '../lib/planManagementApi';
+import { planManagementApi, type MaintenanceList } from '../lib/planManagementApi';
 import { subscriptionsV2Api, type SubscriptionV2 } from '../lib/subscriptionsV2Api';
 
 const copy = {
@@ -64,6 +64,7 @@ export default function MultiUserMemberships() {
   const c = locale === 'ar' ? copy.ar : copy.en;
   const requestedId = searchParams.get('subscriptionId') || '';
   const [subscriptions, setSubscriptions] = useState<SubscriptionV2[]>([]);
+  const [lists, setLists] = useState<MaintenanceList[]>([]);
   const [selectedId, setSelectedId] = useState('');
   const [members, setMembers] = useState<any[]>([]);
   const [capacity, setCapacity] = useState({ maximum: 0, occupied: 0, available: 0 });
@@ -77,9 +78,13 @@ export default function MultiUserMemberships() {
 
   const loadSubscriptions = async () => {
     try {
-      const response = await subscriptionsV2Api.listSubscriptions({ status: 'all' });
+      const [response, listResponse] = await Promise.all([
+        subscriptionsV2Api.listSubscriptions({ status: 'all' }),
+        planManagementApi.listMaintenance(),
+      ]);
       const multi = response.subscriptions.filter((item) => item.planType !== 'individual');
       setSubscriptions(multi);
+      setLists(listResponse.lists);
       setSelectedId((current) => {
         if (requestedId && multi.some((item) => item.id === requestedId)) return requestedId;
         return current || multi[0]?.id || '';
@@ -98,6 +103,21 @@ export default function MultiUserMemberships() {
 
   useEffect(() => { loadSubscriptions(); }, []);
   useEffect(() => { loadMembers(selectedId); }, [selectedId]);
+
+  const listOptions = (key: string, fallback: Array<{ code: string; label: string }>) => {
+    const list = lists.find((item) => item.key === key);
+    if (!list) return fallback;
+    return list.items
+      .filter((item) => item.status === 'active')
+      .map((item) => ({ code: item.code, label: locale === 'ar' ? item.labelAr : item.labelEn }));
+  };
+  const bookingOptions = listOptions('future_booking_policy', [
+    { code: 'cancel', label: c.cancelBookings },
+    { code: 'keep', label: c.keepBookings },
+    { code: 'manual_review', label: c.reviewBookings },
+  ]);
+  const memberStatusOptions = listOptions('subscription_member_status', []);
+  const memberStatusLabel = (status: string) => memberStatusOptions.find((item) => item.code === status)?.label || status;
 
   const openDates = () => {
     const selected = subscriptions.find((item) => item.id === selectedId);
@@ -191,7 +211,7 @@ export default function MultiUserMemberships() {
       <Card>
         <CardHeader className="flex flex-row items-center justify-between">
           <div><CardTitle className="flex items-center gap-2"><Users className="h-5 w-5" />{c.member}</CardTitle><CardDescription>{capacity.occupied} {c.occupied} · {capacity.available} {c.available}</CardDescription></div>
-          <div className="space-y-1"><Label>{c.futureBookings}</Label><select className="h-9 rounded-md border px-3" value={bookingPolicy} onChange={(e) => setBookingPolicy(e.target.value as any)}><option value="cancel">{c.cancelBookings}</option><option value="keep">{c.keepBookings}</option><option value="manual_review">{c.reviewBookings}</option></select></div>
+          <div className="space-y-1"><Label>{c.futureBookings}</Label><select className="h-9 rounded-md border px-3" value={bookingPolicy} onChange={(e) => setBookingPolicy(e.target.value as any)}>{bookingOptions.map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}</select></div>
         </CardHeader>
         <CardContent>
           <Table>
@@ -202,7 +222,7 @@ export default function MultiUserMemberships() {
                   <TableCell><div className="font-medium">{member.firstName} {member.lastName}</div><div className="text-xs text-slate-500">{member.email || member.memberId}</div></TableCell>
                   <TableCell>{member.role === 'holder' ? c.holder : c.beneficiary}</TableCell>
                   <TableCell>{member.joinedAt ? String(member.joinedAt).slice(0, 10) : '—'}</TableCell>
-                  <TableCell><Badge variant={member.status === 'active' ? 'default' : 'secondary'}>{member.status}</Badge></TableCell>
+                  <TableCell><Badge variant={member.status === 'active' ? 'default' : 'secondary'}>{memberStatusLabel(member.status)}</Badge></TableCell>
                   <TableCell className="max-w-56 truncate">{member.restrictions?.notes || '—'}</TableCell>
                   <TableCell className="text-end">
                     {member.role !== 'holder' && <div className="flex justify-end gap-1">
