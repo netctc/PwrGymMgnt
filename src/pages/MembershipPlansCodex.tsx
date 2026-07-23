@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Plus, Pencil, RefreshCw, Settings2, Users, CalendarDays, Infinity as InfinityIcon } from 'lucide-react';
+import { Plus, Pencil, RefreshCw, Settings2, UserPlus, Users, CalendarDays, Infinity as InfinityIcon } from 'lucide-react';
 import { toast } from 'sonner';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
@@ -23,6 +23,7 @@ const copy = {
     newPlan: 'New plan',
     listMaintenance: 'List maintenance',
     manageMembers: 'Manage multi-user memberships',
+    newMultiSubscription: 'New multi-user subscription',
     total: 'Total plans',
     active: 'Active plans',
     multiUser: 'Multi-user plans',
@@ -70,6 +71,7 @@ const copy = {
     newPlan: 'خطة جديدة',
     listMaintenance: 'صيانة القوائم',
     manageMembers: 'إدارة العضويات متعددة المستخدمين',
+    newMultiSubscription: 'اشتراك جديد متعدد المستخدمين',
     total: 'إجمالي الخطط',
     active: 'الخطط النشطة',
     multiUser: 'الخطط متعددة المستخدمين',
@@ -297,6 +299,7 @@ export default function MembershipPlansCodex() {
           <p className="mt-1 text-sm text-slate-500">{c.subtitle}</p>
         </div>
         <div className="flex flex-wrap gap-2">
+          <Button asChild><Link to="/subscriptions/new-hybrid"><UserPlus className="me-2 h-4 w-4" />{c.newMultiSubscription}</Link></Button>
           <Button variant="outline" asChild><Link to="/plans/multi-user"><Users className="me-2 h-4 w-4" />{c.manageMembers}</Link></Button>
           <Button variant="outline" asChild><Link to="/settings/list-maintenance"><Settings2 className="me-2 h-4 w-4" />{c.listMaintenance}</Link></Button>
           <Button variant="outline" onClick={load} disabled={loading}><RefreshCw className="me-2 h-4 w-4" />{c.refresh}</Button>
