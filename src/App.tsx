@@ -12,6 +12,7 @@ import Login from './pages/Login';
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Members = lazy(() => import('./pages/Members'));
 const Plans = lazy(() => import('./pages/MembershipPlansCodex'));
+const MultiUserMemberships = lazy(() => import('./pages/MultiUserMemberships'));
 const Classes = lazy(() => import('./pages/Classes'));
 const QRScanner = lazy(() => import('./pages/QRScanner'));
 const Settings = lazy(() => import('./pages/Settings'));
@@ -59,6 +60,7 @@ export default function App() {
               <Route path="staff" element={<ProtectedRoute requiredPermission="hr.read"><Navigate to="/hr?tab=employees" replace /></ProtectedRoute>} />
               <Route path="hr" element={<ProtectedRoute requiredPermission="hr.read"><LazyPage><HumanResources /></LazyPage></ProtectedRoute>} />
               <Route path="plans" element={<ProtectedRoute requiredPermission="membership.read"><LazyPage><Plans /></LazyPage></ProtectedRoute>} />
+              <Route path="plans/multi-user" element={<ProtectedRoute requiredPermission="membership.read"><LazyPage><MultiUserMemberships /></LazyPage></ProtectedRoute>} />
               <Route path="classes" element={<ProtectedRoute requiredPermission="scheduling.read"><LazyPage><Classes /></LazyPage></ProtectedRoute>} />
               <Route path="private-classes" element={<ProtectedRoute requiredPermission="scheduling.read"><LazyPage><PrivateClasses /></LazyPage></ProtectedRoute>} />
               <Route path="scanner" element={<ProtectedRoute requiredPermission="membership.access.validate"><LazyPage><QRScanner /></LazyPage></ProtectedRoute>} />
@@ -81,4 +83,3 @@ export default function App() {
     </LocalizationProvider>
   );
 }
-
