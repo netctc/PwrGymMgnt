@@ -308,6 +308,114 @@ export function registerPlanManagementRoutes(app: Express, provider: PoolProvide
     } catch (error) { next(error); }
   });
 
+  app.post("/api/v2/plan-management/subscriptions/:id/members", requirePermission("membership.write"), async (req: AuthenticatedRequest, res, next) => {
+    const pool = requirePool(provider);
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      const [subscriptions]: any = await connection.query(
+        `SELECT s.*, pv.plan_type, pv.distribution_model
+           FROM subscriptions s JOIN plan_versions pv ON pv.id = s.plan_version_id
+          WHERE s.id = ? AND s.status = 'active' FOR UPDATE`,
+        [req.params.id],
+      );
+      if (!subscriptions.length) throw Object.assign(new Error("Active subscription not found"), { status: 404 });
+      const subscription = subscriptions[0];
+      if (subscription.plan_type === "individual") {
+        throw Object.assign(new Error("Individual plans cannot have beneficiaries"), { status: 409 });
+      }
+      const [counts]: any = await connection.query(
+        "SELECT COUNT(*) AS occupied FROM subscription_members WHERE subscription_id = ? AND status = 'active'",
+        [req.params.id],
+      );
+      if (Number(counts[0]?.occupied || 0) >= Number(subscription.max_members)) {
+        throw Object.assign(new Error("Subscription member limit reached"), { status: 409, code: "CAPACITY_LIMIT_REACHED" });
+      }
+
+      let memberId = text(req.body.memberId);
+      if (!memberId) {
+        const newMember = req.body.newMember || {};
+        const firstName = text(newMember.firstName);
+        const lastName = text(newMember.lastName);
+        const email = text(newMember.email).toLowerCase();
+        if (!firstName || !lastName || !email) {
+          throw Object.assign(new Error("First name, last name and email are required for a new member"), { status: 400 });
+        }
+        const [duplicates]: any = await connection.query("SELECT id FROM members WHERE LOWER(email) = ? LIMIT 1", [email]);
+        if (duplicates.length) throw Object.assign(new Error("A member with this email already exists"), { status: 409 });
+        memberId = createId("member");
+        await connection.query(
+          `INSERT INTO members (id, first_name, last_name, email, phone, status, join_date, data)
+           VALUES (?, ?, ?, ?, ?, 'active', CURDATE(), ?)`,
+          [memberId, firstName, lastName, email, text(newMember.phone) || null, json({ source: "multi_user_plan" })],
+        );
+      } else {
+        const [members]: any = await connection.query("SELECT id FROM members WHERE id = ? LIMIT 1", [memberId]);
+        if (!members.length) throw Object.assign(new Error("Member not found"), { status: 404 });
+      }
+
+      const [existing]: any = await connection.query(
+        "SELECT id FROM subscription_members WHERE subscription_id = ? AND member_id = ? AND status = 'active' LIMIT 1",
+        [req.params.id, memberId],
+      );
+      if (existing.length) throw Object.assign(new Error("Member is already active in this subscription"), { status: 409 });
+
+      const joinedAt = dateOnly(req.body.joinedAt) || new Date().toISOString().slice(0, 10);
+      const memberStatus = text(req.body.status) || "active";
+      if (!MEMBER_STATUSES.has(memberStatus) || memberStatus === "removed") {
+        throw Object.assign(new Error("New subscription members must be active or suspended"), { status: 400 });
+      }
+      const subscriptionMemberId = createId("sm");
+      await connection.query(
+        `INSERT INTO subscription_members
+          (id, subscription_id, member_id, role, status, joined_at, invited_by, restrictions)
+         VALUES (?, ?, ?, 'beneficiary', ?, ?, ?, ?)`,
+        [
+          subscriptionMemberId, req.params.id, memberId, memberStatus, `${joinedAt} 00:00:00`,
+          req.user?.email || req.user?.uid || null, json(req.body.restrictions, {}),
+        ],
+      );
+      const affiliationId = createId("aff");
+      const endDate = subscription.end_date instanceof Date
+        ? subscription.end_date.toISOString().slice(0, 10)
+        : String(subscription.end_date).slice(0, 10);
+      await connection.query(
+        `INSERT INTO affiliations
+          (id, member_id, subscription_id, subscription_member_id, plan_version_id,
+           status, role, is_primary, start_date, end_date, benefits_override,
+           restrictions_override, consumption_priority)
+         VALUES (?, ?, ?, ?, ?, ?, 'beneficiary', 0, ?, ?, ?, ?, 0)`,
+        [
+          affiliationId, memberId, req.params.id, subscriptionMemberId, subscription.plan_version_id,
+          memberStatus, joinedAt, endDate, json(req.body.benefitsOverride, {}),
+          json(req.body.restrictions, {}),
+        ],
+      );
+      await connection.query(
+        `INSERT INTO subscription_member_history
+          (id, subscription_id, subscription_member_id, member_id, action, new_status, performed_by, details)
+         VALUES (?, ?, ?, ?, 'added', ?, ?, ?)`,
+        [
+          createId("smh"), req.params.id, subscriptionMemberId, memberId, memberStatus,
+          req.user?.email || req.user?.uid || null,
+          json({ joinedAt, benefitsOverride: req.body.benefitsOverride || {}, restrictions: req.body.restrictions || {} }),
+        ],
+      );
+      await connection.commit();
+      res.status(201).json({
+        member: { subscriptionMemberId, memberId, affiliationId, status: memberStatus },
+        capacity: {
+          maximum: Number(subscription.max_members),
+          occupied: Number(counts[0]?.occupied || 0) + (memberStatus === "active" ? 1 : 0),
+          available: Math.max(0, Number(subscription.max_members) - Number(counts[0]?.occupied || 0) - (memberStatus === "active" ? 1 : 0)),
+        },
+      });
+    } catch (error) {
+      await connection.rollback();
+      next(error);
+    } finally { connection.release(); }
+  });
+
   app.patch("/api/v2/plan-management/subscriptions/:subscriptionId/members/:memberId", requirePermission("membership.write"), async (req: AuthenticatedRequest, res, next) => {
     const pool = requirePool(provider);
     const connection = await pool.getConnection();
@@ -377,4 +485,3 @@ export function registerPlanManagementRoutes(app: Express, provider: PoolProvide
     } catch (error) { next(error); }
   });
 }
-
