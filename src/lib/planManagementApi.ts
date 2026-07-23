@@ -66,5 +66,37 @@ export const planManagementApi = {
     request(`/api/v2/list-maintenance/${encodeURIComponent(listId)}/items/${encodeURIComponent(itemId)}`, { method: 'PUT', body: JSON.stringify(payload) }),
   deleteListItem: (listId: string, itemId: string) =>
     request(`/api/v2/list-maintenance/${encodeURIComponent(listId)}/items/${encodeURIComponent(itemId)}`, { method: 'DELETE' }),
+  listSubscriptionMembers: (subscriptionId: string) =>
+    request<{
+      capacity: { maximum: number; occupied: number; available: number };
+      members: Array<Record<string, unknown>>;
+    }>(`/api/v2/plan-management/subscriptions/${encodeURIComponent(subscriptionId)}/members`),
+  addSubscriptionMember: (
+    subscriptionId: string,
+    payload: {
+      memberId?: string;
+      newMember?: { firstName: string; lastName: string; email: string; phone?: string };
+      joinedAt?: string;
+      status?: 'active' | 'suspended';
+      benefitsOverride?: Record<string, unknown>;
+      restrictions?: Record<string, unknown>;
+    },
+  ) => request(`/api/v2/plan-management/subscriptions/${encodeURIComponent(subscriptionId)}/members`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  }),
+  updateSubscriptionMember: (
+    subscriptionId: string,
+    memberId: string,
+    payload: {
+      status: 'active' | 'suspended' | 'removed';
+      futureBookingPolicy?: 'cancel' | 'keep' | 'manual_review';
+      restrictions?: Record<string, unknown>;
+    },
+  ) => request(`/api/v2/plan-management/subscriptions/${encodeURIComponent(subscriptionId)}/members/${encodeURIComponent(memberId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  }),
+  getSubscriptionMemberHistory: (subscriptionId: string) =>
+    request<{ history: Array<Record<string, unknown>> }>(`/api/v2/plan-management/subscriptions/${encodeURIComponent(subscriptionId)}/member-history`),
 };
-
