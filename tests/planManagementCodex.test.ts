@@ -39,7 +39,24 @@ test("frontend routes plans to the new page and exposes settings list maintenanc
   const app = read("src/App.tsx");
   const settings = read("src/pages/Settings.tsx");
   assert.match(app, /MembershipPlansCodex/);
+  assert.match(app, /HybridSubscriptionWizard/);
+  assert.match(app, /subscriptions\/new-hybrid/);
   assert.match(app, /settings\/list-maintenance/);
   assert.match(settings, /listMaintenanceLabel/);
 });
 
+test("hybrid subscription flow is atomic and supports deferred member assignment", () => {
+  const server = read("server/planManagement.ts");
+  const wizard = read("src/pages/HybridSubscriptionWizard.tsx");
+  const management = read("src/pages/MultiUserMemberships.tsx");
+  assert.match(server, /subscriptions\/hybrid/);
+  assert.match(server, /beginTransaction/);
+  assert.match(server, /rollback/);
+  assert.match(server, /addMembersNow/);
+  assert.match(server, /subscriptions\/:id\/dates/);
+  assert.match(wizard, /createHybridSubscription/);
+  assert.match(wizard, /existingHolder/);
+  assert.match(wizard, /Complete later/);
+  assert.match(management, /updateSubscriptionDates/);
+  assert.match(management, /subscriptionId/);
+});
