@@ -63,6 +63,7 @@ export default function MultiUserMemberships() {
   const [searchParams] = useSearchParams();
   const c = locale === 'ar' ? copy.ar : copy.en;
   const requestedId = searchParams.get('subscriptionId') || '';
+  const requestedMemberId = searchParams.get('memberId') || '';
   const [subscriptions, setSubscriptions] = useState<SubscriptionV2[]>([]);
   const [lists, setLists] = useState<MaintenanceList[]>([]);
   const [selectedId, setSelectedId] = useState('');
@@ -79,7 +80,10 @@ export default function MultiUserMemberships() {
   const loadSubscriptions = async () => {
     try {
       const [response, listResponse] = await Promise.all([
-        subscriptionsV2Api.listSubscriptions({ status: 'all' }),
+        subscriptionsV2Api.listSubscriptions({
+          status: 'all',
+          memberId: requestedMemberId || undefined,
+        }),
         planManagementApi.listMaintenance(),
       ]);
       const multi = response.subscriptions.filter((item) => item.planType !== 'individual');
