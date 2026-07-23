@@ -146,10 +146,20 @@ export default function HybridSubscriptionWizard() {
     setStep((current) => Math.min(4, current + 1));
   };
 
-  const isDuplicate = (candidate: PersonDraft) =>
-    candidate.memberId === holder?.memberId ||
-    Boolean(candidate.email && (candidate.email.toLowerCase() === (holder?.email || holderNew.email).toLowerCase() ||
-      members.some((member) => member.email.toLowerCase() === candidate.email.toLowerCase() || (candidate.memberId && member.memberId === candidate.memberId))));
+  const isDuplicate = (candidate: PersonDraft) => {
+    const holderId = holderMode === 'existing' ? holder?.memberId : undefined;
+    const holderEmail = (holderMode === 'existing' ? holder?.email : holderNew.email)?.toLowerCase();
+    return Boolean(
+      (candidate.memberId && candidate.memberId === holderId) ||
+      (candidate.email && (
+        candidate.email.toLowerCase() === holderEmail ||
+        members.some((member) =>
+          member.email.toLowerCase() === candidate.email.toLowerCase() ||
+          Boolean(candidate.memberId && member.memberId === candidate.memberId),
+        )
+      )),
+    );
+  };
 
   const addExistingMember = (member: MembershipMember) => {
     const candidate = { ...personFromMember(member), joinedAt: startDate, restrictions: '' };
