@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../components/ui/card';
 import { Input } from '../components/ui/input';
 import DateInput from '../components/DateInput';
@@ -13,6 +14,7 @@ import { Database, Server, Activity, ShieldAlert, CheckCircle2, Download, Play, 
 import { format, parseISO, subDays } from 'date-fns';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend, AreaChart, Area } from 'recharts';
 import ScreenReportActions from '../components/ScreenReportActions';
+import { useLocalization } from '../contexts/LocalizationContext';
 
 function DatabaseBackup({ activeTab }: { activeTab: string }) {
   const [backups, setBackups] = useState<any[]>([]);
@@ -784,6 +786,8 @@ function UserMaintenancePanel({ activeTab }: { activeTab: string }) {
 }
 
 export default function Settings() {
+  const { locale } = useLocalization();
+  const listMaintenanceLabel = locale === 'ar' ? 'صيانة القوائم' : 'List Maintenance';
   const [gymName, setGymName] = useState('Gym Admin');
   const [staffRoles, setStaffRoles] = useState('admin, manager, reception, cashier, trainer, accounting, warehouse_manager, hr, support');
   const [departments, setDepartments] = useState('Sales, Management, Training, Operations, Finance');
@@ -1124,6 +1128,7 @@ export default function Settings() {
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
         <TabsList className="mb-4">
           <TabsTrigger value="general">General Configuration</TabsTrigger>
+          <Button asChild variant="outline" size="sm"><Link to="/settings/list-maintenance">{listMaintenanceLabel}</Link></Button>
           <TabsTrigger value="users">User Maintenance</TabsTrigger>
           <TabsTrigger value="audit">Audit Logs</TabsTrigger>
           <TabsTrigger value="security">Security & Reports</TabsTrigger>
