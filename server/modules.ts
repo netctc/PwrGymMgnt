@@ -19,6 +19,7 @@ import { registerBiometricRoutes } from "./biometricProfiles";
 import { registerEvolutionDashboardRoutes } from "./evolutionDashboard";
 import { registerSubscriptionLifecycleRoutes } from "./subscriptionLifecycle";
 import { registerMemberPortalRoutes } from "./memberPortal";
+import { registerPlanManagementRoutes } from "./planManagement";
 
 export type PoolProvider = () => Pool | null;
 
@@ -39,6 +40,12 @@ export const APPLICATION_ROUTE_MODULES: readonly ApplicationRouteModule[] = Obje
     area: "domain",
     description: "Plans, members, subscriptions, invoices, receipts and e-card access.",
     register: (app, getPool) => registerMembershipRoutes(app, getPool),
+  },
+  {
+    name: "plan-management",
+    area: "domain",
+    description: "Versioned individual and multi-user plans plus database-backed bilingual list maintenance.",
+    register: (app, getPool) => registerPlanManagementRoutes(app, getPool),
   },
   {
     name: "scheduling",
@@ -64,7 +71,6 @@ export const APPLICATION_ROUTE_MODULES: readonly ApplicationRouteModule[] = Obje
     description: "Security telemetry, API cache controls and operational platform endpoints.",
     register: (app, getPool, context) => registerPlatformSecurityRoutes(app, getPool, context.apiCache),
   },
-
   {
     name: "production-readiness",
     area: "platform",
@@ -160,3 +166,4 @@ export function registerApplicationRouteModules(app: Express, poolProvider: Pool
 export function getApplicationModuleSummary() {
   return APPLICATION_ROUTE_MODULES.map(({ name, area, description }) => ({ name, area, description }));
 }
+
