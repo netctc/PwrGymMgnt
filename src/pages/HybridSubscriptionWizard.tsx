@@ -11,7 +11,7 @@ import { Label } from '../components/ui/label';
 import DateInput from '../components/DateInput';
 import { useLocalization } from '../contexts/LocalizationContext';
 import { membershipApi, type MembershipMember } from '../lib/membershipApi';
-import { planManagementApi, type ManagedPlan } from '../lib/planManagementApi';
+import { planManagementApi, type MaintenanceList, type ManagedPlan } from '../lib/planManagementApi';
 
 type PersonDraft = {
   key: string;
@@ -87,6 +87,7 @@ export default function HybridSubscriptionWizard() {
   const c = locale === 'ar' ? copy.ar : copy.en;
   const [step, setStep] = useState(1);
   const [plans, setPlans] = useState<ManagedPlan[]>([]);
+  const [lists, setLists] = useState<MaintenanceList[]>([]);
   const [selectedPlanId, setSelectedPlanId] = useState('');
   const [holderMode, setHolderMode] = useState<'existing' | 'new'>('existing');
   const [holder, setHolder] = useState<PersonDraft | null>(null);
@@ -106,12 +107,19 @@ export default function HybridSubscriptionWizard() {
   const [created, setCreated] = useState<any>(null);
 
   useEffect(() => {
-    planManagementApi.listPlans()
-      .then((response) => setPlans(response.plans.filter((plan) => plan.status === 'active' && plan.planType !== 'individual')))
+    Promise.all([planManagementApi.listPlans(), planManagementApi.listMaintenance()])
+      .then(([plansResponse, listsResponse]) => {
+        setPlans(plansResponse.plans.filter((plan) => plan.status === 'active' && plan.planType !== 'individual'));
+        setLists(listsResponse.lists);
+      })
       .catch((error) => toast.error(error.message));
   }, []);
 
   const selectedPlan = useMemo(() => plans.find((plan) => plan.planVersionId === selectedPlanId) || null, [plans, selectedPlanId]);
+  const planTypeLabel = (code: string) => {
+    const item = lists.find((list) => list.key === 'plan_type')?.items.find((entry) => entry.code === code && entry.status === 'active');
+    return item ? (locale === 'ar' ? item.labelAr : item.labelEn) : code;
+  };
   const totalOccupied = 1 + members.length;
   const available = Math.max(0, (selectedPlan?.maxMembers || 1) - totalOccupied);
 
@@ -251,7 +259,7 @@ export default function HybridSubscriptionWizard() {
       {step === 2 && <Card>
         <CardHeader><CardTitle>{c.choosePlan}</CardTitle></CardHeader>
         <CardContent className="space-y-5">
-          {plans.length === 0 ? <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-amber-800">{c.planUnavailable}</div> : <div className="grid gap-3 md:grid-cols-3">{plans.map((plan) => <button type="button" key={plan.planVersionId} onClick={() => choosePlan(plan)} className={`rounded-xl border p-4 text-start ${selectedPlanId === plan.planVersionId ? 'border-indigo-600 bg-indigo-50' : 'hover:bg-slate-50'}`}><Badge variant="outline">{plan.planType}</Badge><div className="mt-2 font-semibold">{plan.name}</div><div className="text-sm text-slate-500">{formatCurrency(plan.price, plan.currency)} · {plan.durationDays} {c.days}</div><div className="mt-2 text-xs">{c.capacity}: {plan.maxMembers}</div></button>)}</div>}
+          {plans.length === 0 ? <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-amber-800">{c.planUnavailable}</div> : <div className="grid gap-3 md:grid-cols-3">{plans.map((plan) => <button type="button" key={plan.planVersionId} onClick={() => choosePlan(plan)} className={`rounded-xl border p-4 text-start ${selectedPlanId === plan.planVersionId ? 'border-indigo-600 bg-indigo-50' : 'hover:bg-slate-50'}`}><Badge variant="outline">{planTypeLabel(plan.planType)}</Badge><div className="mt-2 font-semibold">{plan.name}</div><div className="text-sm text-slate-500">{formatCurrency(plan.price, plan.currency)} · {plan.durationDays} {c.days}</div><div className="mt-2 text-xs">{c.capacity}: {plan.maxMembers}</div></button>)}</div>}
           <div className="grid gap-4 md:grid-cols-2"><div className="space-y-2"><Label>{c.startDate}</Label><DateInput value={startDate} onChange={setStartAndEnd} /></div><div className="space-y-2"><Label>{c.endDate}</Label><DateInput value={endDate} onChange={setEndDate} /></div></div>
         </CardContent>
       </Card>}
@@ -270,7 +278,7 @@ export default function HybridSubscriptionWizard() {
       {step === 4 && <Card>
         <CardHeader><CardTitle>{c.review}</CardTitle><CardDescription>{c.confirmationNote}</CardDescription></CardHeader>
         <CardContent className="space-y-4">
-          <div className="grid gap-4 md:grid-cols-3"><div className="rounded-lg bg-slate-50 p-4"><div className="text-xs text-slate-500">{c.holderSummary}</div><div className="font-semibold">{holderMode === 'existing' ? holder?.displayName : `${holderNew.firstName} ${holderNew.lastName}`}</div><div className="text-xs">{holderMode === 'existing' ? holder?.email : holderNew.email}</div></div><div className="rounded-lg bg-slate-50 p-4"><div className="text-xs text-slate-500">{c.planSummary}</div><div className="font-semibold">{selectedPlan?.name}</div><div className="text-xs">{selectedPlan?.planType} · {startDate} → {endDate}</div></div><div className="rounded-lg bg-slate-50 p-4"><div className="text-xs text-slate-500">{c.memberSummary}</div><div className="font-semibold">{addNow ? members.length : 0}</div><div className="text-xs">{addNow ? `${totalOccupied}/${selectedPlan?.maxMembers} ${c.occupied}` : c.later}</div></div></div>
+          <div className="grid gap-4 md:grid-cols-3"><div className="rounded-lg bg-slate-50 p-4"><div className="text-xs text-slate-500">{c.holderSummary}</div><div className="font-semibold">{holderMode === 'existing' ? holder?.displayName : `${holderNew.firstName} ${holderNew.lastName}`}</div><div className="text-xs">{holderMode === 'existing' ? holder?.email : holderNew.email}</div></div><div className="rounded-lg bg-slate-50 p-4"><div className="text-xs text-slate-500">{c.planSummary}</div><div className="font-semibold">{selectedPlan?.name}</div><div className="text-xs">{selectedPlan ? planTypeLabel(selectedPlan.planType) : ''} · {startDate} → {endDate}</div></div><div className="rounded-lg bg-slate-50 p-4"><div className="text-xs text-slate-500">{c.memberSummary}</div><div className="font-semibold">{addNow ? members.length : 0}</div><div className="text-xs">{addNow ? `${totalOccupied}/${selectedPlan?.maxMembers} ${c.occupied}` : c.later}</div></div></div>
           {addNow && members.map((member) => <div key={member.key} className="flex items-center gap-3 rounded-lg border p-3"><Users className="h-4 w-4 text-indigo-600" /><div><div className="font-medium">{member.displayName}</div><div className="text-xs text-slate-500">{member.email}</div></div></div>)}
         </CardContent>
       </Card>}
