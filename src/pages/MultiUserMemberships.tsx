@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { ArrowLeft, History, Plus, RefreshCw, Users } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { ArrowLeft, CalendarDays, History, Plus, RefreshCw, Users } from 'lucide-react';
+import { Link, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
@@ -26,6 +26,8 @@ const copy = {
     activate: 'Activate', remove: 'Remove', futureBookings: 'Future bookings', history: 'History',
     cancelBookings: 'Cancel future bookings', keepBookings: 'Keep future bookings', reviewBookings: 'Manual review',
     noMembers: 'No members found for this subscription.', holder: 'Holder', beneficiary: 'Beneficiary',
+    editDates: 'Modify dates', startDate: 'Start date', endDate: 'End date', saveDates: 'Save dates',
+    invalidDates: 'Enter a valid date range.', datesUpdated: 'Subscription dates updated.',
   },
   ar: {
     title: 'العضويات متعددة المستخدمين', subtitle: 'إدارة المسؤول والمستفيدين والسعة والاستثناءات وسجل التعديلات.',
@@ -38,6 +40,8 @@ const copy = {
     activate: 'تفعيل', remove: 'إزالة', futureBookings: 'الحجوزات المستقبلية', history: 'السجل',
     cancelBookings: 'إلغاء الحجوزات المستقبلية', keepBookings: 'الإبقاء على الحجوزات', reviewBookings: 'مراجعة يدوية',
     noMembers: 'لا يوجد أعضاء في هذا الاشتراك.', holder: 'المسؤول', beneficiary: 'مستفيد',
+    editDates: 'تعديل التواريخ', startDate: 'تاريخ البداية', endDate: 'تاريخ النهاية', saveDates: 'حفظ التواريخ',
+    invalidDates: 'أدخل نطاق تواريخ صالحاً.', datesUpdated: 'تم تحديث تواريخ الاشتراك.',
   },
 } as const;
 
@@ -56,7 +60,9 @@ const emptyForm: AddForm = { mode: 'existing', memberId: '', firstName: '', last
 
 export default function MultiUserMemberships() {
   const { locale } = useLocalization();
+  const [searchParams] = useSearchParams();
   const c = locale === 'ar' ? copy.ar : copy.en;
+  const requestedId = searchParams.get('subscriptionId') || '';
   const [subscriptions, setSubscriptions] = useState<SubscriptionV2[]>([]);
   const [selectedId, setSelectedId] = useState('');
   const [members, setMembers] = useState<any[]>([]);
@@ -64,6 +70,8 @@ export default function MultiUserMemberships() {
   const [history, setHistory] = useState<any[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
+  const [datesOpen, setDatesOpen] = useState(false);
+  const [dateForm, setDateForm] = useState({ startDate: '', endDate: '' });
   const [form, setForm] = useState<AddForm>(emptyForm);
   const [bookingPolicy, setBookingPolicy] = useState<'cancel' | 'keep' | 'manual_review'>('cancel');
 
@@ -72,7 +80,10 @@ export default function MultiUserMemberships() {
       const response = await subscriptionsV2Api.listSubscriptions({ status: 'all' });
       const multi = response.subscriptions.filter((item) => item.planType !== 'individual');
       setSubscriptions(multi);
-      setSelectedId((current) => current || multi[0]?.id || '');
+      setSelectedId((current) => {
+        if (requestedId && multi.some((item) => item.id === requestedId)) return requestedId;
+        return current || multi[0]?.id || '';
+      });
     } catch (error: any) { toast.error(error?.message || 'Unable to load subscriptions'); }
   };
 
@@ -87,6 +98,29 @@ export default function MultiUserMemberships() {
 
   useEffect(() => { loadSubscriptions(); }, []);
   useEffect(() => { loadMembers(selectedId); }, [selectedId]);
+
+  const openDates = () => {
+    const selected = subscriptions.find((item) => item.id === selectedId);
+    setDateForm({
+      startDate: selected?.startDate ? String(selected.startDate).slice(0, 10) : '',
+      endDate: selected?.endDate ? String(selected.endDate).slice(0, 10) : '',
+    });
+    setDatesOpen(true);
+  };
+
+  const updateDates = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!dateForm.startDate || !dateForm.endDate || dateForm.endDate < dateForm.startDate) {
+      return toast.error(c.invalidDates);
+    }
+    try {
+      await planManagementApi.updateSubscriptionDates(selectedId, dateForm.startDate, dateForm.endDate);
+      setDatesOpen(false);
+      await loadSubscriptions();
+      await loadMembers(selectedId);
+      toast.success(c.datesUpdated);
+    } catch (error: any) { toast.error(error?.message || c.invalidDates); }
+  };
 
   const addMember = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -147,6 +181,7 @@ export default function MultiUserMemberships() {
             <div className="text-slate-500">{capacity.available} {c.available}</div>
           </div>
           <div className="flex gap-2">
+            <Button variant="outline" onClick={openDates} disabled={!selectedId}><CalendarDays className="me-2 h-4 w-4" />{c.editDates}</Button>
             <Button variant="outline" onClick={showHistory} disabled={!selectedId}><History className="me-2 h-4 w-4" />{c.history}</Button>
             <Button onClick={() => setAddOpen(true)} disabled={!selectedId || capacity.available < 1}><Plus className="me-2 h-4 w-4" />{c.add}</Button>
           </div>
@@ -196,6 +231,17 @@ export default function MultiUserMemberships() {
         </DialogContent>
       </Dialog>
 
+      <Dialog open={datesOpen} onOpenChange={setDatesOpen}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>{c.editDates}</DialogTitle></DialogHeader>
+          <form onSubmit={updateDates} className="space-y-4">
+            <div className="space-y-2"><Label>{c.startDate}</Label><DateInput value={dateForm.startDate} onChange={(value) => setDateForm((current) => ({ ...current, startDate: value }))} /></div>
+            <div className="space-y-2"><Label>{c.endDate}</Label><DateInput value={dateForm.endDate} onChange={(value) => setDateForm((current) => ({ ...current, endDate: value }))} /></div>
+            <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={() => setDatesOpen(false)}>{c.cancel}</Button><Button type="submit">{c.saveDates}</Button></div>
+          </form>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={historyOpen} onOpenChange={setHistoryOpen}>
         <DialogContent className="max-h-[80vh] overflow-y-auto sm:max-w-2xl">
           <DialogHeader><DialogTitle>{c.history}</DialogTitle></DialogHeader>
@@ -205,4 +251,3 @@ export default function MultiUserMemberships() {
     </div>
   );
 }
-
