@@ -46,82 +46,159 @@ export type ManagedPlan = {
 
 async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
   const headers = new Headers(options.headers);
-  if (options.body) headers.set('Content-Type', 'application/json');
-  const response = await fetch(url, { credentials: 'include', ...options, headers });
+  if (options.body) headers.set("Content-Type", "application/json");
+  const response = await fetch(url, {
+    credentials: "include",
+    ...options,
+    headers,
+  });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload.error || `Request failed (${response.status})`);
+  if (!response.ok) {
+    const error = new Error(
+      payload.error || `Request failed (${response.status})`,
+    ) as Error & { status?: number };
+    error.status = response.status;
+    throw error;
+  }
   return payload as T;
 }
 
 export const planManagementApi = {
-  listPlans: () => request<{ plans: ManagedPlan[] }>('/api/v2/plan-management/plans'),
+  listPlans: () =>
+    request<{ plans: ManagedPlan[] }>("/api/v2/plan-management/plans"),
   createPlan: (payload: Partial<ManagedPlan>) =>
-    request<{ plan: ManagedPlan }>('/api/v2/plan-management/plans', { method: 'POST', body: JSON.stringify(payload) }),
+    request<{ plan: ManagedPlan }>("/api/v2/plan-management/plans", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
   updatePlan: (id: string, payload: Partial<ManagedPlan>) =>
-    request<{ plan: ManagedPlan }>(`/api/v2/plan-management/plans/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(payload) }),
-  listMaintenance: () => request<{ lists: MaintenanceList[] }>('/api/v2/list-maintenance'),
+    request<{ plan: ManagedPlan }>(
+      `/api/v2/plan-management/plans/${encodeURIComponent(id)}`,
+      { method: "PUT", body: JSON.stringify(payload) },
+    ),
+  listMaintenance: () =>
+    request<{ lists: MaintenanceList[] }>("/api/v2/list-maintenance"),
   addListItem: (listId: string, payload: Partial<LocalizedListItem>) =>
-    request(`/api/v2/list-maintenance/${encodeURIComponent(listId)}/items`, { method: 'POST', body: JSON.stringify(payload) }),
-  updateListItem: (listId: string, itemId: string, payload: Partial<LocalizedListItem>) =>
-    request(`/api/v2/list-maintenance/${encodeURIComponent(listId)}/items/${encodeURIComponent(itemId)}`, { method: 'PUT', body: JSON.stringify(payload) }),
+    request(`/api/v2/list-maintenance/${encodeURIComponent(listId)}/items`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  updateListItem: (
+    listId: string,
+    itemId: string,
+    payload: Partial<LocalizedListItem>,
+  ) =>
+    request(
+      `/api/v2/list-maintenance/${encodeURIComponent(listId)}/items/${encodeURIComponent(itemId)}`,
+      { method: "PUT", body: JSON.stringify(payload) },
+    ),
   deleteListItem: (listId: string, itemId: string) =>
-    request(`/api/v2/list-maintenance/${encodeURIComponent(listId)}/items/${encodeURIComponent(itemId)}`, { method: 'DELETE' }),
+    request(
+      `/api/v2/list-maintenance/${encodeURIComponent(listId)}/items/${encodeURIComponent(itemId)}`,
+      { method: "DELETE" },
+    ),
   listSubscriptionMembers: (subscriptionId: string) =>
     request<{
       capacity: { maximum: number; occupied: number; available: number };
       members: Array<Record<string, unknown>>;
-    }>(`/api/v2/plan-management/subscriptions/${encodeURIComponent(subscriptionId)}/members`),
+    }>(
+      `/api/v2/plan-management/subscriptions/${encodeURIComponent(subscriptionId)}/members`,
+    ),
   addSubscriptionMember: (
     subscriptionId: string,
     payload: {
       memberId?: string;
-      newMember?: { firstName: string; lastName: string; email: string; phone?: string };
+      newMember?: {
+        firstName: string;
+        lastName: string;
+        email: string;
+        phone?: string;
+      };
       joinedAt?: string;
-      status?: 'active' | 'suspended';
+      status?: "active" | "suspended";
       benefitsOverride?: Record<string, unknown>;
       restrictions?: Record<string, unknown>;
     },
-  ) => request(`/api/v2/plan-management/subscriptions/${encodeURIComponent(subscriptionId)}/members`, {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  }),
+  ) =>
+    request(
+      `/api/v2/plan-management/subscriptions/${encodeURIComponent(subscriptionId)}/members`,
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      },
+    ),
   updateSubscriptionMember: (
     subscriptionId: string,
     memberId: string,
     payload: {
-      status: 'active' | 'suspended' | 'removed';
-      futureBookingPolicy?: 'cancel' | 'keep' | 'manual_review';
+      status: "active" | "suspended" | "removed";
+      futureBookingPolicy?: "cancel" | "keep" | "manual_review";
       restrictions?: Record<string, unknown>;
     },
-  ) => request(`/api/v2/plan-management/subscriptions/${encodeURIComponent(subscriptionId)}/members/${encodeURIComponent(memberId)}`, {
-    method: 'PATCH',
-    body: JSON.stringify(payload),
-  }),
+  ) =>
+    request(
+      `/api/v2/plan-management/subscriptions/${encodeURIComponent(subscriptionId)}/members/${encodeURIComponent(memberId)}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify(payload),
+      },
+    ),
   getSubscriptionMemberHistory: (subscriptionId: string) =>
-    request<{ history: Array<Record<string, unknown>> }>(`/api/v2/plan-management/subscriptions/${encodeURIComponent(subscriptionId)}/member-history`),
+    request<{ history: Array<Record<string, unknown>> }>(
+      `/api/v2/plan-management/subscriptions/${encodeURIComponent(subscriptionId)}/member-history`,
+    ),
   createHybridSubscription: (payload: {
     planVersionId: string;
-    holder: { memberId?: string; newMember?: { firstName: string; lastName: string; email: string; phone?: string } };
+    holder: {
+      memberId?: string;
+      newMember?: {
+        firstName: string;
+        lastName: string;
+        email: string;
+        phone?: string;
+      };
+    };
     startDate?: string;
     endDate?: string;
     addMembersNow: boolean;
     members: Array<{
       memberId?: string;
-      newMember?: { firstName: string; lastName: string; email: string; phone?: string };
+      newMember?: {
+        firstName: string;
+        lastName: string;
+        email: string;
+        phone?: string;
+      };
       joinedAt?: string;
       restrictions?: Record<string, unknown>;
       benefitsOverride?: Record<string, unknown>;
     }>;
     notes?: string;
-  }) => request<{
-    subscription: { id: string; planName: string; planType: string; holderMemberId: string; startDate: string; endDate: string; maxMembers: number };
-    holder: { memberId: string; created: boolean };
-    membersAdded: number;
-    capacity: { maximum: number; occupied: number; available: number };
-  }>('/api/v2/plan-management/subscriptions/hybrid', { method: 'POST', body: JSON.stringify(payload) }),
-  updateSubscriptionDates: (subscriptionId: string, startDate: string, endDate: string) =>
+  }) =>
+    request<{
+      subscription: {
+        id: string;
+        planName: string;
+        planType: string;
+        holderMemberId: string;
+        startDate: string;
+        endDate: string;
+        maxMembers: number;
+      };
+      holder: { memberId: string; created: boolean };
+      membersAdded: number;
+      capacity: { maximum: number; occupied: number; available: number };
+    }>("/api/v2/plan-management/subscriptions/hybrid", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  updateSubscriptionDates: (
+    subscriptionId: string,
+    startDate: string,
+    endDate: string,
+  ) =>
     request<{ ok: boolean; startDate: string; endDate: string }>(
       `/api/v2/plan-management/subscriptions/${encodeURIComponent(subscriptionId)}/dates`,
-      { method: 'PATCH', body: JSON.stringify({ startDate, endDate }) },
+      { method: "PATCH", body: JSON.stringify({ startDate, endDate }) },
     ),
 };
