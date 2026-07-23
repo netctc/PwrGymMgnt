@@ -287,7 +287,10 @@ export function registerPlanManagementRoutes(app: Express, provider: PoolProvide
     } catch (error) { next(error); }
   });
 
-  app.post("/api/v2/plan-management/subscriptions/hybrid", requirePermission("membership.write"), async (req: AuthenticatedRequest, res, next) => {
+  app.post(
+    ["/api/v2/plan-management/subscriptions/hybrid", "/api/v2/subscriptions/hybrid"],
+    requirePermission("membership.write"),
+    async (req: AuthenticatedRequest, res, next) => {
     const pool = requirePool(provider);
     const connection = await pool.getConnection();
     try {
@@ -321,17 +324,31 @@ export function registerPlanManagementRoutes(app: Express, provider: PoolProvide
         const input = candidate?.newMember || candidate || {};
         const firstName = text(input.firstName);
         const lastName = text(input.lastName);
-        const email = text(input.email).toLowerCase();
-        if (!firstName || !lastName || !email) {
-          throw Object.assign(new Error("First name, last name and email are required for each new member"), { status: 400 });
+        const requestedEmail = text(input.email).toLowerCase();
+        const phone = text(input.phone);
+        if (!firstName || !lastName) {
+          throw Object.assign(new Error("First name and last name are required for each new member"), { status: 400 });
         }
-        const [duplicates]: any = await connection.query("SELECT id FROM members WHERE LOWER(email) = ? LIMIT 1", [email]);
-        if (duplicates.length) throw Object.assign(new Error(`A member with email ${email} already exists`), { status: 409 });
+        if (!requestedEmail && !phone) {
+          throw Object.assign(new Error("An email address or phone number is required for each new member"), { status: 400 });
+        }
+        const [duplicates]: any = await connection.query(
+          `SELECT id FROM members
+            WHERE (? <> '' AND LOWER(email) = ?)
+               OR (? <> '' AND phone = ?)
+            LIMIT 1`,
+          [requestedEmail, requestedEmail, phone, phone],
+        );
+        if (duplicates.length) {
+          throw Object.assign(new Error("A member with the same email address or phone number already exists"), { status: 409 });
+        }
         const memberId = createId("member");
+        const email = requestedEmail ||
+          `${firstName.toLowerCase()}.${lastName.toLowerCase()}.${memberId.slice(-8)}@powergym.local`;
         await connection.query(
           `INSERT INTO members (id, first_name, last_name, email, phone, status, join_date, data)
            VALUES (?, ?, ?, ?, ?, 'active', CURDATE(), ?)`,
-          [memberId, firstName, lastName, email, text(input.phone) || null, json({ source })],
+          [memberId, firstName, lastName, email, phone || null, json({ source, contactEmailGenerated: !requestedEmail })],
         );
         return { id: memberId, email, created: true };
       };
@@ -448,7 +465,8 @@ export function registerPlanManagementRoutes(app: Express, provider: PoolProvide
       await connection.rollback();
       next(error);
     } finally { connection.release(); }
-  });
+    },
+  );
 
   app.patch("/api/v2/plan-management/subscriptions/:id/dates", requirePermission("membership.write"), async (req: AuthenticatedRequest, res, next) => {
     const pool = requirePool(provider);
