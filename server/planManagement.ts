@@ -1,0 +1,380 @@
+import crypto from "crypto";
+import type { Express, Request } from "express";
+import type { Pool, PoolConnection } from "mysql2/promise";
+import { requirePermission } from "./rbac";
+
+type PoolProvider = () => Pool | null;
+type AuthenticatedRequest = Request & { user?: { email?: string; uid?: string } };
+
+const PLAN_TYPES = new Set(["individual", "family", "group", "corporate"]);
+const PLAN_STATUSES = new Set(["draft", "active", "suspended", "cancelled", "archived"]);
+const MEMBER_STATUSES = new Set(["active", "suspended", "removed"]);
+
+function createId(prefix: string) {
+  return `${prefix}_${crypto.randomUUID().replace(/-/g, "")}`;
+}
+
+function requirePool(provider: PoolProvider) {
+  const pool = provider();
+  if (!pool) throw Object.assign(new Error("Database not connected"), { status: 503 });
+  return pool;
+}
+
+function text(value: unknown) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function number(value: unknown, fallback: number) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function bool(value: unknown, fallback = false) {
+  return value === undefined ? fallback : Boolean(value);
+}
+
+function json(value: unknown, fallback: unknown = {}) {
+  if (value === undefined || value === null || value === "") return JSON.stringify(fallback);
+  return JSON.stringify(value);
+}
+
+function parseJson(value: unknown) {
+  if (!value) return {};
+  if (typeof value === "object") return value;
+  try { return JSON.parse(String(value)); } catch { return {}; }
+}
+
+function dateOnly(value: unknown) {
+  const raw = text(value);
+  if (!raw) return null;
+  const parsed = new Date(`${raw.slice(0, 10)}T00:00:00Z`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString().slice(0, 10);
+}
+
+function addDays(start: string, durationDays: number) {
+  const date = new Date(`${start}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + Math.max(1, durationDays));
+  return date.toISOString().slice(0, 10);
+}
+
+function normalizePlanInput(body: any) {
+  const planType = text(body.planType) || "individual";
+  if (!PLAN_TYPES.has(planType)) throw Object.assign(new Error("Invalid plan type"), { status: 400 });
+  const status = text(body.status) || "draft";
+  if (!PLAN_STATUSES.has(status)) throw Object.assign(new Error("Invalid plan status"), { status: 400 });
+  const name = text(body.name);
+  if (!name) throw Object.assign(new Error("Plan name is required"), { status: 400 });
+  const durationDays = Math.max(1, number(body.durationDays, 30));
+  const validFrom = dateOnly(body.validFrom);
+  const validTo = validFrom ? (dateOnly(body.validTo) || addDays(validFrom, durationDays)) : null;
+  const isIndividual = planType === "individual";
+  const sessionsUnlimited = isIndividual ? bool(body.sessionsUnlimited, true) : true;
+  const maxMembers = isIndividual ? 1 : Math.max(2, number(body.maxMembers, 2));
+  return {
+    name,
+    description: text(body.description),
+    planType,
+    price: Math.max(0, number(body.price, 0)),
+    currency: text(body.currency).toUpperCase() || "USD",
+    durationDays,
+    validFrom,
+    validTo,
+    maxMembers,
+    sessionsUnlimited,
+    sessionsPerCycle: isIndividual && !sessionsUnlimited ? Math.max(1, number(body.sessionsPerCycle, 1)) : null,
+    cycleFrequency: text(body.cycleFrequency) || "monthly",
+    distributionModel: isIndividual ? "individual" : (text(body.distributionModel) || "shared"),
+    sharedBenefits: isIndividual ? true : bool(body.sharedBenefits, true),
+    futureBookingPolicy: text(body.futureBookingPolicy) || "cancel",
+    benefits: body.benefits || {},
+    restrictions: body.restrictions || {},
+    status,
+  };
+}
+
+function mapPlan(row: any) {
+  const data: any = parseJson(row.version_data);
+  return {
+    id: row.plan_id,
+    planVersionId: row.plan_version_id,
+    versionNumber: Number(row.version_number || 1),
+    name: row.version_name || row.plan_name,
+    description: row.version_description || row.plan_description || "",
+    planType: row.plan_type || "individual",
+    price: Number(row.version_price || 0),
+    currency: row.version_currency || "USD",
+    durationDays: Number(row.duration_days || 30),
+    validFrom: data.validFrom || null,
+    validTo: data.validTo || null,
+    maxMembers: Number(row.max_members || 1),
+    sessionsUnlimited: Boolean(row.sessions_unlimited),
+    sessionsPerCycle: row.sessions_per_cycle === null ? null : Number(row.sessions_per_cycle),
+    cycleFrequency: row.cycle_frequency || "monthly",
+    distributionModel: row.distribution_model || "individual",
+    sharedBenefits: data.sharedBenefits !== false,
+    futureBookingPolicy: data.futureBookingPolicy || "cancel",
+    benefits: parseJson(row.benefits),
+    restrictions: parseJson(row.restrictions),
+    status: row.version_status || row.plan_status || "draft",
+    createdAt: row.version_created_at,
+  };
+}
+
+const PLAN_SELECT = `
+  SELECT sp.id AS plan_id, sp.name AS plan_name, sp.description AS plan_description,
+         sp.status AS plan_status, pv.id AS plan_version_id, pv.version_number,
+         pv.name AS version_name, pv.description AS version_description,
+         pv.plan_type, pv.price AS version_price, pv.currency AS version_currency,
+         pv.duration_days, pv.max_members, pv.sessions_unlimited, pv.sessions_per_cycle,
+         pv.cycle_frequency, pv.distribution_model, pv.benefits, pv.restrictions,
+         pv.status AS version_status, pv.data AS version_data, pv.created_at AS version_created_at
+    FROM subscription_plans sp
+    JOIN plan_versions pv ON pv.id = (
+      SELECT pv2.id FROM plan_versions pv2
+       WHERE pv2.plan_id = sp.id
+       ORDER BY pv2.version_number DESC LIMIT 1
+    )`;
+
+async function insertPlanVersion(connection: PoolConnection, planId: string, versionNumber: number, input: ReturnType<typeof normalizePlanInput>) {
+  const id = createId("pv");
+  await connection.query(
+    `INSERT INTO plan_versions
+      (id, plan_id, version_number, name, description, plan_type, price, currency,
+       duration_days, max_members, sessions_unlimited, sessions_per_cycle,
+       cycle_frequency, distribution_model, benefits, restrictions, booking_policy,
+       status, published_at, data)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      id, planId, versionNumber, input.name, input.description || null, input.planType,
+      input.price, input.currency, input.durationDays, input.maxMembers,
+      input.sessionsUnlimited ? 1 : 0, input.sessionsPerCycle, input.cycleFrequency,
+      input.distributionModel, json(input.benefits, {}), json(input.restrictions, {}),
+      json({ futureBookingPolicy: input.futureBookingPolicy }),
+      input.status, input.status === "active" ? new Date() : null,
+      json({
+        validFrom: input.validFrom,
+        validTo: input.validTo,
+        sharedBenefits: input.sharedBenefits,
+        futureBookingPolicy: input.futureBookingPolicy,
+      }),
+    ],
+  );
+  return id;
+}
+
+export function registerPlanManagementRoutes(app: Express, provider: PoolProvider) {
+  app.get("/api/v2/plan-management/plans", requirePermission("membership.read"), async (_req, res, next) => {
+    try {
+      const pool = requirePool(provider);
+      const [rows]: any = await pool.query(`${PLAN_SELECT} ORDER BY sp.name`);
+      res.json({ plans: rows.map(mapPlan) });
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/v2/plan-management/plans", requirePermission("membership.write"), async (req, res, next) => {
+    const pool = requirePool(provider);
+    const connection = await pool.getConnection();
+    try {
+      const input = normalizePlanInput(req.body);
+      const planId = createId("plan");
+      await connection.beginTransaction();
+      await connection.query(
+        `INSERT INTO subscription_plans (id, name, description, duration_days, price, currency, status, data)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [planId, input.name, input.description || null, input.durationDays, input.price, input.currency, input.status, json({ planType: input.planType })],
+      );
+      const planVersionId = await insertPlanVersion(connection, planId, 1, input);
+      await connection.commit();
+      const [rows]: any = await pool.query(`${PLAN_SELECT} WHERE sp.id = ?`, [planId]);
+      res.status(201).json({ plan: mapPlan(rows[0]), planVersionId });
+    } catch (error) {
+      await connection.rollback();
+      next(error);
+    } finally { connection.release(); }
+  });
+
+  app.put("/api/v2/plan-management/plans/:id", requirePermission("membership.write"), async (req, res, next) => {
+    const pool = requirePool(provider);
+    const connection = await pool.getConnection();
+    try {
+      const input = normalizePlanInput(req.body);
+      await connection.beginTransaction();
+      const [current]: any = await connection.query(
+        "SELECT COALESCE(MAX(version_number), 0) AS version_number FROM plan_versions WHERE plan_id = ? FOR UPDATE",
+        [req.params.id],
+      );
+      if (!Number(current[0]?.version_number)) throw Object.assign(new Error("Plan not found"), { status: 404 });
+      await connection.query(
+        `UPDATE subscription_plans SET name = ?, description = ?, duration_days = ?, price = ?, currency = ?, status = ?, data = ? WHERE id = ?`,
+        [input.name, input.description || null, input.durationDays, input.price, input.currency, input.status, json({ planType: input.planType }), req.params.id],
+      );
+      await insertPlanVersion(connection, req.params.id, Number(current[0].version_number) + 1, input);
+      await connection.commit();
+      const [rows]: any = await pool.query(`${PLAN_SELECT} WHERE sp.id = ?`, [req.params.id]);
+      res.json({ plan: mapPlan(rows[0]) });
+    } catch (error) {
+      await connection.rollback();
+      next(error);
+    } finally { connection.release(); }
+  });
+
+  app.get("/api/v2/list-maintenance", requirePermission("platform.audit.read"), async (_req, res, next) => {
+    try {
+      const pool = requirePool(provider);
+      const [lists]: any = await pool.query("SELECT * FROM maintenance_lists ORDER BY name_en");
+      const [items]: any = await pool.query("SELECT * FROM maintenance_list_items ORDER BY list_id, sort_order, label_en");
+      res.json({
+        lists: lists.map((list: any) => ({
+          id: list.id, key: list.list_key, nameEn: list.name_en, nameAr: list.name_ar,
+          descriptionEn: list.description_en || "", descriptionAr: list.description_ar || "",
+          status: list.status,
+          items: items.filter((item: any) => item.list_id === list.id).map((item: any) => ({
+            id: item.id, code: item.item_code, labelEn: item.label_en, labelAr: item.label_ar,
+            sortOrder: Number(item.sort_order), status: item.status, isSystem: Boolean(item.is_system),
+            metadata: parseJson(item.metadata),
+          })),
+        })),
+      });
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/v2/list-maintenance/:listId/items", requirePermission("platform.audit.read"), async (req, res, next) => {
+    try {
+      const pool = requirePool(provider);
+      const code = text(req.body.code).toLowerCase().replace(/[^a-z0-9_-]+/g, "_");
+      const labelEn = text(req.body.labelEn);
+      const labelAr = text(req.body.labelAr);
+      if (!code || !labelEn || !labelAr) return res.status(400).json({ error: "Code, English label and Arabic label are required" });
+      const id = createId("mli");
+      await pool.query(
+        `INSERT INTO maintenance_list_items (id, list_id, item_code, label_en, label_ar, sort_order, status, metadata)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [id, req.params.listId, code, labelEn, labelAr, number(req.body.sortOrder, 0), text(req.body.status) || "active", json(req.body.metadata, {})],
+      );
+      res.status(201).json({ item: { id, code, labelEn, labelAr } });
+    } catch (error) { next(error); }
+  });
+
+  app.put("/api/v2/list-maintenance/:listId/items/:itemId", requirePermission("platform.audit.read"), async (req, res, next) => {
+    try {
+      const pool = requirePool(provider);
+      const labelEn = text(req.body.labelEn);
+      const labelAr = text(req.body.labelAr);
+      if (!labelEn || !labelAr) return res.status(400).json({ error: "English and Arabic labels are required" });
+      await pool.query(
+        `UPDATE maintenance_list_items SET label_en = ?, label_ar = ?, sort_order = ?, status = ?, metadata = ?
+          WHERE id = ? AND list_id = ?`,
+        [labelEn, labelAr, number(req.body.sortOrder, 0), text(req.body.status) || "active", json(req.body.metadata, {}), req.params.itemId, req.params.listId],
+      );
+      res.json({ ok: true });
+    } catch (error) { next(error); }
+  });
+
+  app.delete("/api/v2/list-maintenance/:listId/items/:itemId", requirePermission("platform.audit.read"), async (req, res, next) => {
+    try {
+      const pool = requirePool(provider);
+      const [rows]: any = await pool.query(
+        "SELECT is_system FROM maintenance_list_items WHERE id = ? AND list_id = ?",
+        [req.params.itemId, req.params.listId],
+      );
+      if (!rows.length) return res.status(404).json({ error: "List item not found" });
+      if (rows[0].is_system) return res.status(409).json({ error: "System list items cannot be deleted; set them inactive instead" });
+      await pool.query("DELETE FROM maintenance_list_items WHERE id = ? AND list_id = ?", [req.params.itemId, req.params.listId]);
+      res.json({ ok: true });
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/v2/plan-management/subscriptions/:id/members", requirePermission("membership.read"), async (req, res, next) => {
+    try {
+      const pool = requirePool(provider);
+      const [subscriptions]: any = await pool.query("SELECT id, max_members FROM subscriptions WHERE id = ?", [req.params.id]);
+      if (!subscriptions.length) return res.status(404).json({ error: "Subscription not found" });
+      const [members]: any = await pool.query(
+        `SELECT sm.*, m.first_name, m.last_name, m.email
+           FROM subscription_members sm LEFT JOIN members m ON m.id = sm.member_id
+          WHERE sm.subscription_id = ? ORDER BY sm.role = 'holder' DESC, sm.joined_at`,
+        [req.params.id],
+      );
+      const activeCount = members.filter((member: any) => member.status === "active").length;
+      res.json({
+        capacity: { maximum: Number(subscriptions[0].max_members), occupied: activeCount, available: Math.max(0, Number(subscriptions[0].max_members) - activeCount) },
+        members: members.map((member: any) => ({
+          id: member.id, memberId: member.member_id, role: member.role, status: member.status,
+          joinedAt: member.joined_at, leftAt: member.left_at,
+          firstName: member.first_name || "", lastName: member.last_name || "", email: member.email || "",
+          restrictions: parseJson(member.restrictions),
+        })),
+      });
+    } catch (error) { next(error); }
+  });
+
+  app.patch("/api/v2/plan-management/subscriptions/:subscriptionId/members/:memberId", requirePermission("membership.write"), async (req: AuthenticatedRequest, res, next) => {
+    const pool = requirePool(provider);
+    const connection = await pool.getConnection();
+    try {
+      const status = text(req.body.status);
+      if (!MEMBER_STATUSES.has(status)) return res.status(400).json({ error: "Invalid member status" });
+      await connection.beginTransaction();
+      const [rows]: any = await connection.query(
+        `SELECT id, role, status FROM subscription_members
+          WHERE subscription_id = ? AND member_id = ? ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
+        [req.params.subscriptionId, req.params.memberId],
+      );
+      if (!rows.length) throw Object.assign(new Error("Subscription member not found"), { status: 404 });
+      if (rows[0].role === "holder" && status !== "active") throw Object.assign(new Error("The subscription holder cannot be suspended or removed"), { status: 409 });
+      const previousStatus = rows[0].status;
+      const leftAt = status === "removed" ? new Date() : null;
+      await connection.query(
+        "UPDATE subscription_members SET status = ?, left_at = ?, restrictions = ? WHERE id = ?",
+        [status, leftAt, json(req.body.restrictions, {}), rows[0].id],
+      );
+      await connection.query(
+        "UPDATE affiliations SET status = ?, restrictions_override = ?, updated_at = NOW() WHERE subscription_id = ? AND member_id = ?",
+        [status === "removed" ? "cancelled" : status, json(req.body.restrictions, {}), req.params.subscriptionId, req.params.memberId],
+      );
+      await connection.query(
+        `INSERT INTO subscription_member_history
+          (id, subscription_id, subscription_member_id, member_id, action, previous_status, new_status, performed_by, details)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          createId("smh"), req.params.subscriptionId, rows[0].id, req.params.memberId,
+          "status_changed", previousStatus, status, req.user?.email || req.user?.uid || null,
+          json({ futureBookingPolicy: text(req.body.futureBookingPolicy) || "cancel", restrictions: req.body.restrictions || {} }),
+        ],
+      );
+      await connection.query(
+        `INSERT INTO outbox_events (id, event_type, payload, status)
+         VALUES (?, 'subscription_member_status_changed', ?, 'pending')`,
+        [createId("evt"), json({
+          subscriptionId: req.params.subscriptionId,
+          memberId: req.params.memberId,
+          previousStatus,
+          newStatus: status,
+          futureBookingPolicy: text(req.body.futureBookingPolicy) || "cancel",
+        })],
+      );
+      await connection.commit();
+      res.json({ ok: true, previousStatus, newStatus: status });
+    } catch (error) {
+      await connection.rollback();
+      next(error);
+    } finally { connection.release(); }
+  });
+
+  app.get("/api/v2/plan-management/subscriptions/:id/member-history", requirePermission("membership.read"), async (req, res, next) => {
+    try {
+      const pool = requirePool(provider);
+      const [rows]: any = await pool.query(
+        "SELECT * FROM subscription_member_history WHERE subscription_id = ? ORDER BY created_at DESC LIMIT 200",
+        [req.params.id],
+      );
+      res.json({ history: rows.map((row: any) => ({
+        id: row.id, memberId: row.member_id, action: row.action,
+        previousStatus: row.previous_status, newStatus: row.new_status,
+        effectiveAt: row.effective_at, performedBy: row.performed_by,
+        details: parseJson(row.details),
+      })) });
+    } catch (error) { next(error); }
+  });
+}
+
