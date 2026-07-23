@@ -22,6 +22,7 @@ const copy = {
     refresh: 'Refresh',
     newPlan: 'New plan',
     listMaintenance: 'List maintenance',
+    manageMembers: 'Manage multi-user memberships',
     total: 'Total plans',
     active: 'Active plans',
     multiUser: 'Multi-user plans',
@@ -68,6 +69,7 @@ const copy = {
     refresh: 'تحديث',
     newPlan: 'خطة جديدة',
     listMaintenance: 'صيانة القوائم',
+    manageMembers: 'إدارة العضويات متعددة المستخدمين',
     total: 'إجمالي الخطط',
     active: 'الخطط النشطة',
     multiUser: 'الخطط متعددة المستخدمين',
@@ -295,6 +297,7 @@ export default function MembershipPlansCodex() {
           <p className="mt-1 text-sm text-slate-500">{c.subtitle}</p>
         </div>
         <div className="flex flex-wrap gap-2">
+          <Button variant="outline" asChild><Link to="/plans/multi-user"><Users className="me-2 h-4 w-4" />{c.manageMembers}</Link></Button>
           <Button variant="outline" asChild><Link to="/settings/list-maintenance"><Settings2 className="me-2 h-4 w-4" />{c.listMaintenance}</Link></Button>
           <Button variant="outline" onClick={load} disabled={loading}><RefreshCw className="me-2 h-4 w-4" />{c.refresh}</Button>
           <Button onClick={openCreate}><Plus className="me-2 h-4 w-4" />{c.newPlan}</Button>
@@ -381,4 +384,3 @@ export default function MembershipPlansCodex() {
     </div>
   );
 }
-
