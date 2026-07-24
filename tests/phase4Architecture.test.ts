@@ -16,6 +16,7 @@ test("Phase 4 application route modules are uniquely registered", () => {
   assert.equal(new Set(names).size, names.length);
   assert.deepEqual(names, [
     "membership",
+    "plan-management",
     "scheduling",
     "hr-payroll",
     "finance",
