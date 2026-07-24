@@ -171,7 +171,10 @@ export function registerSubscriptionLifecycleRoutes(app: Express, poolProvider: 
       const durationDays = pvRows.length > 0 ? Number(pvRows[0].duration_days || 30) : 30;
 
       const currentEnd = sub.end_date instanceof Date ? sub.end_date : new Date(sub.end_date);
-      const newStart = currentEnd > new Date() ? currentEnd : new Date();
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const newStart = currentEnd >= today ? new Date(currentEnd) : today;
+      if (currentEnd >= today) newStart.setDate(newStart.getDate() + 1);
       const newEnd = new Date(newStart);
       newEnd.setDate(newEnd.getDate() + durationDays);
 
@@ -180,7 +183,11 @@ export function registerSubscriptionLifecycleRoutes(app: Express, poolProvider: 
         [newStart.toISOString().slice(0, 10), newEnd.toISOString().slice(0, 10), req.params.id],
       );
 
-      // Reactivate affiliations
+      // Extend current holder/beneficiary affiliations and reactivate expired ones.
+      await pool.query(
+        "UPDATE affiliations SET end_date = ?, updated_at = NOW() WHERE subscription_id = ? AND status IN ('active', 'suspended')",
+        [newEnd.toISOString().slice(0, 10), req.params.id],
+      );
       await pool.query(
         "UPDATE affiliations SET status = 'active', start_date = ?, end_date = ?, updated_at = NOW() WHERE subscription_id = ? AND status IN ('expired', 'cancelled')",
         [newStart.toISOString().slice(0, 10), newEnd.toISOString().slice(0, 10), req.params.id],
