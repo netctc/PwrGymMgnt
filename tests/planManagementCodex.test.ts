@@ -16,6 +16,7 @@ test("plan management module exposes versioned plans and list maintenance", () =
 test("multi-user member contract covers capacity, new members, history and future bookings", () => {
   const source = read("server/planManagement.ts");
   const subscriptions = read("server/subscriptionsV2.ts");
+  const lifecycle = read("server/subscriptionLifecycle.ts");
   assert.match(source, /CAPACITY_LIMIT_REACHED/);
   assert.match(source, /newMember/);
   assert.match(source, /email address or phone number is required for a new member/);
@@ -26,6 +27,9 @@ test("multi-user member contract covers capacity, new members, history and futur
   assert.match(source, /restrictions_override/);
   assert.match(subscriptions, /sm_filter\.member_id = \?/);
   assert.match(subscriptions, /status IN \('active', 'suspended'\)/);
+  assert.match(subscriptions, /holder\.first_name AS holder_first_name/);
+  assert.match(lifecycle, /currentEnd >= today/);
+  assert.match(lifecycle, /affiliations SET end_date = \?/);
 });
 
 test("migration seeds bilingual database-backed lists", () => {
@@ -77,6 +81,10 @@ test("hybrid subscription flow is atomic and supports deferred member assignment
   assert.match(management, /searchExistingMembers/);
   assert.match(management, /contactRequired/);
   assert.match(management, /listSubscriptionMembers\(subscriptionId\)/);
+  assert.match(management, /item\.holderName \|\| item\.holderMemberId/);
+  assert.match(members, /renewMultiSubscription/);
+  assert.match(members, /sm:max-w-2xl/);
+  assert.match(members, /subscriptionsV2Api\.renewSubscription/);
   assert.match(members, /New multi-user subscription/);
   assert.match(members, /Manage beneficiaries/);
 });
