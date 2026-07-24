@@ -232,8 +232,16 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
       if (!memberId) return res.status(400).json({ error: "memberId is required" });
 
       // Verify subscription exists and check capacity
-      const [subRows]: any = await pool.query("SELECT * FROM subscriptions WHERE id = ? AND status = 'active'", [subscriptionId]);
-      if (subRows.length === 0) return res.status(404).json({ error: "Active subscription not found" });
+      const [subRows]: any = await pool.query(
+        "SELECT * FROM subscriptions WHERE id = ? AND status = 'active' AND end_date >= CURDATE()",
+        [subscriptionId],
+      );
+      if (subRows.length === 0) {
+        return res.status(409).json({
+          error: "Beneficiaries cannot be modified after the multi-user subscription has expired",
+          code: "SUBSCRIPTION_EXPIRED",
+        });
+      }
       const sub = subRows[0];
 
       const [countRows]: any = await pool.query(
@@ -278,6 +286,16 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
       if (!await requireFeature(pool, "ENABLE_MULTI_USER_PLANS", res)) return;
 
       const { subId, memberId } = req.params;
+      const [subscriptionRows]: any = await pool.query(
+        "SELECT id FROM subscriptions WHERE id = ? AND status = 'active' AND end_date >= CURDATE()",
+        [subId],
+      );
+      if (subscriptionRows.length === 0) {
+        return res.status(409).json({
+          error: "Beneficiaries cannot be modified after the multi-user subscription has expired",
+          code: "SUBSCRIPTION_EXPIRED",
+        });
+      }
 
       // Cannot remove the holder
       const [smRows]: any = await pool.query(
