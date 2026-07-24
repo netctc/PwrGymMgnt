@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-  ArrowLeft,
   Check,
   ChevronLeft,
   ChevronRight,
@@ -545,10 +544,7 @@ export default function HybridSubscriptionWizard() {
           <p className="text-sm text-slate-500">{c.subtitle}</p>
         </div>
         <Button variant="outline" asChild>
-          <Link to="/plans">
-            <ArrowLeft className="me-2 h-4 w-4" />
-            {c.back}
-          </Link>
+          <Link to="/plans">{c.back}</Link>
         </Button>
       </div>
 
