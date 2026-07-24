@@ -127,7 +127,19 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
       const status = normalizeString(req.query.status);
       const where: string[] = [];
       const params: any[] = [];
-      if (memberId) { where.push("s.holder_member_id = ?"); params.push(memberId); }
+      if (memberId) {
+        where.push(`(
+          s.holder_member_id = ?
+          OR EXISTS (
+            SELECT 1
+              FROM subscription_members sm_filter
+             WHERE sm_filter.subscription_id = s.id
+               AND sm_filter.member_id = ?
+               AND sm_filter.status IN ('active', 'suspended')
+          )
+        )`);
+        params.push(memberId, memberId);
+      }
       if (status && status !== "all") { where.push("s.status = ?"); params.push(status); }
       const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
       const [rows]: any = await pool.query(
@@ -225,7 +237,7 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
       const sub = subRows[0];
 
       const [countRows]: any = await pool.query(
-        "SELECT COUNT(*) AS c FROM subscription_members WHERE subscription_id = ? AND status = 'active'",
+        "SELECT COUNT(*) AS c FROM subscription_members WHERE subscription_id = ? AND status IN ('active', 'suspended')",
         [subscriptionId],
       );
       if (Number(countRows[0]?.c || 0) >= Number(sub.max_members)) {
@@ -234,7 +246,7 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
 
       // Check not already a member
       const [existing]: any = await pool.query(
-        "SELECT id FROM subscription_members WHERE subscription_id = ? AND member_id = ? AND status = 'active' LIMIT 1",
+        "SELECT id FROM subscription_members WHERE subscription_id = ? AND member_id = ? AND status IN ('active', 'suspended') LIMIT 1",
         [subscriptionId, memberId],
       );
       if (existing.length > 0) return res.status(409).json({ error: "Member is already in this subscription" });
@@ -269,7 +281,7 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
 
       // Cannot remove the holder
       const [smRows]: any = await pool.query(
-        "SELECT id, role FROM subscription_members WHERE subscription_id = ? AND member_id = ? AND status = 'active' LIMIT 1",
+        "SELECT id, role FROM subscription_members WHERE subscription_id = ? AND member_id = ? AND status IN ('active', 'suspended') LIMIT 1",
         [subId, memberId],
       );
       if (smRows.length === 0) return res.status(404).json({ error: "Member not found in subscription" });
