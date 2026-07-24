@@ -492,7 +492,9 @@ export function registerPlanManagementRoutes(app: Express, provider: PoolProvide
       await connection.query(
         `UPDATE affiliations
             SET start_date = CASE WHEN role = 'holder' THEN ? ELSE GREATEST(start_date, ?) END,
-                end_date = ?, updated_at = NOW()
+                end_date = ?,
+                data = JSON_REMOVE(COALESCE(data, JSON_OBJECT()), '$.expiryOverride'),
+                updated_at = NOW()
           WHERE subscription_id = ? AND status IN ('active', 'suspended')`,
         [startDate, startDate, endDate, req.params.id],
       );
@@ -517,16 +519,41 @@ export function registerPlanManagementRoutes(app: Express, provider: PoolProvide
   app.get("/api/v2/plan-management/subscriptions/:id/members", requirePermission("membership.read"), async (req, res, next) => {
     try {
       const pool = requirePool(provider);
-      const [subscriptions]: any = await pool.query("SELECT id, max_members FROM subscriptions WHERE id = ?", [req.params.id]);
+      const [subscriptions]: any = await pool.query(
+        `SELECT s.id, s.max_members, s.status, s.start_date, s.end_date,
+                pv.duration_days, pv.plan_type
+           FROM subscriptions s
+           JOIN plan_versions pv ON pv.id = s.plan_version_id
+          WHERE s.id = ?`,
+        [req.params.id],
+      );
       if (!subscriptions.length) return res.status(404).json({ error: "Subscription not found" });
       const [members]: any = await pool.query(
-        `SELECT sm.*, m.first_name, m.last_name, m.email
-           FROM subscription_members sm LEFT JOIN members m ON m.id = sm.member_id
+        `SELECT sm.*, m.first_name, m.last_name, m.email,
+                a.start_date AS affiliation_start_date,
+                a.end_date AS affiliation_end_date,
+                a.data AS affiliation_data
+           FROM subscription_members sm
+           LEFT JOIN members m ON m.id = sm.member_id
+           LEFT JOIN affiliations a ON a.subscription_member_id = sm.id
           WHERE sm.subscription_id = ? ORDER BY sm.role = 'holder' DESC, sm.joined_at`,
         [req.params.id],
       );
       const occupiedCount = members.filter((member: any) => member.status !== "removed").length;
+      const subscriptionEndDate = dateOnly(subscriptions[0].end_date);
+      const canModifyBeneficiaries =
+        subscriptions[0].status === "active" &&
+        Boolean(subscriptionEndDate && subscriptionEndDate >= new Date().toISOString().slice(0, 10));
       res.json({
+        subscription: {
+          id: subscriptions[0].id,
+          status: subscriptions[0].status,
+          startDate: dateOnly(subscriptions[0].start_date),
+          endDate: subscriptionEndDate,
+          durationDays: Number(subscriptions[0].duration_days || 30),
+          planType: subscriptions[0].plan_type,
+          canModifyBeneficiaries,
+        },
         capacity: {
           maximum: Number(subscriptions[0].max_members),
           occupied: occupiedCount,
@@ -536,6 +563,17 @@ export function registerPlanManagementRoutes(app: Express, provider: PoolProvide
           id: member.id, memberId: member.member_id, role: member.role, status: member.status,
           joinedAt: member.joined_at, leftAt: member.left_at,
           firstName: member.first_name || "", lastName: member.last_name || "", email: member.email || "",
+          effectiveStartDate: dateOnly(member.affiliation_start_date),
+          effectiveEndDate: dateOnly(member.affiliation_end_date) || subscriptionEndDate,
+          maximumEndDate: member.role === "beneficiary"
+            ? addDays(
+                dateOnly(member.joined_at) ||
+                  subscriptionEndDate ||
+                  new Date().toISOString().slice(0, 10),
+                Number(subscriptions[0].duration_days || 30),
+              )
+            : subscriptionEndDate,
+          expiryOverride: Boolean((parseJson(member.affiliation_data) as any).expiryOverride),
           restrictions: parseJson(member.restrictions),
         })),
       });
@@ -550,10 +588,15 @@ export function registerPlanManagementRoutes(app: Express, provider: PoolProvide
       const [subscriptions]: any = await connection.query(
         `SELECT s.*, pv.plan_type, pv.distribution_model
            FROM subscriptions s JOIN plan_versions pv ON pv.id = s.plan_version_id
-          WHERE s.id = ? AND s.status = 'active' FOR UPDATE`,
+          WHERE s.id = ? AND s.status = 'active' AND s.end_date >= CURDATE() FOR UPDATE`,
         [req.params.id],
       );
-      if (!subscriptions.length) throw Object.assign(new Error("Active subscription not found"), { status: 404 });
+      if (!subscriptions.length) {
+        throw Object.assign(
+          new Error("Beneficiaries cannot be modified after the multi-user subscription has expired"),
+          { status: 409, code: "SUBSCRIPTION_EXPIRED" },
+        );
+      }
       const subscription = subscriptions[0];
       if (subscription.plan_type === "individual") {
         throw Object.assign(new Error("Individual plans cannot have beneficiaries"), { status: 409 });
@@ -612,6 +655,13 @@ export function registerPlanManagementRoutes(app: Express, provider: PoolProvide
       if (existing.length) throw Object.assign(new Error("Member is already active in this subscription"), { status: 409 });
 
       const joinedAt = dateOnly(req.body.joinedAt) || new Date().toISOString().slice(0, 10);
+      const subscriptionEndDate = dateOnly(subscription.end_date);
+      if (!subscriptionEndDate || joinedAt > subscriptionEndDate) {
+        throw Object.assign(
+          new Error("The beneficiary join date must be on or before the subscription expiry date"),
+          { status: 400 },
+        );
+      }
       const memberStatus = text(req.body.status) || "active";
       if (!MEMBER_STATUSES.has(memberStatus) || memberStatus === "removed") {
         throw Object.assign(new Error("New subscription members must be active or suspended"), { status: 400 });
@@ -627,9 +677,7 @@ export function registerPlanManagementRoutes(app: Express, provider: PoolProvide
         ],
       );
       const affiliationId = createId("aff");
-      const endDate = subscription.end_date instanceof Date
-        ? subscription.end_date.toISOString().slice(0, 10)
-        : String(subscription.end_date).slice(0, 10);
+      const endDate = subscriptionEndDate;
       await connection.query(
         `INSERT INTO affiliations
           (id, member_id, subscription_id, subscription_member_id, plan_version_id,
@@ -675,7 +723,8 @@ export function registerPlanManagementRoutes(app: Express, provider: PoolProvide
       if (!MEMBER_STATUSES.has(status)) return res.status(400).json({ error: "Invalid member status" });
       await connection.beginTransaction();
       const [rows]: any = await connection.query(
-        `SELECT sm.id, sm.role, sm.status, s.max_members
+        `SELECT sm.id, sm.role, sm.status, s.max_members,
+                s.status AS subscription_status, s.end_date AS subscription_end_date
            FROM subscription_members sm
            JOIN subscriptions s ON s.id = sm.subscription_id
           WHERE sm.subscription_id = ? AND sm.member_id = ?
@@ -683,6 +732,17 @@ export function registerPlanManagementRoutes(app: Express, provider: PoolProvide
         [req.params.subscriptionId, req.params.memberId],
       );
       if (!rows.length) throw Object.assign(new Error("Subscription member not found"), { status: 404 });
+      const subscriptionEndDate = dateOnly(rows[0].subscription_end_date);
+      if (
+        rows[0].subscription_status !== "active" ||
+        !subscriptionEndDate ||
+        subscriptionEndDate < new Date().toISOString().slice(0, 10)
+      ) {
+        throw Object.assign(
+          new Error("Beneficiaries cannot be modified after the multi-user subscription has expired"),
+          { status: 409, code: "SUBSCRIPTION_EXPIRED" },
+        );
+      }
       if (rows[0].role === "holder" && status !== "active") throw Object.assign(new Error("The subscription holder cannot be suspended or removed"), { status: 409 });
       const previousStatus = rows[0].status;
       if (status === "active" && previousStatus === "removed") {
@@ -748,6 +808,206 @@ export function registerPlanManagementRoutes(app: Express, provider: PoolProvide
       );
       await connection.commit();
       res.json({ ok: true, previousStatus, newStatus: status, futureBookingPolicy, cancelledGroupBookings, cancelledPrivateSessions });
+    } catch (error) {
+      await connection.rollback();
+      next(error);
+    } finally { connection.release(); }
+  });
+
+  app.patch("/api/v2/plan-management/subscriptions/:subscriptionId/members/:memberId/expiry", requirePermission("membership.write"), async (req: AuthenticatedRequest, res, next) => {
+    const pool = requirePool(provider);
+    const connection = await pool.getConnection();
+    try {
+      const requestedEndDate = dateOnly(req.body.endDate);
+      if (!requestedEndDate) {
+        return res.status(400).json({ error: "A valid beneficiary expiry date is required" });
+      }
+      await connection.beginTransaction();
+      const [rows]: any = await connection.query(
+        `SELECT sm.id AS subscription_member_id, sm.role, sm.status, sm.joined_at,
+                s.status AS subscription_status, s.end_date AS subscription_end_date,
+                pv.duration_days, a.id AS affiliation_id, a.end_date AS current_end_date
+           FROM subscription_members sm
+           JOIN subscriptions s ON s.id = sm.subscription_id
+           JOIN plan_versions pv ON pv.id = s.plan_version_id
+           LEFT JOIN affiliations a ON a.subscription_member_id = sm.id
+          WHERE sm.subscription_id = ? AND sm.member_id = ?
+          ORDER BY sm.created_at DESC LIMIT 1 FOR UPDATE`,
+        [req.params.subscriptionId, req.params.memberId],
+      );
+      if (!rows.length || !rows[0].affiliation_id) {
+        throw Object.assign(new Error("Beneficiary affiliation not found"), { status: 404 });
+      }
+      const member = rows[0];
+      if (member.role !== "beneficiary") {
+        throw Object.assign(new Error("The holder expiry is controlled by the main subscription"), { status: 409 });
+      }
+      const subscriptionEndDate = dateOnly(member.subscription_end_date);
+      const today = new Date().toISOString().slice(0, 10);
+      if (
+        member.subscription_status !== "active" ||
+        !subscriptionEndDate ||
+        subscriptionEndDate < today
+      ) {
+        throw Object.assign(
+          new Error("Beneficiary expiry cannot be changed after the multi-user subscription has expired"),
+          { status: 409, code: "SUBSCRIPTION_EXPIRED" },
+        );
+      }
+      if (!["active", "suspended"].includes(member.status)) {
+        throw Object.assign(new Error("Only active or suspended beneficiaries can receive an expiry exception"), { status: 409 });
+      }
+      const joinedAt = dateOnly(member.joined_at) || subscriptionEndDate;
+      const maximumEndDate = addDays(joinedAt, Number(member.duration_days || 30));
+      if (requestedEndDate < subscriptionEndDate) {
+        throw Object.assign(
+          new Error("The beneficiary expiry cannot be earlier than the main subscription expiry"),
+          { status: 400 },
+        );
+      }
+      if (requestedEndDate > maximumEndDate) {
+        throw Object.assign(
+          new Error(`The beneficiary expiry cannot exceed ${maximumEndDate}`),
+          { status: 400, code: "BENEFICIARY_DURATION_LIMIT" },
+        );
+      }
+      const previousEndDate = dateOnly(member.current_end_date) || subscriptionEndDate;
+      const expiryOverride = requestedEndDate !== subscriptionEndDate;
+      await connection.query(
+        `UPDATE affiliations
+            SET end_date = ?,
+                data = JSON_SET(COALESCE(data, JSON_OBJECT()), '$.expiryOverride', ?),
+                version = version + 1,
+                updated_at = NOW()
+          WHERE id = ?`,
+        [requestedEndDate, expiryOverride ? 1 : 0, member.affiliation_id],
+      );
+      await connection.query(
+        `INSERT INTO subscription_member_history
+          (id, subscription_id, subscription_member_id, member_id, action, performed_by, details)
+         VALUES (?, ?, ?, ?, 'beneficiary_expiry_changed', ?, ?)`,
+        [
+          createId("smh"), req.params.subscriptionId, member.subscription_member_id,
+          req.params.memberId, req.user?.email || req.user?.uid || null,
+          json({ previousEndDate, newEndDate: requestedEndDate, maximumEndDate, expiryOverride }),
+        ],
+      );
+      await connection.commit();
+      res.json({
+        ok: true,
+        previousEndDate,
+        endDate: requestedEndDate,
+        maximumEndDate,
+        expiryOverride,
+      });
+    } catch (error) {
+      await connection.rollback();
+      next(error);
+    } finally { connection.release(); }
+  });
+
+  app.patch("/api/v2/plan-management/subscriptions/:id/holder", requirePermission("membership.write"), async (req: AuthenticatedRequest, res, next) => {
+    const pool = requirePool(provider);
+    const connection = await pool.getConnection();
+    try {
+      const newHolderMemberId = text(req.body.newHolderMemberId);
+      if (!newHolderMemberId) {
+        return res.status(400).json({ error: "newHolderMemberId is required" });
+      }
+      await connection.beginTransaction();
+      const [subscriptions]: any = await connection.query(
+        `SELECT id, holder_member_id, status, end_date
+           FROM subscriptions
+          WHERE id = ? FOR UPDATE`,
+        [req.params.id],
+      );
+      if (!subscriptions.length) {
+        throw Object.assign(new Error("Subscription not found"), { status: 404 });
+      }
+      const subscription = subscriptions[0];
+      const subscriptionEndDate = dateOnly(subscription.end_date);
+      if (
+        subscription.status !== "active" ||
+        !subscriptionEndDate ||
+        subscriptionEndDate < new Date().toISOString().slice(0, 10)
+      ) {
+        throw Object.assign(
+          new Error("The holder cannot be changed after the multi-user subscription has expired"),
+          { status: 409, code: "SUBSCRIPTION_EXPIRED" },
+        );
+      }
+      const previousHolderMemberId = text(subscription.holder_member_id);
+      if (previousHolderMemberId === newHolderMemberId) {
+        throw Object.assign(new Error("The selected member is already the subscription holder"), { status: 409 });
+      }
+      const [memberRows]: any = await connection.query(
+        `SELECT id, member_id, role, status
+           FROM subscription_members
+          WHERE subscription_id = ?
+            AND member_id IN (?, ?)
+            AND status IN ('active', 'suspended')
+          FOR UPDATE`,
+        [req.params.id, previousHolderMemberId, newHolderMemberId],
+      );
+      const previousHolder = memberRows.find(
+        (member: any) => member.member_id === previousHolderMemberId && member.role === "holder",
+      );
+      const newHolder = memberRows.find(
+        (member: any) => member.member_id === newHolderMemberId && member.role === "beneficiary",
+      );
+      if (!previousHolder) {
+        throw Object.assign(new Error("Current subscription holder record not found"), { status: 409 });
+      }
+      if (!newHolder || newHolder.status !== "active") {
+        throw Object.assign(
+          new Error("The new holder must be an active beneficiary of the same subscription"),
+          { status: 409 },
+        );
+      }
+      await connection.query(
+        "UPDATE subscription_members SET role = 'beneficiary', updated_at = NOW() WHERE id = ?",
+        [previousHolder.id],
+      );
+      await connection.query(
+        "UPDATE subscription_members SET role = 'holder', updated_at = NOW() WHERE id = ?",
+        [newHolder.id],
+      );
+      await connection.query(
+        "UPDATE affiliations SET role = 'beneficiary', is_primary = 0, updated_at = NOW() WHERE subscription_member_id = ?",
+        [previousHolder.id],
+      );
+      await connection.query(
+        "UPDATE affiliations SET role = 'holder', is_primary = 1, end_date = ?, data = JSON_REMOVE(COALESCE(data, JSON_OBJECT()), '$.expiryOverride'), updated_at = NOW() WHERE subscription_member_id = ?",
+        [subscriptionEndDate, newHolder.id],
+      );
+      await connection.query(
+        "UPDATE subscriptions SET holder_member_id = ?, version = version + 1, updated_at = NOW() WHERE id = ?",
+        [newHolderMemberId, req.params.id],
+      );
+      const performedBy = req.user?.email || req.user?.uid || null;
+      await connection.query(
+        `INSERT INTO subscription_member_history
+          (id, subscription_id, subscription_member_id, member_id, action, performed_by, details)
+         VALUES
+          (?, ?, ?, ?, 'holder_transferred_out', ?, ?),
+          (?, ?, ?, ?, 'holder_transferred_in', ?, ?)`,
+        [
+          createId("smh"), req.params.id, previousHolder.id, previousHolderMemberId,
+          performedBy, json({ newHolderMemberId }),
+          createId("smh"), req.params.id, newHolder.id, newHolderMemberId,
+          performedBy, json({ previousHolderMemberId }),
+        ],
+      );
+      await connection.query(
+        `INSERT INTO outbox_events (id, event_type, payload, status)
+         VALUES (?, 'subscription_holder_changed', ?, 'pending')`,
+        [
+          createId("evt"),
+          json({ subscriptionId: req.params.id, previousHolderMemberId, newHolderMemberId }),
+        ],
+      );
+      await connection.commit();
+      res.json({ ok: true, previousHolderMemberId, newHolderMemberId });
     } catch (error) {
       await connection.rollback();
       next(error);
