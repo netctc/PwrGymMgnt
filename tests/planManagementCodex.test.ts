@@ -17,6 +17,18 @@ test("multi-user member contract covers capacity, new members, history and futur
   const source = read("server/planManagement.ts");
   const subscriptions = read("server/subscriptionsV2.ts");
   const lifecycle = read("server/subscriptionLifecycle.ts");
+  const subscriptionsListRoute = subscriptions.slice(
+    subscriptions.indexOf('app.get("/api/v2/subscriptions"'),
+    subscriptions.indexOf('app.post("/api/v2/subscriptions"'),
+  );
+  const subscriptionMembersListRoute = subscriptions.slice(
+    subscriptions.indexOf(
+      'app.get("/api/v2/subscriptions/:id/members"',
+    ),
+    subscriptions.indexOf(
+      'app.post("/api/v2/subscriptions/:id/members"',
+    ),
+  );
   assert.match(source, /CAPACITY_LIMIT_REACHED/);
   assert.match(source, /newMember/);
   assert.match(source, /email address or phone number is required for a new member/);
@@ -28,6 +40,16 @@ test("multi-user member contract covers capacity, new members, history and futur
   assert.match(subscriptions, /sm_filter\.member_id = \?/);
   assert.match(subscriptions, /status IN \('active', 'suspended'\)/);
   assert.match(subscriptions, /holder\.first_name AS holder_first_name/);
+  assert.doesNotMatch(
+    subscriptionsListRoute,
+    /requireFeature/,
+    "existing subscriptions must remain readable when rollout flags are off",
+  );
+  assert.doesNotMatch(
+    subscriptionMembersListRoute,
+    /requireFeature/,
+    "existing beneficiaries must remain readable when rollout flags are off",
+  );
   assert.match(lifecycle, /currentEnd >= today/);
   assert.match(lifecycle, /affiliations SET end_date = \?/);
 });
@@ -84,6 +106,8 @@ test("hybrid subscription flow is atomic and supports deferred member assignment
   assert.match(management, /item\.holderName \|\| item\.holderMemberId/);
   assert.match(members, /renewMultiSubscription/);
   assert.match(members, /sm:max-w-2xl/);
+  assert.match(members, /max-h-\[90vh\]/);
+  assert.match(members, /flex flex-wrap justify-end/);
   assert.match(members, /subscriptionsV2Api\.renewSubscription/);
   assert.match(members, /New multi-user subscription/);
   assert.match(members, /Manage beneficiaries/);
