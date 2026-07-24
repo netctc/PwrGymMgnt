@@ -51,7 +51,8 @@ test("multi-user member contract covers capacity, new members, history and futur
     "existing beneficiaries must remain readable when rollout flags are off",
   );
   assert.match(lifecycle, /currentEnd >= today/);
-  assert.match(lifecycle, /affiliations SET end_date = \?/);
+  assert.match(lifecycle, /SET a\.end_date = \?/);
+  assert.match(lifecycle, /sm\.status IN \('active', 'suspended'\)/);
 });
 
 test("migration seeds bilingual database-backed lists", () => {
@@ -64,6 +65,38 @@ test("migration seeds bilingual database-backed lists", () => {
   assert.match(sql, /mli_plan_family/);
   assert.match(sql, /mli_plan_group/);
   assert.match(sql, /mli_plan_corporate/);
+});
+
+test("multi-user business rules synchronize expiry, preserve history and protect the holder", () => {
+  const management = read("server/planManagement.ts");
+  const lifecycle = read("server/subscriptionLifecycle.ts");
+  const membership = read("server/membership.ts");
+  const managementPage = read("src/pages/MultiUserMemberships.tsx");
+  const membersPage = read("src/pages/Members.tsx");
+  const api = read("src/lib/planManagementApi.ts");
+
+  assert.match(management, /beneficiary_expiry_changed/);
+  assert.match(management, /BENEFICIARY_DURATION_LIMIT/);
+  assert.match(management, /SUBSCRIPTION_EXPIRED/);
+  assert.match(management, /subscriptions\/:subscriptionId\/members\/:memberId\/expiry/);
+  assert.match(management, /subscriptions\/:id\/holder/);
+  assert.match(management, /holder_transferred_out/);
+  assert.match(management, /holder_transferred_in/);
+  assert.match(management, /new holder must be an active beneficiary/i);
+  assert.match(lifecycle, /subscription_renewed/);
+  assert.match(lifecycle, /beneficiaries: beneficiaryRows\.map/);
+  assert.match(lifecycle, /JSON_REMOVE[\s\S]*expiryOverride/);
+  assert.match(membership, /ACTIVE_MULTI_USER_HOLDER/);
+  assert.match(membership, /assertMemberCanBeRestricted/);
+  assert.match(membership, /subscriptionType: "multi_user"/);
+  assert.match(membership, /multiUserRole/);
+  assert.match(api, /updateBeneficiaryExpiry/);
+  assert.match(api, /changeSubscriptionHolder/);
+  assert.match(managementPage, /canModifyBeneficiaries/);
+  assert.match(managementPage, /changeHolder/);
+  assert.match(managementPage, /maximumEndDate/);
+  assert.match(membersPage, /Multi-user ·/);
+  assert.match(membersPage, /holderActionLocked/);
 });
 
 test("frontend routes plans to the new page and exposes settings list maintenance", () => {
