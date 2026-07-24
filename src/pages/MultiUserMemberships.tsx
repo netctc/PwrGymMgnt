@@ -1,6 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
 import {
-  ArrowLeft,
   CalendarDays,
   History,
   Plus,
@@ -534,10 +533,7 @@ export default function MultiUserMemberships() {
         </div>
         <div className="flex flex-wrap gap-2">
           <Button asChild variant="outline">
-            <Link to="/plans">
-              <ArrowLeft className="me-2 h-4 w-4" />
-              {c.back}
-            </Link>
+            <Link to="/plans">{c.back}</Link>
           </Button>
           <Button
             variant="outline"
