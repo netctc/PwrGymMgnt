@@ -1,8 +1,8 @@
 /**
  * Subscriptions V2 — New subscription model with plan versions, multi-user, affiliations.
  * 
- * Registered under /api/v2/subscriptions/* when ENABLE_NEW_SUBSCRIPTION_MODEL flag is active.
- * Coexists with the existing membership.ts module during transition.
+ * Read routes remain available for existing records. Feature flags guard creation and
+ * evolution operations while the existing membership.ts module remains in transition.
  */
 
 import crypto from "crypto";
@@ -122,7 +122,6 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
   app.get("/api/v2/subscriptions", requirePermission("membership.read"), async (req, res, next) => {
     try {
       const pool = requirePool(poolProvider);
-      if (!await requireFeature(pool, "ENABLE_NEW_SUBSCRIPTION_MODEL", res)) return;
       const memberId = normalizeString(req.query.memberId);
       const status = normalizeString(req.query.status);
       const where: string[] = [];
@@ -203,7 +202,6 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
   app.get("/api/v2/subscriptions/:id/members", requirePermission("membership.read"), async (req, res, next) => {
     try {
       const pool = requirePool(poolProvider);
-      if (!await requireFeature(pool, "ENABLE_NEW_SUBSCRIPTION_MODEL", res)) return;
       const [rows]: any = await pool.query(
         `SELECT sm.*, m.first_name, m.last_name, m.email
          FROM subscription_members sm
