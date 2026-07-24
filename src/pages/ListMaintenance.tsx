@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { ArrowLeft, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
@@ -58,7 +58,7 @@ export default function ListMaintenance() {
     setOpen(true);
   };
 
-  const save = async (event: React.FormEvent) => {
+  const save = async (event: FormEvent) => {
     event.preventDefault();
     try {
       const payload = { ...form, sortOrder: Number(form.sortOrder) };
@@ -133,4 +133,3 @@ export default function ListMaintenance() {
     </div>
   );
 }
-
