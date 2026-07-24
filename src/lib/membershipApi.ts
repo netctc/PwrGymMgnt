@@ -69,7 +69,11 @@ async function apiRequest<T>(url: string, options: ApiOptions = {}): Promise<T> 
 
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(payload.error || `Request failed with ${response.status}`);
+    const error = new Error(
+      payload.error || `Request failed with ${response.status}`,
+    ) as Error & { status?: number };
+    error.status = response.status;
+    throw error;
   }
   return payload as T;
 }
