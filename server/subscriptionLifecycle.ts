@@ -169,6 +169,14 @@ export function registerSubscriptionLifecycleRoutes(app: Express, poolProvider: 
 
       const [pvRows]: any = await pool.query("SELECT duration_days FROM plan_versions WHERE id = ?", [sub.plan_version_id]);
       const durationDays = pvRows.length > 0 ? Number(pvRows[0].duration_days || 30) : 30;
+      const [beneficiaryRows]: any = await pool.query(
+        `SELECT sm.member_id, sm.status, sm.joined_at, a.end_date
+           FROM subscription_members sm
+           LEFT JOIN affiliations a ON a.subscription_member_id = sm.id
+          WHERE sm.subscription_id = ? AND sm.role = 'beneficiary'
+          ORDER BY sm.joined_at`,
+        [req.params.id],
+      );
 
       const currentEnd = sub.end_date instanceof Date ? sub.end_date : new Date(sub.end_date);
       const today = new Date();
@@ -185,12 +193,51 @@ export function registerSubscriptionLifecycleRoutes(app: Express, poolProvider: 
 
       // Extend current holder/beneficiary affiliations and reactivate expired ones.
       await pool.query(
-        "UPDATE affiliations SET end_date = ?, updated_at = NOW() WHERE subscription_id = ? AND status IN ('active', 'suspended')",
+        `UPDATE affiliations a
+           JOIN subscription_members sm ON sm.id = a.subscription_member_id
+            SET a.end_date = ?,
+                a.data = JSON_REMOVE(COALESCE(a.data, JSON_OBJECT()), '$.expiryOverride'),
+                a.updated_at = NOW()
+          WHERE a.subscription_id = ?
+            AND a.status IN ('active', 'suspended')
+            AND sm.status IN ('active', 'suspended')`,
         [newEnd.toISOString().slice(0, 10), req.params.id],
       );
       await pool.query(
-        "UPDATE affiliations SET status = 'active', start_date = ?, end_date = ?, updated_at = NOW() WHERE subscription_id = ? AND status IN ('expired', 'cancelled')",
+        `UPDATE affiliations a
+           JOIN subscription_members sm ON sm.id = a.subscription_member_id
+            SET a.status = CASE WHEN sm.status = 'suspended' THEN 'suspended' ELSE 'active' END,
+                a.start_date = ?,
+                a.end_date = ?,
+                a.data = JSON_REMOVE(COALESCE(a.data, JSON_OBJECT()), '$.expiryOverride'),
+                a.updated_at = NOW()
+          WHERE a.subscription_id = ?
+            AND a.status = 'expired'
+            AND sm.status IN ('active', 'suspended')`,
         [newStart.toISOString().slice(0, 10), newEnd.toISOString().slice(0, 10), req.params.id],
+      );
+      await pool.query(
+        `INSERT INTO subscription_member_history
+          (id, subscription_id, member_id, action, performed_by, details)
+         VALUES (?, ?, ?, 'subscription_renewed', ?, ?)`,
+        [
+          createId("smh"),
+          req.params.id,
+          sub.holder_member_id,
+          req.user?.email || req.user?.uid || null,
+          JSON.stringify({
+            previousStartDate: sub.start_date,
+            previousEndDate: sub.end_date,
+            newStartDate: newStart.toISOString().slice(0, 10),
+            newEndDate: newEnd.toISOString().slice(0, 10),
+            beneficiaries: beneficiaryRows.map((member: any) => ({
+              memberId: member.member_id,
+              status: member.status,
+              joinedAt: member.joined_at,
+              previousEndDate: member.end_date,
+            })),
+          }),
+        ],
       );
 
       res.json({ ok: true, subscriptionId: req.params.id, newStartDate: newStart.toISOString().slice(0, 10), newEndDate: newEnd.toISOString().slice(0, 10) });
