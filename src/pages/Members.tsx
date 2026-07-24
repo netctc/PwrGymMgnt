@@ -35,7 +35,6 @@ import {
   RefreshCw,
   Search,
   FileText,
-  UserPlus,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { usePersistentState } from '../hooks/usePersistentState';
@@ -583,7 +582,7 @@ The secure QR token is embedded in the attached PDF/QR image.`;
         </div>
         <div className="flex flex-wrap gap-2">
           <Button variant="outline" asChild>
-            <Link to={newMultiUserUrl()}><UserPlus className="mr-2 h-4 w-4" />{multiUserCopy.create}</Link>
+            <Link to={newMultiUserUrl()}>{multiUserCopy.create}</Link>
           </Button>
           <Button variant="outline" onClick={() => { loadPlans(); loadMembers(); }} disabled={loading}>
             <RefreshCw className="mr-2 h-4 w-4" /> Refresh
@@ -744,37 +743,37 @@ The secure QR token is embedded in the attached PDF/QR image.`;
       />
 
       <Dialog open={formOpen} onOpenChange={setFormOpen}>
-        <DialogContent className="sm:max-w-xl">
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
           <DialogHeader><DialogTitle>{memberForm.id ? 'Edit Member' : 'Create Member'}</DialogTitle></DialogHeader>
-          <form onSubmit={submitMember} className="space-y-4">
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-              <div className="space-y-2">
+          <form onSubmit={submitMember} className="min-w-0 space-y-4">
+            <div className="grid min-w-0 grid-cols-1 gap-4 md:grid-cols-2">
+              <div className="min-w-0 space-y-2">
                 <Label htmlFor="firstName">First Name</Label>
                 <Input id="firstName" value={memberForm.firstName} onChange={(event) => updateMemberForm('firstName', event.target.value)} required />
               </div>
-              <div className="space-y-2">
+              <div className="min-w-0 space-y-2">
                 <Label htmlFor="lastName">Last Name</Label>
                 <Input id="lastName" value={memberForm.lastName} onChange={(event) => updateMemberForm('lastName', event.target.value)} required />
               </div>
             </div>
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-              <div className="space-y-2">
+            <div className="grid min-w-0 grid-cols-1 gap-4 md:grid-cols-2">
+              <div className="min-w-0 space-y-2">
                 <Label htmlFor="email">Email</Label>
                 <Input id="email" type="email" value={memberForm.email} onChange={(event) => updateMemberForm('email', event.target.value)} placeholder="optional if phone provided" />
                 <p className="text-xs text-slate-500">If not provided, auto-generated as firstname.lastname@powergym.local</p>
               </div>
-              <div className="space-y-2">
+              <div className="min-w-0 space-y-2">
                 <Label htmlFor="phone">Phone</Label>
                 <Input id="phone" value={memberForm.phone} onChange={(event) => updateMemberForm('phone', event.target.value)} placeholder="optional if email provided" />
               </div>
             </div>
-            <div className={`grid grid-cols-1 gap-4 ${memberForm.id ? 'md:grid-cols-2' : ''}`}>
-              <div className="space-y-2">
+            <div className={`grid min-w-0 grid-cols-1 gap-4 ${memberForm.id ? 'md:grid-cols-2' : ''}`}>
+              <div className="min-w-0 space-y-2">
                 <Label htmlFor="joinDate">Join Date</Label>
                 <DateInput id="joinDate" value={memberForm.joinDate} onChange={(v) => console.log(v)} />
               </div>
               {memberForm.id && (
-                <div className="space-y-2">
+                <div className="min-w-0 space-y-2">
                   <Label htmlFor="memberStatus">Status</Label>
                   <select
                     id="memberStatus"
@@ -789,11 +788,11 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                 </div>
               )}
             </div>
-            <div className="flex justify-end gap-2 pt-2">
+            <div className="flex flex-wrap justify-end gap-2 pt-2">
               {memberForm.id && (
                 <>
                   <Button type="button" variant="outline" asChild>
-                    <Link to={newMultiUserUrl(memberForm.id)}><UserPlus className="mr-2 h-4 w-4" />{multiUserCopy.create}</Link>
+                    <Link to={newMultiUserUrl(memberForm.id)}>{multiUserCopy.create}</Link>
                   </Button>
                   <Button type="button" variant="outline" asChild>
                     <Link to={manageBeneficiariesUrl(memberForm.id)}>{multiUserCopy.manage}</Link>
@@ -860,7 +859,7 @@ The secure QR token is embedded in the attached PDF/QR image.`;
               {renewMember && (
                 <>
                   <Button type="button" variant="outline" asChild>
-                    <Link to={newMultiUserUrl(renewMember.id)}><UserPlus className="mr-2 h-4 w-4" />{multiUserCopy.create}</Link>
+                    <Link to={newMultiUserUrl(renewMember.id)}>{multiUserCopy.create}</Link>
                   </Button>
                   <Button type="button" variant="outline" asChild>
                     <Link to={manageBeneficiariesUrl(renewMember.id)}>{multiUserCopy.manage}</Link>
@@ -947,7 +946,7 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                     <div><span className="text-slate-500">Member ID:</span> {detail.member.id}</div>
                     <div className="flex flex-wrap gap-2 md:col-span-2">
                       <Button size="sm" variant="outline" asChild>
-                        <Link to={newMultiUserUrl(detail.member.id)}><UserPlus className="mr-2 h-4 w-4" />{multiUserCopy.create}</Link>
+                        <Link to={newMultiUserUrl(detail.member.id)}>{multiUserCopy.create}</Link>
                       </Button>
                       <Button size="sm" variant="outline" asChild>
                         <Link to={manageBeneficiariesUrl(detail.member.id)}>{multiUserCopy.manage}</Link>
