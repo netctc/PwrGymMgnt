@@ -38,6 +38,9 @@ export type SubscriptionV2 = {
   planName: string;
   planType: string;
   holderMemberId: string;
+  holderFirstName?: string;
+  holderLastName?: string;
+  holderName?: string;
   status: string;
   startDate: string;
   endDate: string;
