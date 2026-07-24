@@ -40,6 +40,10 @@ import {
 import { toast } from 'sonner';
 import { usePersistentState } from '../hooks/usePersistentState';
 import { useLocalization } from '../contexts/LocalizationContext';
+import {
+  subscriptionsV2Api,
+  type SubscriptionV2,
+} from '../lib/subscriptionsV2Api';
 
 type MemberForm = {
   id?: string;
@@ -175,6 +179,9 @@ export default function Members() {
   const [renewPlanId, setRenewPlanId] = useState('');
   const [renewStartDate, setRenewStartDate] = useState(today());
   const [renewCurrentExpiry, setRenewCurrentExpiry] = useState('');
+  const [renewCurrentPlan, setRenewCurrentPlan] = useState('');
+  const [renewMultiSubscription, setRenewMultiSubscription] =
+    useState<SubscriptionV2 | null>(null);
   const [qrOpen, setQrOpen] = useState(false);
   const [qrMember, setQrMember] = useState<MembershipMember | null>(null);
   const [accessToken, setAccessToken] = useState('');
@@ -193,8 +200,23 @@ export default function Members() {
   const archivedCount = useMemo(() => members.filter((member) => member.status === 'archived').length, [members]);
   const selectedRenewPlan = useMemo(() => plans.find((plan) => plan.id === renewPlanId) || null, [plans, renewPlanId]);
   const renewEndDate = useMemo(
-    () => (renewStartDate && selectedRenewPlan ? addDaysToDate(renewStartDate, selectedRenewPlan.durationDays) : ''),
-    [renewStartDate, selectedRenewPlan],
+    () => {
+      if (!renewStartDate) return '';
+      if (selectedRenewPlan) {
+        return addDaysToDate(renewStartDate, selectedRenewPlan.durationDays);
+      }
+      if (renewMultiSubscription) {
+        const start = new Date(`${renewMultiSubscription.startDate}T00:00:00.000Z`);
+        const end = new Date(`${renewMultiSubscription.endDate}T00:00:00.000Z`);
+        const durationDays = Math.max(
+          1,
+          Math.round((end.getTime() - start.getTime()) / 86_400_000),
+        );
+        return addDaysToDate(renewStartDate, durationDays);
+      }
+      return '';
+    },
+    [renewStartDate, renewMultiSubscription, selectedRenewPlan],
   );
 
   const loadPlans = async () => {
@@ -337,12 +359,39 @@ export default function Members() {
     setRenewMember(member);
     setRenewPlanId(plans[0]?.id || '');
     setRenewCurrentExpiry('');
+    setRenewCurrentPlan('');
+    setRenewMultiSubscription(null);
     setRenewStartDate(today());
     setRenewOpen(true);
 
     try {
-      const response = await membershipApi.getMember(member.id);
-      const currentExpiry = getLatestSubscriptionEndDate(response.subscriptions);
+      const [response, multiResponse] = await Promise.all([
+        membershipApi.getMember(member.id),
+        subscriptionsV2Api
+          .listSubscriptions({ memberId: member.id, status: 'all' })
+          .catch(() => ({ subscriptions: [] as SubscriptionV2[] })),
+      ]);
+      const multiSubscription =
+        multiResponse.subscriptions
+          .filter((subscription) => subscription.planType !== 'individual')
+          .sort((a, b) => String(b.endDate).localeCompare(String(a.endDate)))[0] ||
+        null;
+      const latestLegacySubscription = [...response.subscriptions].sort((a, b) =>
+        String(b.endDate).localeCompare(String(a.endDate)),
+      )[0];
+      const currentExpiry =
+        multiSubscription?.endDate ||
+        getLatestSubscriptionEndDate(response.subscriptions);
+      setRenewMultiSubscription(multiSubscription);
+      setRenewCurrentPlan(
+        multiSubscription?.planName ||
+          latestLegacySubscription?.planName ||
+          response.member.currentPlan ||
+          '',
+      );
+      if (multiSubscription?.planId) {
+        setRenewPlanId(multiSubscription.planId);
+      }
       setRenewCurrentExpiry(currentExpiry);
       setRenewStartDate(computeRenewalStartDate(currentExpiry));
     } catch (err: any) {
@@ -355,6 +404,15 @@ export default function Members() {
     if (!renewMember) return;
     setSaving(true);
     try {
+      if (renewMultiSubscription) {
+        await subscriptionsV2Api.renewSubscription(
+          renewMultiSubscription.id,
+        );
+        toast.success('Multi-user subscription renewed');
+        setRenewOpen(false);
+        await loadMembers();
+        return;
+      }
       const plan = plans.find((item) => item.id === renewPlanId);
       if (!plan) throw new Error('Select an active plan before renewing.');
       await membershipApi.createSubscription(renewMember.id, {
@@ -752,26 +810,35 @@ The secure QR token is embedded in the attached PDF/QR image.`;
       </Dialog>
 
       <Dialog open={renewOpen} onOpenChange={setRenewOpen}>
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="sm:max-w-2xl">
           <DialogHeader><DialogTitle>Renew Subscription</DialogTitle></DialogHeader>
-          <form onSubmit={submitRenewal} className="space-y-4">
+          <form onSubmit={submitRenewal} className="min-w-0 space-y-4">
             <div className="rounded-lg bg-slate-50 p-3 text-sm">
               <p className="font-medium text-slate-900">{renewMember?.firstName} {renewMember?.lastName}</p>
-              <p className="text-slate-500">Current plan: {renewMember?.currentPlan || '—'}</p>
+              <p className="text-slate-500">Current plan: {renewCurrentPlan || '—'}</p>
             </div>
-            <div className="space-y-2">
+            <div className="min-w-0 space-y-2">
               <Label htmlFor="renewPlan">Plan</Label>
               <select
                 id="renewPlan"
-                className="h-8 w-full rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+                className="h-9 w-full min-w-0 max-w-full rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
                 value={renewPlanId}
                 onChange={(event) => setRenewPlanId(event.target.value)}
+                disabled={Boolean(renewMultiSubscription)}
                 required
               >
-                {plans.length === 0 && <option value="">No active plans available</option>}
-                {plans.map((plan) => (
-                  <option key={plan.id} value={plan.id}>{plan.name} - {formatMoney(plan.price, plan.currency)} / {plan.durationDays} days</option>
-                ))}
+                {renewMultiSubscription ? (
+                  <option value={renewMultiSubscription.planId}>
+                    {renewMultiSubscription.planName}
+                  </option>
+                ) : (
+                  <>
+                    {plans.length === 0 && <option value="">No active plans available</option>}
+                    {plans.map((plan) => (
+                      <option key={plan.id} value={plan.id}>{plan.name} - {formatMoney(plan.price, plan.currency)} / {plan.durationDays} days</option>
+                    ))}
+                  </>
+                )}
               </select>
             </div>
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -789,7 +856,7 @@ The secure QR token is embedded in the attached PDF/QR image.`;
               <Input id="endDate" value={formatDate(renewEndDate)} readOnly disabled />
               <p className="text-xs text-slate-500">End Date is calculated automatically from the renewal start date plus the selected plan duration.</p>
             </div>
-            <div className="flex justify-end gap-2 pt-2">
+            <div className="flex flex-wrap justify-end gap-2 pt-2">
               {renewMember && (
                 <>
                   <Button type="button" variant="outline" asChild>
@@ -801,7 +868,18 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                 </>
               )}
               <Button type="button" variant="outline" onClick={() => setRenewOpen(false)}>Cancel</Button>
-              <Button type="submit" disabled={saving || plans.length === 0}>{saving ? 'Renewing...' : 'Renew & Invoice'}</Button>
+              <Button
+                type="submit"
+                disabled={
+                  saving || (!renewMultiSubscription && plans.length === 0)
+                }
+              >
+                {saving
+                  ? 'Renewing...'
+                  : renewMultiSubscription
+                    ? 'Renew Subscription'
+                    : 'Renew & Invoice'}
+              </Button>
             </div>
           </form>
         </DialogContent>
