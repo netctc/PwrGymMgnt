@@ -143,9 +143,11 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
       if (status && status !== "all") { where.push("s.status = ?"); params.push(status); }
       const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
       const [rows]: any = await pool.query(
-        `SELECT s.*, pv.name AS plan_name, pv.plan_type, pv.sessions_unlimited, pv.sessions_per_cycle, pv.distribution_model
+        `SELECT s.*, pv.name AS plan_name, pv.plan_type, pv.sessions_unlimited, pv.sessions_per_cycle, pv.distribution_model,
+                holder.first_name AS holder_first_name, holder.last_name AS holder_last_name
          FROM subscriptions s
          LEFT JOIN plan_versions pv ON pv.id = s.plan_version_id
+         LEFT JOIN members holder ON holder.id = s.holder_member_id
          ${clause} ORDER BY s.created_at DESC LIMIT 200`,
         params,
       );
@@ -638,6 +640,8 @@ function mapPlanVersion(row: any) {
 }
 
 function mapSubscription(row: any) {
+  const holderFirstName = row.holder_first_name || "";
+  const holderLastName = row.holder_last_name || "";
   return {
     id: row.id,
     planId: row.plan_id,
@@ -645,6 +649,9 @@ function mapSubscription(row: any) {
     planName: row.plan_name || "",
     planType: row.plan_type || "individual",
     holderMemberId: row.holder_member_id,
+    holderFirstName,
+    holderLastName,
+    holderName: `${holderFirstName} ${holderLastName}`.trim(),
     status: row.status,
     startDate: row.start_date ? String(row.start_date).slice(0, 10) : "",
     endDate: row.end_date ? String(row.end_date).slice(0, 10) : "",
