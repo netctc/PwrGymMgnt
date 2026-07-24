@@ -236,8 +236,25 @@ export default function MultiUserMemberships() {
           .listMaintenance()
           .catch(() => ({ lists: [] as MaintenanceList[] })),
       ]);
-      const multi = response.subscriptions.filter(
+      const multiSubscriptions = response.subscriptions.filter(
         (item) => item.planType !== "individual",
+      );
+      const multi = await Promise.all(
+        multiSubscriptions.map(async (item) => {
+          if (item.holderName?.trim()) return item;
+          try {
+            const holder = await membershipApi.getMember(item.holderMemberId);
+            return {
+              ...item,
+              holderFirstName: holder.member.firstName,
+              holderLastName: holder.member.lastName,
+              holderName:
+                `${holder.member.firstName} ${holder.member.lastName}`.trim(),
+            };
+          } catch {
+            return item;
+          }
+        }),
       );
       setSubscriptions(multi);
       setLists(listResponse.lists);
@@ -558,7 +575,7 @@ export default function MultiUserMemberships() {
               </option>
               {subscriptions.map((item) => (
                 <option key={item.id} value={item.id}>
-                  {item.planName} — {item.id}
+                  {item.holderName || item.holderMemberId} — {item.planName}
                 </option>
               ))}
             </select>
