@@ -109,6 +109,19 @@ const copy = {
     unableLoadHistory: "Unable to load history.",
     serverUpdateRequired:
       "This action requires the latest server version. Removing a member remains available.",
+    expiry: "Expiry",
+    extendExpiry: "Modify expiry",
+    mainExpiry: "Main subscription expiry",
+    maximumExpiry: "Maximum permitted expiry",
+    expiryUpdated: "Beneficiary expiry updated.",
+    changeHolder: "Change holder",
+    selectNewHolder: "Select the new holder",
+    holderChanged: "Subscription holder changed.",
+    expiredLocked:
+      "This subscription has expired. Its beneficiary list and roles can no longer be modified.",
+    noHolderCandidates:
+      "There are no active beneficiaries available to become the holder.",
+    event: "Event",
   },
   ar: {
     title: "العضويات متعددة المستخدمين",
@@ -168,6 +181,19 @@ const copy = {
     unableLoadHistory: "تعذر تحميل السجل.",
     serverUpdateRequired:
       "يتطلب هذا الإجراء أحدث إصدار من الخادم. لا تزال إزالة العضو متاحة.",
+    expiry: "تاريخ الانتهاء",
+    extendExpiry: "تعديل تاريخ الانتهاء",
+    mainExpiry: "انتهاء الاشتراك الرئيسي",
+    maximumExpiry: "أقصى تاريخ انتهاء مسموح",
+    expiryUpdated: "تم تحديث تاريخ انتهاء المستفيد.",
+    changeHolder: "تغيير المسؤول",
+    selectNewHolder: "اختر المسؤول الجديد",
+    holderChanged: "تم تغيير مسؤول الاشتراك.",
+    expiredLocked:
+      "انتهت صلاحية هذا الاشتراك. لا يمكن تعديل قائمة المستفيدين أو أدوارهم.",
+    noHolderCandidates:
+      "لا يوجد مستفيدون نشطون متاحون لتولي دور المسؤول.",
+    event: "الحدث",
   },
 } as const;
 
@@ -222,6 +248,19 @@ export default function MultiUserMemberships() {
   const [actionBusy, setActionBusy] = useState(false);
   const [memberSearch, setMemberSearch] = useState("");
   const [memberResults, setMemberResults] = useState<MembershipMember[]>([]);
+  const [managedSubscription, setManagedSubscription] = useState<{
+    status: string;
+    startDate: string;
+    endDate: string;
+    durationDays: number;
+    planType: string;
+    canModifyBeneficiaries: boolean;
+  } | null>(null);
+  const [expiryOpen, setExpiryOpen] = useState(false);
+  const [expiryMember, setExpiryMember] = useState<any | null>(null);
+  const [expiryDate, setExpiryDate] = useState("");
+  const [holderOpen, setHolderOpen] = useState(false);
+  const [newHolderMemberId, setNewHolderMemberId] = useState("");
 
   const loadSubscriptions = async () => {
     setLoading(true);
@@ -281,6 +320,7 @@ export default function MultiUserMemberships() {
     if (!subscriptionId) {
       setMembers([]);
       setCapacity({ maximum: 0, occupied: 0, available: 0 });
+      setManagedSubscription(null);
       return;
     }
     setMembersLoading(true);
@@ -289,6 +329,7 @@ export default function MultiUserMemberships() {
         await planManagementApi.listSubscriptionMembers(subscriptionId);
       setMembers(response.members as any[]);
       setCapacity(response.capacity);
+      setManagedSubscription(response.subscription);
     } catch (error: any) {
       if (error?.status === 404) {
         try {
@@ -307,6 +348,19 @@ export default function MultiUserMemberships() {
             occupied,
             available: Math.max(maximum - occupied, 0),
           });
+          const today = new Date().toISOString().slice(0, 10);
+          setManagedSubscription({
+            status: selected?.status || "",
+            startDate: selected?.startDate || "",
+            endDate: selected?.endDate || "",
+            durationDays: 0,
+            planType: selected?.planType || "",
+            canModifyBeneficiaries: Boolean(
+              selected?.status === "active" &&
+                selected.endDate &&
+                selected.endDate >= today,
+            ),
+          });
           return;
         } catch (fallbackError: any) {
           error = fallbackError;
@@ -314,6 +368,7 @@ export default function MultiUserMemberships() {
       }
       setMembers([]);
       setCapacity({ maximum: 0, occupied: 0, available: 0 });
+      setManagedSubscription(null);
       toast.error(error?.message || c.unableLoadMembers);
     } finally {
       setMembersLoading(false);
@@ -348,6 +403,13 @@ export default function MultiUserMemberships() {
   const memberStatusOptions = listOptions("subscription_member_status", []);
   const memberStatusLabel = (status: string) =>
     memberStatusOptions.find((item) => item.code === status)?.label || status;
+  const canModifyBeneficiaries = Boolean(
+    managedSubscription?.canModifyBeneficiaries,
+  );
+  const holderCandidates = members.filter(
+    (member) =>
+      member.role === "beneficiary" && member.status === "active",
+  );
 
   const openDates = () => {
     const selected = subscriptions.find((item) => item.id === selectedId);
@@ -489,6 +551,66 @@ export default function MultiUserMemberships() {
     }
   };
 
+  const openExpiry = (member: any) => {
+    setExpiryMember(member);
+    setExpiryDate(
+      member.effectiveEndDate ||
+        managedSubscription?.endDate ||
+        "",
+    );
+    setExpiryOpen(true);
+  };
+
+  const updateExpiry = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!expiryMember || !expiryDate) return;
+    if (
+      expiryMember.maximumEndDate &&
+      expiryDate > expiryMember.maximumEndDate
+    ) {
+      return toast.error(
+        `${c.maximumExpiry}: ${expiryMember.maximumEndDate}`,
+      );
+    }
+    setActionBusy(true);
+    try {
+      await planManagementApi.updateBeneficiaryExpiry(
+        selectedId,
+        expiryMember.memberId,
+        expiryDate,
+      );
+      setExpiryOpen(false);
+      setExpiryMember(null);
+      await loadMembers(selectedId);
+      toast.success(c.expiryUpdated);
+    } catch (error: any) {
+      toast.error(error?.message || c.unableUpdateMember);
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const changeHolder = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!newHolderMemberId) return toast.error(c.memberRequired);
+    setActionBusy(true);
+    try {
+      await planManagementApi.changeSubscriptionHolder(
+        selectedId,
+        newHolderMemberId,
+      );
+      setHolderOpen(false);
+      setNewHolderMemberId("");
+      await loadSubscriptions();
+      await loadMembers(selectedId);
+      toast.success(c.holderChanged);
+    } catch (error: any) {
+      toast.error(error?.message || c.unableUpdateMember);
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
   const searchExistingMembers = async () => {
     if (!memberSearch.trim()) {
       setMemberResults([]);
@@ -584,7 +706,7 @@ export default function MultiUserMemberships() {
               {capacity.available} {c.available}
             </div>
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <Button
               variant="outline"
               onClick={openDates}
@@ -602,6 +724,21 @@ export default function MultiUserMemberships() {
               {c.history}
             </Button>
             <Button
+              variant="outline"
+              onClick={() => {
+                setNewHolderMemberId(holderCandidates[0]?.memberId || "");
+                setHolderOpen(true);
+              }}
+              disabled={
+                !selectedId ||
+                !canModifyBeneficiaries ||
+                holderCandidates.length === 0 ||
+                actionBusy
+              }
+            >
+              {c.changeHolder}
+            </Button>
+            <Button
               onClick={() => {
                 const selected = subscriptions.find(
                   (item) => item.id === selectedId,
@@ -617,7 +754,10 @@ export default function MultiUserMemberships() {
                 setAddOpen(true);
               }}
               disabled={
-                !selectedId || capacity.available < 1 || actionBusy
+                !selectedId ||
+                !canModifyBeneficiaries ||
+                capacity.available < 1 ||
+                actionBusy
               }
             >
               <Plus className="me-2 h-4 w-4" />
@@ -626,6 +766,12 @@ export default function MultiUserMemberships() {
           </div>
         </CardContent>
       </Card>
+
+      {selectedId && managedSubscription && !canModifyBeneficiaries && (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          {c.expiredLocked}
+        </div>
+      )}
 
       <Card>
         <CardHeader className="flex flex-row items-center justify-between">
@@ -662,6 +808,7 @@ export default function MultiUserMemberships() {
                 <TableHead>{c.member}</TableHead>
                 <TableHead>{c.role}</TableHead>
                 <TableHead>{c.joined}</TableHead>
+                <TableHead>{c.expiry}</TableHead>
                 <TableHead>{c.status}</TableHead>
                 <TableHead>{c.restrictions}</TableHead>
                 <TableHead className="text-end">{c.actions}</TableHead>
@@ -671,7 +818,7 @@ export default function MultiUserMemberships() {
               {membersLoading ? (
                 <TableRow>
                   <TableCell
-                    colSpan={6}
+                    colSpan={7}
                     className="py-8 text-center text-slate-500"
                   >
                     {c.loading}
@@ -680,7 +827,7 @@ export default function MultiUserMemberships() {
               ) : members.length === 0 ? (
                 <TableRow>
                   <TableCell
-                    colSpan={6}
+                    colSpan={7}
                     className="py-8 text-center text-slate-500"
                   >
                     {c.noMembers}
@@ -706,6 +853,18 @@ export default function MultiUserMemberships() {
                         : "—"}
                     </TableCell>
                     <TableCell>
+                      <div>
+                        {member.effectiveEndDate ||
+                          managedSubscription?.endDate ||
+                          "—"}
+                      </div>
+                      {member.expiryOverride && (
+                        <div className="text-xs text-amber-700">
+                          {c.maximumExpiry}: {member.maximumEndDate}
+                        </div>
+                      )}
+                    </TableCell>
+                    <TableCell>
                       <Badge
                         variant={
                           member.status === "active" ? "default" : "secondary"
@@ -719,13 +878,27 @@ export default function MultiUserMemberships() {
                     </TableCell>
                     <TableCell className="text-end">
                       {member.role !== "holder" && (
-                        <div className="flex justify-end gap-1">
+                        <div className="flex flex-wrap justify-end gap-1">
+                          {["active", "suspended"].includes(member.status) && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => openExpiry(member)}
+                              disabled={
+                                actionBusy || !canModifyBeneficiaries
+                              }
+                            >
+                              {c.extendExpiry}
+                            </Button>
+                          )}
                           {member.status !== "active" && (
                             <Button
                               size="sm"
                               variant="outline"
                               onClick={() => updateStatus(member, "active")}
-                              disabled={actionBusy}
+                              disabled={
+                                actionBusy || !canModifyBeneficiaries
+                              }
                             >
                               {c.activate}
                             </Button>
@@ -735,7 +908,9 @@ export default function MultiUserMemberships() {
                               size="sm"
                               variant="outline"
                               onClick={() => updateStatus(member, "suspended")}
-                              disabled={actionBusy}
+                              disabled={
+                                actionBusy || !canModifyBeneficiaries
+                              }
                             >
                               {c.suspend}
                             </Button>
@@ -745,7 +920,9 @@ export default function MultiUserMemberships() {
                               size="sm"
                               variant="destructive"
                               onClick={() => updateStatus(member, "removed")}
-                              disabled={actionBusy}
+                              disabled={
+                                actionBusy || !canModifyBeneficiaries
+                              }
                             >
                               {c.remove}
                             </Button>
@@ -760,6 +937,105 @@ export default function MultiUserMemberships() {
           </Table>
         </CardContent>
       </Card>
+
+      <Dialog open={holderOpen} onOpenChange={setHolderOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{c.changeHolder}</DialogTitle>
+          </DialogHeader>
+          <form onSubmit={changeHolder} className="space-y-4">
+            <div className="space-y-2">
+              <Label>{c.selectNewHolder}</Label>
+              {holderCandidates.length === 0 ? (
+                <p className="text-sm text-slate-500">
+                  {c.noHolderCandidates}
+                </p>
+              ) : (
+                <select
+                  className="h-10 w-full rounded-md border bg-white px-3"
+                  value={newHolderMemberId}
+                  onChange={(event) =>
+                    setNewHolderMemberId(event.target.value)
+                  }
+                  required
+                >
+                  {holderCandidates.map((member) => (
+                    <option key={member.memberId} value={member.memberId}>
+                      {member.firstName} {member.lastName}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setHolderOpen(false)}
+              >
+                {c.cancel}
+              </Button>
+              <Button
+                type="submit"
+                disabled={
+                  actionBusy ||
+                  !newHolderMemberId ||
+                  !canModifyBeneficiaries
+                }
+              >
+                {c.changeHolder}
+              </Button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={expiryOpen} onOpenChange={setExpiryOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{c.extendExpiry}</DialogTitle>
+          </DialogHeader>
+          <form onSubmit={updateExpiry} className="space-y-4">
+            <div className="rounded-md bg-slate-50 p-3 text-sm">
+              <div className="font-medium">
+                {expiryMember?.firstName} {expiryMember?.lastName}
+              </div>
+              <div className="mt-1 text-slate-500">
+                {c.mainExpiry}: {managedSubscription?.endDate || "—"}
+              </div>
+              <div className="text-slate-500">
+                {c.maximumExpiry}: {expiryMember?.maximumEndDate || "—"}
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label>{c.expiry}</Label>
+              <DateInput
+                value={expiryDate}
+                onChange={setExpiryDate}
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setExpiryOpen(false)}
+              >
+                {c.cancel}
+              </Button>
+              <Button
+                type="submit"
+                disabled={
+                  actionBusy ||
+                  !expiryDate ||
+                  !canModifyBeneficiaries
+                }
+              >
+                {c.saveDates}
+              </Button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={addOpen} onOpenChange={setAddOpen}>
         <DialogContent>
@@ -961,6 +1237,7 @@ export default function MultiUserMemberships() {
             <TableHeader>
               <TableRow>
                 <TableHead>{c.member}</TableHead>
+                <TableHead>{c.event}</TableHead>
                 <TableHead>{c.status}</TableHead>
                 <TableHead>{c.joined}</TableHead>
               </TableRow>
@@ -969,6 +1246,17 @@ export default function MultiUserMemberships() {
               {history.map((item) => (
                 <TableRow key={item.id}>
                   <TableCell>{item.memberId}</TableCell>
+                  <TableCell>
+                    <div>{item.action || "—"}</div>
+                    {Array.isArray(item.details?.beneficiaries) &&
+                      item.details.beneficiaries.length > 0 && (
+                        <div className="mt-1 max-w-64 text-xs text-slate-500">
+                          {item.details.beneficiaries
+                            .map((member: any) => member.memberId)
+                            .join(", ")}
+                        </div>
+                      )}
+                  </TableCell>
                   <TableCell>
                     {item.previousStatus || "—"} → {item.newStatus || "—"}
                   </TableCell>
