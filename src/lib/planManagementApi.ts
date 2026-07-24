@@ -99,6 +99,15 @@ export const planManagementApi = {
     ),
   listSubscriptionMembers: (subscriptionId: string) =>
     request<{
+      subscription: {
+        id: string;
+        status: string;
+        startDate: string;
+        endDate: string;
+        durationDays: number;
+        planType: string;
+        canModifyBeneficiaries: boolean;
+      };
       capacity: { maximum: number; occupied: number; available: number };
       members: Array<Record<string, unknown>>;
     }>(
@@ -141,6 +150,36 @@ export const planManagementApi = {
       {
         method: "PATCH",
         body: JSON.stringify(payload),
+      },
+    ),
+  updateBeneficiaryExpiry: (
+    subscriptionId: string,
+    memberId: string,
+    endDate: string,
+  ) =>
+    request<{
+      ok: boolean;
+      previousEndDate: string;
+      endDate: string;
+      maximumEndDate: string;
+      expiryOverride: boolean;
+    }>(
+      `/api/v2/plan-management/subscriptions/${encodeURIComponent(subscriptionId)}/members/${encodeURIComponent(memberId)}/expiry`,
+      { method: "PATCH", body: JSON.stringify({ endDate }) },
+    ),
+  changeSubscriptionHolder: (
+    subscriptionId: string,
+    newHolderMemberId: string,
+  ) =>
+    request<{
+      ok: boolean;
+      previousHolderMemberId: string;
+      newHolderMemberId: string;
+    }>(
+      `/api/v2/plan-management/subscriptions/${encodeURIComponent(subscriptionId)}/holder`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ newHolderMemberId }),
       },
     ),
   getSubscriptionMemberHistory: (subscriptionId: string) =>
