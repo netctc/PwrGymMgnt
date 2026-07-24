@@ -525,9 +525,13 @@ export function registerPlanManagementRoutes(app: Express, provider: PoolProvide
           WHERE sm.subscription_id = ? ORDER BY sm.role = 'holder' DESC, sm.joined_at`,
         [req.params.id],
       );
-      const activeCount = members.filter((member: any) => member.status === "active").length;
+      const occupiedCount = members.filter((member: any) => member.status !== "removed").length;
       res.json({
-        capacity: { maximum: Number(subscriptions[0].max_members), occupied: activeCount, available: Math.max(0, Number(subscriptions[0].max_members) - activeCount) },
+        capacity: {
+          maximum: Number(subscriptions[0].max_members),
+          occupied: occupiedCount,
+          available: Math.max(0, Number(subscriptions[0].max_members) - occupiedCount),
+        },
         members: members.map((member: any) => ({
           id: member.id, memberId: member.member_id, role: member.role, status: member.status,
           joinedAt: member.joined_at, leftAt: member.left_at,
@@ -555,7 +559,7 @@ export function registerPlanManagementRoutes(app: Express, provider: PoolProvide
         throw Object.assign(new Error("Individual plans cannot have beneficiaries"), { status: 409 });
       }
       const [counts]: any = await connection.query(
-        "SELECT COUNT(*) AS occupied FROM subscription_members WHERE subscription_id = ? AND status = 'active'",
+        "SELECT COUNT(*) AS occupied FROM subscription_members WHERE subscription_id = ? AND status IN ('active', 'suspended')",
         [req.params.id],
       );
       if (Number(counts[0]?.occupied || 0) >= Number(subscription.max_members)) {
@@ -567,17 +571,34 @@ export function registerPlanManagementRoutes(app: Express, provider: PoolProvide
         const newMember = req.body.newMember || {};
         const firstName = text(newMember.firstName);
         const lastName = text(newMember.lastName);
-        const email = text(newMember.email).toLowerCase();
-        if (!firstName || !lastName || !email) {
-          throw Object.assign(new Error("First name, last name and email are required for a new member"), { status: 400 });
+        const requestedEmail = text(newMember.email).toLowerCase();
+        const phone = text(newMember.phone);
+        if (!firstName || !lastName) {
+          throw Object.assign(new Error("First name and last name are required for a new member"), { status: 400 });
         }
-        const [duplicates]: any = await connection.query("SELECT id FROM members WHERE LOWER(email) = ? LIMIT 1", [email]);
-        if (duplicates.length) throw Object.assign(new Error("A member with this email already exists"), { status: 409 });
+        if (!requestedEmail && !phone) {
+          throw Object.assign(new Error("An email address or phone number is required for a new member"), { status: 400 });
+        }
+        const [duplicates]: any = await connection.query(
+          `SELECT id FROM members
+            WHERE (? <> '' AND LOWER(email) = ?)
+               OR (? <> '' AND phone = ?)
+            LIMIT 1`,
+          [requestedEmail, requestedEmail, phone, phone],
+        );
+        if (duplicates.length) {
+          throw Object.assign(new Error("A member with the same email address or phone number already exists"), { status: 409 });
+        }
         memberId = createId("member");
+        const email = requestedEmail ||
+          `${firstName.toLowerCase()}.${lastName.toLowerCase()}.${memberId.slice(-8)}@powergym.local`;
         await connection.query(
           `INSERT INTO members (id, first_name, last_name, email, phone, status, join_date, data)
            VALUES (?, ?, ?, ?, ?, 'active', CURDATE(), ?)`,
-          [memberId, firstName, lastName, email, text(newMember.phone) || null, json({ source: "multi_user_plan" })],
+          [
+            memberId, firstName, lastName, email, phone || null,
+            json({ source: "multi_user_plan", contactEmailGenerated: !requestedEmail }),
+          ],
         );
       } else {
         const [members]: any = await connection.query("SELECT id FROM members WHERE id = ? LIMIT 1", [memberId]);
@@ -585,7 +606,7 @@ export function registerPlanManagementRoutes(app: Express, provider: PoolProvide
       }
 
       const [existing]: any = await connection.query(
-        "SELECT id FROM subscription_members WHERE subscription_id = ? AND member_id = ? AND status = 'active' LIMIT 1",
+        "SELECT id FROM subscription_members WHERE subscription_id = ? AND member_id = ? AND status IN ('active', 'suspended') LIMIT 1",
         [req.params.id, memberId],
       );
       if (existing.length) throw Object.assign(new Error("Member is already active in this subscription"), { status: 409 });
@@ -636,8 +657,8 @@ export function registerPlanManagementRoutes(app: Express, provider: PoolProvide
         member: { subscriptionMemberId, memberId, affiliationId, status: memberStatus },
         capacity: {
           maximum: Number(subscription.max_members),
-          occupied: Number(counts[0]?.occupied || 0) + (memberStatus === "active" ? 1 : 0),
-          available: Math.max(0, Number(subscription.max_members) - Number(counts[0]?.occupied || 0) - (memberStatus === "active" ? 1 : 0)),
+          occupied: Number(counts[0]?.occupied || 0) + 1,
+          available: Math.max(0, Number(subscription.max_members) - Number(counts[0]?.occupied || 0) - 1),
         },
       });
     } catch (error) {
@@ -654,13 +675,25 @@ export function registerPlanManagementRoutes(app: Express, provider: PoolProvide
       if (!MEMBER_STATUSES.has(status)) return res.status(400).json({ error: "Invalid member status" });
       await connection.beginTransaction();
       const [rows]: any = await connection.query(
-        `SELECT id, role, status FROM subscription_members
-          WHERE subscription_id = ? AND member_id = ? ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
+        `SELECT sm.id, sm.role, sm.status, s.max_members
+           FROM subscription_members sm
+           JOIN subscriptions s ON s.id = sm.subscription_id
+          WHERE sm.subscription_id = ? AND sm.member_id = ?
+          ORDER BY sm.created_at DESC LIMIT 1 FOR UPDATE`,
         [req.params.subscriptionId, req.params.memberId],
       );
       if (!rows.length) throw Object.assign(new Error("Subscription member not found"), { status: 404 });
       if (rows[0].role === "holder" && status !== "active") throw Object.assign(new Error("The subscription holder cannot be suspended or removed"), { status: 409 });
       const previousStatus = rows[0].status;
+      if (status === "active" && previousStatus === "removed") {
+        const [counts]: any = await connection.query(
+          "SELECT COUNT(*) AS occupied FROM subscription_members WHERE subscription_id = ? AND status IN ('active', 'suspended')",
+          [req.params.subscriptionId],
+        );
+        if (Number(counts[0]?.occupied || 0) >= Number(rows[0].max_members)) {
+          throw Object.assign(new Error("Subscription member limit reached"), { status: 409, code: "CAPACITY_LIMIT_REACHED" });
+        }
+      }
       const leftAt = status === "removed" ? new Date() : null;
       await connection.query(
         "UPDATE subscription_members SET status = ?, left_at = ?, restrictions = ? WHERE id = ?",
