@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { ArrowLeft, CalendarDays, History, Plus, RefreshCw, Users } from 'lucide-react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
@@ -132,7 +132,7 @@ export default function MultiUserMemberships() {
     setDatesOpen(true);
   };
 
-  const updateDates = async (event: React.FormEvent) => {
+  const updateDates = async (event: FormEvent) => {
     event.preventDefault();
     if (!dateForm.startDate || !dateForm.endDate || dateForm.endDate < dateForm.startDate) {
       return toast.error(c.invalidDates);
@@ -146,7 +146,7 @@ export default function MultiUserMemberships() {
     } catch (error: any) { toast.error(error?.message || c.invalidDates); }
   };
 
-  const addMember = async (event: React.FormEvent) => {
+  const addMember = async (event: FormEvent) => {
     event.preventDefault();
     try {
       await planManagementApi.addSubscriptionMember(selectedId, {
