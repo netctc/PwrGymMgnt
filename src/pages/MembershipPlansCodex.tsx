@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { Plus, Pencil, RefreshCw, Settings2, UserPlus, Users, CalendarDays, Infinity as InfinityIcon } from 'lucide-react';
 import { toast } from 'sonner';
@@ -256,7 +256,7 @@ export default function MembershipPlansCodex() {
     });
   };
 
-  const submit = async (event: React.FormEvent) => {
+  const submit = async (event: FormEvent) => {
     event.preventDefault();
     const individual = form.planType === 'individual';
     if (!form.name.trim() || Number(form.durationDays) < 1 || Number(form.price) < 0 || (!individual && Number(form.maxMembers) < 2)) {
