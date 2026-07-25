@@ -56,7 +56,9 @@ export type AccessRequest = {
   operatorEmail?: string;
   // Shared
   affiliationId?: string; // Explicit affiliation selection
+  reservationAffiliationId?: string; // Affiliation stored immutably on a reservation
   serviceType?: string;
+  confirmSessionConsumption?: boolean;
   idempotencyKey?: string;
   requestId?: string;
 };
@@ -75,9 +77,32 @@ export type AccessDecision = {
   attemptId: string;
   requestId: string;
   sessionsRemaining: number | null;
+  requiresAffiliationSelection?: boolean;
+  requiresConsumptionConfirmation?: boolean;
+  affiliationOptions?: AffiliationOption[];
 };
 
-const COOLDOWN_SECONDS = 60; // Anti-replay: same person, same access point within 60s
+type AffiliationOption = {
+  affiliationId: string;
+  subscriptionId: string;
+  planName: string;
+  sessionsAvailable: number | null;
+  isPrimary: boolean;
+  consumptionPriority: number;
+};
+
+type AffiliationCandidate = AffiliationOption & {
+  cycleId: string | null;
+  sessionsUnlimited: boolean;
+  distributionModel: string;
+  deductionMoment: string;
+};
+
+type AffiliationSelection = {
+  selected: AffiliationCandidate | null;
+  options: AffiliationOption[];
+  reason?: string;
+};
 
 // --- Core Authorization Logic ---
 
@@ -136,69 +161,197 @@ async function selectAffiliation(
   pool: Pool,
   memberId: string,
   requestedAffiliationId?: string,
-): Promise<{ affiliationId: string; subscriptionId: string; planName: string; cycleId: string | null; sessionsUnlimited: boolean; distributionModel: string; deductionMoment: string } | null> {
-  // Priority 1: Explicitly requested affiliation
-  if (requestedAffiliationId) {
-    const [rows]: any = await pool.query(
-      `SELECT a.id, a.subscription_id, pv.name AS plan_name, pv.sessions_unlimited,
-              pv.distribution_model, pv.booking_policy,
-              (SELECT id FROM subscription_cycles WHERE subscription_id = a.subscription_id AND status = 'active' ORDER BY cycle_number DESC LIMIT 1) AS cycle_id
-       FROM affiliations a
-       JOIN plan_versions pv ON pv.id = a.plan_version_id
-       WHERE a.id = ? AND a.member_id = ? AND a.status = 'active' AND a.end_date >= CURDATE()
-       LIMIT 1`,
-      [requestedAffiliationId, memberId],
-    );
-    if (rows.length > 0) {
-      const policy = typeof rows[0].booking_policy === "string"
-        ? JSON.parse(rows[0].booking_policy || "{}")
-        : (rows[0].booking_policy || {});
-      return { affiliationId: rows[0].id, subscriptionId: rows[0].subscription_id, planName: rows[0].plan_name, cycleId: rows[0].cycle_id, sessionsUnlimited: Boolean(rows[0].sessions_unlimited), distributionModel: rows[0].distribution_model || "individual", deductionMoment: policy.deductionMoment || "check_in" };
-    }
-  }
-
-  // Priority 2-5: Active affiliations ordered by priority
+  reservationAffiliationId?: string,
+  serviceType?: string,
+): Promise<AffiliationSelection> {
   const [rows]: any = await pool.query(
     `SELECT a.id, a.subscription_id, a.is_primary, a.consumption_priority, a.end_date,
             pv.name AS plan_name, pv.sessions_unlimited, pv.distribution_model,
-            pv.booking_policy,
+            pv.booking_policy, pv.benefits, pv.restrictions,
+            a.benefits_override,
+            a.restrictions_override AS affiliation_restrictions,
             (SELECT id FROM subscription_cycles WHERE subscription_id = a.subscription_id AND status = 'active' ORDER BY cycle_number DESC LIMIT 1) AS cycle_id
      FROM affiliations a
      JOIN plan_versions pv ON pv.id = a.plan_version_id
-     JOIN subscriptions s ON s.id = a.subscription_id AND s.status = 'active'
-     WHERE a.member_id = ? AND a.status = 'active' AND a.end_date >= CURDATE()
-     ORDER BY a.is_primary DESC, a.end_date ASC, a.consumption_priority ASC
-     LIMIT 5`,
+     JOIN subscriptions s
+       ON s.id = a.subscription_id
+      AND s.status = 'active'
+      AND s.start_date <= CURDATE()
+      AND s.end_date >= CURDATE()
+     WHERE a.member_id = ?
+       AND a.status = 'active'
+       AND a.start_date <= CURDATE()
+       AND a.end_date >= CURDATE()
+     ORDER BY a.is_primary DESC, a.consumption_priority ASC, a.end_date ASC`,
     [memberId],
   );
 
-  if (rows.length === 0) return null;
+  const parseJson = (value: any) => {
+    if (!value) return {};
+    if (typeof value === "object") return value;
+    try { return JSON.parse(value); } catch { return {}; }
+  };
+  const candidates: AffiliationCandidate[] = [];
+  let serviceRejected = false;
+  let balanceRejected = false;
+  for (const row of rows) {
+    const benefits = {
+      ...parseJson(row.benefits),
+      ...parseJson(row.benefits_override),
+    };
+    const restrictions = {
+      ...parseJson(row.restrictions),
+      ...parseJson(row.affiliation_restrictions),
+    };
+    const includedServices = benefits.services || benefits.serviceTypes || benefits.includedServices;
+    const blockedServices = restrictions.blockedServices || restrictions.excludedServices;
+    if (
+      serviceType &&
+      Array.isArray(includedServices) &&
+      includedServices.length > 0 &&
+      !includedServices.includes(serviceType)
+    ) {
+      serviceRejected = true;
+      continue;
+    }
+    if (
+      serviceType &&
+      Array.isArray(blockedServices) &&
+      blockedServices.includes(serviceType)
+    ) {
+      serviceRejected = true;
+      continue;
+    }
 
-  // For limited plans, prefer the one with soonest expiry (use sessions before they expire)
-  const policy = typeof rows[0].booking_policy === "string"
-    ? JSON.parse(rows[0].booking_policy || "{}")
-    : (rows[0].booking_policy || {});
+    const sessionsUnlimited = Boolean(row.sessions_unlimited);
+    let sessionsAvailable: number | null = null;
+    if (!sessionsUnlimited) {
+      if (!row.cycle_id) continue;
+      const context = getSessionBalanceContext(
+        row.distribution_model || "individual",
+        row.subscription_id,
+        row.id,
+      );
+      const [balanceRows]: any = await pool.query(
+        `SELECT available
+           FROM session_balances
+          WHERE context_type = ? AND context_id = ? AND cycle_id = ?
+          LIMIT 1`,
+        [context.contextType, context.contextId, row.cycle_id],
+      );
+      sessionsAvailable = Number(balanceRows[0]?.available || 0);
+      if (sessionsAvailable <= 0) {
+        balanceRejected = true;
+        continue;
+      }
+    }
+    const policy = parseJson(row.booking_policy);
+    candidates.push({
+      affiliationId: row.id,
+      subscriptionId: row.subscription_id,
+      planName: row.plan_name,
+      cycleId: row.cycle_id,
+      sessionsUnlimited,
+      sessionsAvailable,
+      distributionModel: row.distribution_model || "individual",
+      deductionMoment: policy.deductionMoment || "check_in",
+      isPrimary: Boolean(row.is_primary),
+      consumptionPriority: Number(row.consumption_priority || 0),
+    });
+  }
+  const options = candidates.map((candidate) => ({
+    affiliationId: candidate.affiliationId,
+    subscriptionId: candidate.subscriptionId,
+    planName: candidate.planName,
+    sessionsAvailable: candidate.sessionsAvailable,
+    isPrimary: candidate.isPrimary,
+    consumptionPriority: candidate.consumptionPriority,
+  }));
+  if (!candidates.length) {
+    return {
+      selected: null,
+      options: [],
+      reason: serviceRejected
+        ? "SERVICE_NOT_INCLUDED"
+        : balanceRejected
+          ? "NO_SESSIONS_AVAILABLE"
+          : undefined,
+    };
+  }
+
+  // 1. Explicit member/operator choice.
+  if (requestedAffiliationId) {
+    const explicit = candidates.find(
+      (candidate) => candidate.affiliationId === requestedAffiliationId,
+    );
+    return explicit
+      ? { selected: explicit, options }
+      : { selected: null, options, reason: "REQUESTED_AFFILIATION_NOT_ELIGIBLE" };
+  }
+  // 2. Affiliation immutably associated with the reservation.
+  if (reservationAffiliationId) {
+    const reserved = candidates.find(
+      (candidate) => candidate.affiliationId === reservationAffiliationId,
+    );
+    if (reserved) return { selected: reserved, options };
+  }
+  // 3. Member's primary affiliation, only when unambiguous.
+  const primaries = candidates.filter((candidate) => candidate.isPrimary);
+  if (primaries.length === 1) return { selected: primaries[0], options };
+  // 4. Gym consumption priority. A tie requires operator selection.
+  const minimumPriority = Math.min(
+    ...candidates.map((candidate) => candidate.consumptionPriority),
+  );
+  const prioritized = candidates.filter(
+    (candidate) => candidate.consumptionPriority === minimumPriority,
+  );
+  if (prioritized.length === 1) return { selected: prioritized[0], options };
   return {
-    affiliationId: rows[0].id,
-    subscriptionId: rows[0].subscription_id,
-    planName: rows[0].plan_name,
-    cycleId: rows[0].cycle_id,
-    sessionsUnlimited: Boolean(rows[0].sessions_unlimited),
-    distributionModel: rows[0].distribution_model || "individual",
-    deductionMoment: policy.deductionMoment || "check_in",
+    selected: null,
+    options,
+    reason: "AFFILIATION_SELECTION_REQUIRED",
   };
 }
 
-async function checkCooldown(pool: Pool, personId: string, accessPointId: string | undefined): Promise<boolean> {
+async function checkAndClaimCooldown(
+  pool: Pool,
+  personId: string,
+  accessPointId: string | undefined,
+): Promise<boolean> {
   if (!accessPointId) return false;
-  const [rows]: any = await pool.query(
-    `SELECT id FROM access_attempts
-     WHERE person_id = ? AND access_point_id = ? AND decision = 'authorized'
-       AND created_at > DATE_SUB(NOW(), INTERVAL ? SECOND)
-     LIMIT 1`,
-    [personId, accessPointId, COOLDOWN_SECONDS],
+  const [settingRows]: any = await pool.query(
+    `SELECT COALESCE(
+       (SELECT cooldown_seconds FROM access_points WHERE id = ? LIMIT 1),
+       (SELECT CAST(JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.seconds')) AS UNSIGNED)
+          FROM maintenance_list_items
+         WHERE list_id = 'ml_consumption_deduplication'
+           AND item_code = 'access_control'
+           AND status = 'active'
+         LIMIT 1),
+       60
+     ) AS cooldown_seconds`,
+    [accessPointId],
   );
-  return rows.length > 0;
+  const cooldownSeconds = Math.max(
+    1,
+    Number(settingRows[0]?.cooldown_seconds || 60),
+  );
+  const [insertResult]: any = await pool.query(
+    `INSERT IGNORE INTO access_replay_locks
+      (person_id, access_point_id, last_seen_at)
+     VALUES (?, ?, NOW())`,
+    [personId, accessPointId],
+  );
+  if (Number(insertResult.affectedRows || 0) === 1) return false;
+  const [updateResult]: any = await pool.query(
+    `UPDATE access_replay_locks
+        SET last_seen_at = NOW()
+      WHERE person_id = ?
+        AND access_point_id = ?
+        AND last_seen_at <= DATE_SUB(NOW(), INTERVAL ? SECOND)`,
+    [personId, accessPointId, cooldownSeconds],
+  );
+  return Number(updateResult.affectedRows || 0) === 0;
 }
 
 /**
@@ -244,20 +397,34 @@ export async function authorizeAccess(pool: Pool, req: AccessRequest): Promise<A
     return decision;
   }
 
-  // Step 3: Anti-replay check
-  const cooldownActive = await checkCooldown(pool, identity.personId, req.accessPointId);
-  if (cooldownActive) {
-    const decision = buildDenied(attemptId, requestId, "COOLDOWN_ACTIVE", identity.personType, identity.personId, identity.personName);
-    await recordAttempt(pool, attemptId, req, decision);
-    return decision;
-  }
-
-  // Step 4: Check if session ledger is enabled
+  // Step 3: Check if session ledger is enabled
   const ledgerEnabled = await isFeatureEnabled(pool, "ENABLE_SESSION_LEDGER");
 
-  // Step 5: Select affiliation
-  const affiliation = await selectAffiliation(pool, identity.personId, req.affiliationId);
+  // Step 4: Select affiliation
+  const selection = await selectAffiliation(
+    pool,
+    identity.personId,
+    req.affiliationId,
+    req.reservationAffiliationId,
+    req.serviceType,
+  );
+  const affiliation = selection.selected;
   if (!affiliation) {
+    if (selection.reason) {
+      const decision = buildDenied(
+        attemptId,
+        requestId,
+        selection.reason,
+        identity.personType,
+        identity.personId,
+        identity.personName,
+      );
+      decision.requiresAffiliationSelection =
+        selection.reason === "AFFILIATION_SELECTION_REQUIRED";
+      decision.affiliationOptions = selection.options;
+      await recordAttempt(pool, attemptId, req, decision);
+      return decision;
+    }
     // Fallback: check old member_subscriptions for backward compat
     const [legacyRows]: any = await pool.query(
       `SELECT id, plan_name FROM member_subscriptions
@@ -292,7 +459,7 @@ export async function authorizeAccess(pool: Pool, req: AccessRequest): Promise<A
     return decision;
   }
 
-  // Step 6: Consume session if ledger active and plan is limited
+  // Step 5: Consume session if ledger active and plan is limited
   let movementId: string | null = null;
   let sessionsRemaining: number | null = null;
 
@@ -302,6 +469,43 @@ export async function authorizeAccess(pool: Pool, req: AccessRequest): Promise<A
     affiliation.cycleId &&
     affiliation.deductionMoment === "check_in"
   ) {
+    if (!req.confirmSessionConsumption) {
+      const decision = buildDenied(
+        attemptId,
+        requestId,
+        "SESSION_CONSUMPTION_CONFIRMATION_REQUIRED",
+        identity.personType,
+        identity.personId,
+        identity.personName,
+      );
+      decision.affiliationId = affiliation.affiliationId;
+      decision.subscriptionId = affiliation.subscriptionId;
+      decision.planName = affiliation.planName;
+      decision.sessionsRemaining = affiliation.sessionsAvailable;
+      decision.requiresConsumptionConfirmation = true;
+      decision.affiliationOptions = selection.options;
+      await recordAttempt(pool, attemptId, req, decision);
+      return decision;
+    }
+    const cooldownActive = await checkAndClaimCooldown(
+      pool,
+      identity.personId,
+      req.accessPointId,
+    );
+    if (cooldownActive) {
+      const decision = buildDenied(
+        attemptId,
+        requestId,
+        "COOLDOWN_ACTIVE",
+        identity.personType,
+        identity.personId,
+        identity.personName,
+      );
+      decision.affiliationId = affiliation.affiliationId;
+      decision.planName = affiliation.planName;
+      await recordAttempt(pool, attemptId, req, decision);
+      return decision;
+    }
     const connection = await pool.getConnection();
     try {
       await connection.beginTransaction();
@@ -357,7 +561,33 @@ export async function authorizeAccess(pool: Pool, req: AccessRequest): Promise<A
     }
   }
 
-  // Step 7: Build authorized decision
+  if (
+    !ledgerEnabled ||
+    affiliation.sessionsUnlimited ||
+    affiliation.deductionMoment !== "check_in"
+  ) {
+    const cooldownActive = await checkAndClaimCooldown(
+      pool,
+      identity.personId,
+      req.accessPointId,
+    );
+    if (cooldownActive) {
+      const decision = buildDenied(
+        attemptId,
+        requestId,
+        "COOLDOWN_ACTIVE",
+        identity.personType,
+        identity.personId,
+        identity.personName,
+      );
+      decision.affiliationId = affiliation.affiliationId;
+      decision.planName = affiliation.planName;
+      await recordAttempt(pool, attemptId, req, decision);
+      return decision;
+    }
+  }
+
+  // Step 6: Build authorized decision
   const decision: AccessDecision = {
     authorized: true,
     reason: "ACCESS_GRANTED",
@@ -466,6 +696,16 @@ async function ensureAccessTables(pool: Pool): Promise<void> {
       updated_at     TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS access_replay_locks (
+      person_id       VARCHAR(255) NOT NULL,
+      access_point_id VARCHAR(64)  NOT NULL,
+      last_seen_at    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (person_id, access_point_id),
+      INDEX idx_access_replay_seen (last_seen_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
 }
 
 // --- API Routes ---
@@ -505,13 +745,21 @@ export function registerAccessAuthorizationRoutes(app: Express, poolProvider: Po
         confidenceScore: req.body.confidenceScore || null,
         operatorEmail: req.user?.email || null,
         affiliationId: req.body.affiliationId || null,
+        reservationAffiliationId: req.body.reservationAffiliationId || null,
         serviceType: req.body.serviceType || null,
+        confirmSessionConsumption:
+          req.body.confirmSessionConsumption === true,
         idempotencyKey: req.headers["idempotency-key"] as string || req.body.idempotencyKey || null,
         requestId: (req as any).requestId || createId("req"),
       };
 
       const decision = await authorizeAccess(pool, accessReq);
-      const status = decision.authorized ? 200 : 403;
+      const status =
+        decision.authorized ||
+        decision.requiresAffiliationSelection ||
+        decision.requiresConsumptionConfirmation
+          ? 200
+          : 403;
       res.status(status).json(decision);
     } catch (error) {
       next(error);
