@@ -19,6 +19,26 @@ export type MembershipMember = {
   currentPlan?: string | null;
   currentExpiry?: string | null;
   lastAccess?: string | null;
+  subscriptionType?: 'individual' | 'multi_user' | 'none';
+  multiUserRole?: 'holder' | 'beneficiary' | null;
+  multiUserPlanType?: 'family' | 'group' | 'corporate' | null;
+  multiUserSubscriptionId?: string | null;
+  multiUserSubscriptionStatus?: string | null;
+  multiUserSubscriptionEndDate?: string | null;
+  holderActionLocked?: boolean;
+  planDescription?: string | null;
+  multiUserMembers?: Array<{
+    memberId: string;
+    name: string;
+    role: string;
+  }>;
+  multiUserCapacity?: {
+    maximum: number;
+    occupied: number;
+    available: number;
+  } | null;
+  paymentStatus?: string | null;
+  paymentAttentionRequired?: boolean;
 };
 
 export type MembershipSubscription = {
