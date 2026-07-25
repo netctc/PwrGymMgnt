@@ -42,6 +42,28 @@ export type MembershipMember = {
   } | null;
   paymentStatus?: string | null;
   paymentAttentionRequired?: boolean;
+  plans?: Array<{
+    id: string;
+    affiliationId: string | null;
+    subscriptionId: string;
+    planVersionId: string | null;
+    planName: string;
+    description?: string | null;
+    planType: string;
+    role: string;
+    status: string;
+    subscriptionStatus: string;
+    paymentStatus?: string | null;
+    isPrimary: boolean;
+    startDate?: string | null;
+    endDate?: string | null;
+    sessionsUnlimited: boolean;
+    distributionModel: string;
+    sessionsIncluded?: number | null;
+    sessionsConsumed?: number | null;
+    sessionsReserved?: number | null;
+    sessionsPending?: number | null;
+  }>;
 };
 
 export type MembershipSubscription = {
