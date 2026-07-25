@@ -183,8 +183,11 @@ test("limited multi-user plans expose distribution, cycles, immutable movements 
   assert.match(subscriptions, /createInvoiceNumber/);
   assert.match(subscriptions, /subscriptionV2Id/);
   assert.match(subscriptions, /invoiceNumber/);
+  assert.match(subscriptions, /subscription_v2_renewal_invoice/);
   assert.match(payments, /OUTSTANDING_SUBSCRIPTION_PAYMENT/);
   assert.match(lifecycle, /current subscription payment must be settled/i);
+  assert.match(lifecycle, /estimated payment date cannot be after the subscription end date/i);
+  assert.match(lifecycle, /subscription_v2_renewal_invoice/);
   assert.match(scheduling, /late_cancellation_penalty/);
   assert.match(scheduling, /deductionDeferredUntil/);
   assert.match(plansPage, /lateCancellationThreshold/);
@@ -196,6 +199,9 @@ test("limited multi-user plans expose distribution, cycles, immutable movements 
   assert.match(membersPage, /multiUserCapacity/);
   assert.match(membersPage, /Payment pending/);
   assert.match(membersPage, /Paid subscriptions are locked/);
+  assert.match(membersPage, /renewPaymentStatus/);
+  assert.match(membersPage, /renewPaymentDate/);
+  assert.match(membersPage, /Estimated payment date cannot be after End Date/);
   assert.match(migration, /mli_cycle_quarterly/);
   assert.match(migration, /mli_payment_overdue/);
   assert.match(reports, /import \{ autoTable \} from "jspdf-autotable"/);
