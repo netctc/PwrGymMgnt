@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mapBalance } from '../server/sessionLedger';
+import { getSessionBalanceContext, mapBalance } from '../server/sessionLedger';
+import { calculateCycleEnd } from '../server/subscriptionCycles';
 
 test('session balance mapper normalizes numeric fields', () => {
   const raw = {
@@ -105,4 +106,27 @@ test('subscription cycles module exports required functions', async () => {
   const { createInitialCycle, closeCycleAndOpenNext } = await import('../server/subscriptionCycles');
   assert.equal(typeof createInitialCycle, 'function');
   assert.equal(typeof closeCycleAndOpenNext, 'function');
+});
+
+test('distribution model selects the correct balance owner', () => {
+  assert.deepEqual(
+    getSessionBalanceContext('shared', 'sub_1', 'aff_1'),
+    { contextType: 'subscription', contextId: 'sub_1' },
+  );
+  assert.deepEqual(
+    getSessionBalanceContext('individual', 'sub_1', 'aff_1'),
+    { contextType: 'affiliation', contextId: 'aff_1' },
+  );
+  assert.deepEqual(
+    getSessionBalanceContext('custom', 'sub_1', 'aff_1'),
+    { contextType: 'affiliation', contextId: 'aff_1' },
+  );
+});
+
+test('cycle end supports weekly, monthly, quarterly and full-plan cycles', () => {
+  assert.equal(calculateCycleEnd('2026-01-01', 'weekly', '2026-12-31'), '2026-01-08');
+  assert.equal(calculateCycleEnd('2026-01-01', 'monthly', '2026-12-31'), '2026-02-01');
+  assert.equal(calculateCycleEnd('2026-01-01', 'quarterly', '2026-12-31'), '2026-04-01');
+  assert.equal(calculateCycleEnd('2026-01-01', 'plan_duration', '2026-05-15'), '2026-05-15');
+  assert.equal(calculateCycleEnd('2026-04-01', 'quarterly', '2026-05-15'), '2026-05-15');
 });
