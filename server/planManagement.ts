@@ -2,6 +2,14 @@ import crypto from "crypto";
 import type { Express, Request } from "express";
 import type { Pool, PoolConnection } from "mysql2/promise";
 import { requirePermission } from "./rbac";
+import {
+  allocateAffiliationInActiveCycle,
+  createInitialCycle,
+} from "./subscriptionCycles";
+import {
+  assertNoOutstandingSubscriptionPayment,
+  normalizePaymentStatus,
+} from "./subscriptionPaymentRules";
 
 type PoolProvider = () => Pool | null;
 type AuthenticatedRequest = Request & { user?: { email?: string; uid?: string } };
@@ -72,7 +80,20 @@ function normalizePlanInput(body: any) {
   const validTo = validFrom ? (dateOnly(body.validTo) || addDays(validFrom, durationDays)) : null;
   const isIndividual = planType === "individual";
   const sessionsUnlimited = isIndividual ? bool(body.sessionsUnlimited, true) : true;
+  const requestedSessionsUnlimited = bool(body.sessionsUnlimited, true);
   const maxMembers = isIndividual ? 1 : Math.max(2, number(body.maxMembers, 2));
+  const bookingPolicy = {
+    futureBookingPolicy: text(body.futureBookingPolicy) || "cancel",
+    deductionMoment: text(body.deductionMoment) || "booking_confirmation",
+    cancellationWindowMinutes: Math.max(0, number(body.cancellationWindowMinutes, 120)),
+    autoRefundOnTime: bool(body.autoRefundOnTime, true),
+    lateCancellationThreshold: Math.max(1, number(body.lateCancellationThreshold, 2)),
+    lateCancellationPenalty: Math.max(0, number(body.lateCancellationPenalty, 1)),
+    noShowConsumesSession: bool(body.noShowConsumesSession, true),
+    reschedulingAllowed: bool(body.reschedulingAllowed, true),
+    staffExceptionsAllowed: bool(body.staffExceptionsAllowed, true),
+    gymCancellationRefund: bool(body.gymCancellationRefund, true),
+  };
   return {
     name,
     description: text(body.description),
@@ -83,12 +104,23 @@ function normalizePlanInput(body: any) {
     validFrom,
     validTo,
     maxMembers,
-    sessionsUnlimited,
-    sessionsPerCycle: isIndividual && !sessionsUnlimited ? Math.max(1, number(body.sessionsPerCycle, 1)) : null,
+    sessionsUnlimited: isIndividual ? sessionsUnlimited : requestedSessionsUnlimited,
+    sessionsPerCycle: !requestedSessionsUnlimited || (isIndividual && !sessionsUnlimited)
+      ? Math.max(1, number(body.sessionsPerCycle, 1))
+      : null,
     cycleFrequency: text(body.cycleFrequency) || "monthly",
     distributionModel: isIndividual ? "individual" : (text(body.distributionModel) || "shared"),
+    holderSessionsPerCycle: Math.max(0, number(body.holderSessionsPerCycle, 0)),
+    beneficiarySessionsPerCycle: Math.max(0, number(body.beneficiarySessionsPerCycle, 0)),
+    carryoverEnabled: bool(body.carryoverEnabled, false),
+    carryoverMax: body.carryoverMax === null || body.carryoverMax === "" ? null : Math.max(0, number(body.carryoverMax, 0)),
+    carryoverExpiryDays: body.carryoverExpiryDays === null || body.carryoverExpiryDays === "" ? null : Math.max(1, number(body.carryoverExpiryDays, 30)),
+    allowExtraSessions: bool(body.allowExtraSessions, false),
+    extraSessionPrice: body.extraSessionPrice === null || body.extraSessionPrice === "" ? null : Math.max(0, number(body.extraSessionPrice, 0)),
+    consumptionPriority: Math.max(0, number(body.consumptionPriority, 0)),
     sharedBenefits: isIndividual ? true : bool(body.sharedBenefits, true),
-    futureBookingPolicy: text(body.futureBookingPolicy) || "cancel",
+    futureBookingPolicy: bookingPolicy.futureBookingPolicy,
+    bookingPolicy,
     benefits: body.benefits || {},
     restrictions: body.restrictions || {},
     status,
@@ -114,8 +146,17 @@ function mapPlan(row: any) {
     sessionsPerCycle: row.sessions_per_cycle === null ? null : Number(row.sessions_per_cycle),
     cycleFrequency: row.cycle_frequency || "monthly",
     distributionModel: row.distribution_model || "individual",
+    holderSessionsPerCycle: Number(data.holderSessionsPerCycle || 0),
+    beneficiarySessionsPerCycle: Number(data.beneficiarySessionsPerCycle || 0),
+    carryoverEnabled: Boolean(row.carryover_enabled),
+    carryoverMax: row.carryover_max === null ? null : Number(row.carryover_max),
+    carryoverExpiryDays: row.carryover_expiry_days === null ? null : Number(row.carryover_expiry_days),
+    allowExtraSessions: data.allowExtraSessions === true,
+    extraSessionPrice: row.extra_session_price === null ? null : Number(row.extra_session_price),
+    consumptionPriority: Number(row.consumption_priority || 0),
     sharedBenefits: data.sharedBenefits !== false,
     futureBookingPolicy: data.futureBookingPolicy || "cancel",
+    bookingPolicy: parseJson(row.booking_policy),
     benefits: parseJson(row.benefits),
     restrictions: parseJson(row.restrictions),
     status: row.version_status || row.plan_status || "draft",
@@ -129,7 +170,9 @@ const PLAN_SELECT = `
          pv.name AS version_name, pv.description AS version_description,
          pv.plan_type, pv.price AS version_price, pv.currency AS version_currency,
          pv.duration_days, pv.max_members, pv.sessions_unlimited, pv.sessions_per_cycle,
-         pv.cycle_frequency, pv.distribution_model, pv.benefits, pv.restrictions,
+         pv.cycle_frequency, pv.distribution_model, pv.carryover_enabled, pv.carryover_max,
+         pv.carryover_expiry_days, pv.extra_session_price, pv.consumption_priority,
+         pv.benefits, pv.restrictions, pv.booking_policy,
          pv.status AS version_status, pv.data AS version_data, pv.created_at AS version_created_at
     FROM subscription_plans sp
     JOIN plan_versions pv ON pv.id = (
@@ -144,21 +187,27 @@ async function insertPlanVersion(connection: PoolConnection, planId: string, ver
     `INSERT INTO plan_versions
       (id, plan_id, version_number, name, description, plan_type, price, currency,
        duration_days, max_members, sessions_unlimited, sessions_per_cycle,
-       cycle_frequency, distribution_model, benefits, restrictions, booking_policy,
-       status, published_at, data)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       cycle_frequency, distribution_model, carryover_enabled, carryover_max,
+       carryover_expiry_days, extra_session_price, consumption_priority,
+       benefits, restrictions, booking_policy, status, published_at, data)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id, planId, versionNumber, input.name, input.description || null, input.planType,
       input.price, input.currency, input.durationDays, input.maxMembers,
       input.sessionsUnlimited ? 1 : 0, input.sessionsPerCycle, input.cycleFrequency,
-      input.distributionModel, json(input.benefits, {}), json(input.restrictions, {}),
-      json({ futureBookingPolicy: input.futureBookingPolicy }),
+      input.distributionModel, input.carryoverEnabled ? 1 : 0, input.carryoverMax,
+      input.carryoverExpiryDays, input.allowExtraSessions ? input.extraSessionPrice : null,
+      input.consumptionPriority, json(input.benefits, {}), json(input.restrictions, {}),
+      json(input.bookingPolicy),
       input.status, input.status === "active" ? new Date() : null,
       json({
         validFrom: input.validFrom,
         validTo: input.validTo,
         sharedBenefits: input.sharedBenefits,
         futureBookingPolicy: input.futureBookingPolicy,
+        holderSessionsPerCycle: input.holderSessionsPerCycle,
+        beneficiarySessionsPerCycle: input.beneficiarySessionsPerCycle,
+        allowExtraSessions: input.allowExtraSessions,
       }),
     ],
   );
@@ -354,11 +403,13 @@ export function registerPlanManagementRoutes(app: Express, provider: PoolProvide
       };
 
       const holder = await resolveMember(req.body.holder || {}, "hybrid_subscription_holder");
+      await assertNoOutstandingSubscriptionPayment(connection, holder.id);
       const uniqueMemberIds = new Set<string>([holder.id]);
       const uniqueEmails = new Set<string>(holder.email ? [holder.email] : []);
       const resolvedMembers: Array<{ id: string; created: boolean; joinedAt: string; restrictions: unknown; benefitsOverride: unknown }> = [];
       for (const candidate of requestedMembers) {
         const resolved = await resolveMember(candidate, "hybrid_subscription_beneficiary");
+        await assertNoOutstandingSubscriptionPayment(connection, resolved.id);
         if (uniqueMemberIds.has(resolved.id) || (resolved.email && uniqueEmails.has(resolved.email))) {
           throw Object.assign(new Error("The same person cannot be added twice to one subscription"), { status: 409 });
         }
@@ -375,16 +426,17 @@ export function registerPlanManagementRoutes(app: Express, provider: PoolProvide
 
       const startDate = dateOnly(req.body.startDate) || new Date().toISOString().slice(0, 10);
       const endDate = dateOnly(req.body.endDate) || addDays(startDate, Number(plan.duration_days || 30));
+      const paymentStatus = normalizePaymentStatus(req.body.paymentStatus, "pending");
       const subscriptionId = createId("sub");
       await connection.query(
         `INSERT INTO subscriptions
           (id, plan_id, plan_version_id, holder_member_id, status, start_date, end_date,
            auto_renew, price_paid, currency, payment_status, max_members, notes)
-         VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+           VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           subscriptionId, plan.plan_id, planVersionId, holder.id, startDate, endDate,
           plan.auto_renew ? 1 : 0, Number(plan.price || 0), plan.currency || "USD",
-          Number(plan.max_members), text(req.body.notes) || null,
+          paymentStatus, Number(plan.max_members), text(req.body.notes) || null,
         ],
       );
 
@@ -430,10 +482,41 @@ export function registerPlanManagementRoutes(app: Express, provider: PoolProvide
         return { subscriptionMemberId, affiliationId };
       };
 
-      await insertSubscriptionMember(holder.id, "holder", startDate, {}, {});
+      const createdAffiliations: Array<{ id: string; role: "holder" | "beneficiary"; benefitsOverride: any }> = [];
+      const holderAffiliation = await insertSubscriptionMember(holder.id, "holder", startDate, {}, {});
+      createdAffiliations.push({ id: holderAffiliation.affiliationId, role: "holder", benefitsOverride: {} });
       for (const member of resolvedMembers) {
-        await insertSubscriptionMember(member.id, "beneficiary", member.joinedAt, member.restrictions, member.benefitsOverride);
+        const created = await insertSubscriptionMember(member.id, "beneficiary", member.joinedAt, member.restrictions, member.benefitsOverride);
+        createdAffiliations.push({ id: created.affiliationId, role: "beneficiary", benefitsOverride: member.benefitsOverride });
       }
+      const planData: any = parseJson(plan.data);
+      const customAllocations = Object.fromEntries(
+        createdAffiliations.map((affiliation) => [
+          affiliation.id,
+          Number(
+            affiliation.benefitsOverride?.sessionsPerCycle ??
+            (affiliation.role === "holder"
+              ? planData.holderSessionsPerCycle
+              : planData.beneficiarySessionsPerCycle) ??
+            plan.sessions_per_cycle ??
+            0,
+          ),
+        ]),
+      );
+      await createInitialCycle(
+        connection,
+        subscriptionId,
+        startDate,
+        endDate,
+        plan.sessions_unlimited ? null : Number(plan.sessions_per_cycle || 0),
+        plan.distribution_model || "shared",
+        createdAffiliations.map((affiliation) => affiliation.id),
+        {
+          cycleFrequency: plan.cycle_frequency || "monthly",
+          subscriptionEndDate: endDate,
+          customAllocations,
+        },
+      );
       await connection.query(
         `INSERT INTO outbox_events (id, event_type, payload, status)
          VALUES (?, 'multi_user_subscription_created', ?, 'pending')`,
@@ -452,6 +535,7 @@ export function registerPlanManagementRoutes(app: Express, provider: PoolProvide
           endDate,
           maxMembers: Number(plan.max_members),
           status: "active",
+          paymentStatus,
         },
         holder: { memberId: holder.id, created: holder.created },
         membersAdded: resolvedMembers.length,
@@ -586,7 +670,8 @@ export function registerPlanManagementRoutes(app: Express, provider: PoolProvide
     try {
       await connection.beginTransaction();
       const [subscriptions]: any = await connection.query(
-        `SELECT s.*, pv.plan_type, pv.distribution_model
+        `SELECT s.*, pv.plan_type, pv.distribution_model, pv.sessions_unlimited,
+                pv.sessions_per_cycle, pv.data AS plan_data
            FROM subscriptions s JOIN plan_versions pv ON pv.id = s.plan_version_id
           WHERE s.id = ? AND s.status = 'active' AND s.end_date >= CURDATE() FOR UPDATE`,
         [req.params.id],
@@ -647,6 +732,7 @@ export function registerPlanManagementRoutes(app: Express, provider: PoolProvide
         const [members]: any = await connection.query("SELECT id FROM members WHERE id = ? LIMIT 1", [memberId]);
         if (!members.length) throw Object.assign(new Error("Member not found"), { status: 404 });
       }
+      await assertNoOutstandingSubscriptionPayment(connection, memberId);
 
       const [existing]: any = await connection.query(
         "SELECT id FROM subscription_members WHERE subscription_id = ? AND member_id = ? AND status IN ('active', 'suspended') LIMIT 1",
@@ -690,6 +776,29 @@ export function registerPlanManagementRoutes(app: Express, provider: PoolProvide
           json(req.body.restrictions, {}),
         ],
       );
+      if (!subscription.sessions_unlimited) {
+        const [cycleRows]: any = await connection.query(
+          "SELECT id FROM subscription_cycles WHERE subscription_id = ? AND status = 'active' ORDER BY cycle_number DESC LIMIT 1",
+          [req.params.id],
+        );
+        if (cycleRows.length) {
+          const planData: any = parseJson(subscription.plan_data);
+          await allocateAffiliationInActiveCycle(connection, {
+            cycleId: cycleRows[0].id,
+            subscriptionId: req.params.id,
+            affiliationId,
+            distributionModel: subscription.distribution_model || "shared",
+            sessionsPerCycle: Number(subscription.sessions_per_cycle || 0),
+            customQuantity: Number(
+              req.body.benefitsOverride?.sessionsPerCycle ??
+              planData.beneficiarySessionsPerCycle ??
+              subscription.sessions_per_cycle ??
+              0,
+            ),
+            performedBy: req.user?.email || req.user?.uid || "system",
+          });
+        }
+      }
       await connection.query(
         `INSERT INTO subscription_member_history
           (id, subscription_id, subscription_member_id, member_id, action, new_status, performed_by, details)
