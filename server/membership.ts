@@ -192,6 +192,126 @@ async function getMultiUserMemberships(pool: Pool, memberId?: string) {
   return memberships;
 }
 
+async function getMemberPlanMemberships(pool: Pool, memberId?: string) {
+  const params: string[] = [];
+  const v2MemberFilter = memberId ? "AND a.member_id = ?" : "";
+  if (memberId) params.push(memberId);
+  const [v2Rows]: any = await pool.query(
+    `SELECT a.member_id, a.id AS affiliation_id, a.subscription_id,
+            a.role, a.status AS affiliation_status, a.is_primary,
+            a.start_date, a.end_date,
+            s.status AS subscription_status, s.payment_status,
+            s.legacy_subscription_id,
+            pv.id AS plan_version_id, pv.name AS plan_name,
+            COALESCE(sp.description, pv.description) AS plan_description,
+            pv.plan_type, pv.sessions_unlimited, pv.distribution_model,
+            sc.id AS cycle_id,
+            COALESCE(sb.included, 0) AS sessions_included,
+            COALESCE(sb.consumed, 0) AS sessions_consumed,
+            COALESCE(sb.reserved, 0) AS sessions_reserved,
+            COALESCE(sb.available, 0) AS sessions_available
+       FROM affiliations a
+       JOIN subscriptions s ON s.id = a.subscription_id
+       JOIN plan_versions pv ON pv.id = a.plan_version_id
+       LEFT JOIN subscription_plans sp ON sp.id = s.plan_id
+       LEFT JOIN subscription_cycles sc
+         ON sc.subscription_id = s.id AND sc.status = 'active'
+       LEFT JOIN session_balances sb
+         ON sb.cycle_id = sc.id
+        AND (
+          (pv.distribution_model = 'shared'
+           AND sb.context_type = 'subscription'
+           AND sb.context_id = s.id)
+          OR
+          (pv.distribution_model <> 'shared'
+           AND sb.context_type = 'affiliation'
+           AND sb.context_id = a.id)
+        )
+      WHERE a.status IN ('active', 'suspended')
+        AND s.status IN ('active', 'suspended', 'frozen')
+        AND a.end_date >= CURDATE()
+        ${v2MemberFilter}
+      ORDER BY a.member_id, a.is_primary DESC, a.consumption_priority ASC,
+               a.end_date ASC`,
+    params,
+  );
+  const legacyParams: string[] = [];
+  const legacyMemberFilter = memberId ? "AND ms.member_id = ?" : "";
+  if (memberId) legacyParams.push(memberId);
+  const [legacyRows]: any = await pool.query(
+    `SELECT ms.member_id, ms.id AS subscription_id, ms.plan_id,
+            ms.plan_name, ms.status, ms.start_date, ms.end_date,
+            ms.price, ms.currency, sp.description AS plan_description
+       FROM member_subscriptions ms
+       LEFT JOIN subscription_plans sp ON sp.id = ms.plan_id
+      WHERE LOWER(TRIM(ms.status)) = 'active'
+        AND ms.end_date >= CURDATE()
+        ${legacyMemberFilter}
+      ORDER BY ms.member_id, ms.end_date ASC`,
+    legacyParams,
+  );
+  const memberships = new Map<string, any[]>();
+  const migratedLegacySubscriptions = new Set<string>();
+  const append = (member: string, plan: any) => {
+    const plans = memberships.get(member) || [];
+    plans.push(plan);
+    memberships.set(member, plans);
+  };
+  for (const row of v2Rows) {
+    if (row.legacy_subscription_id) {
+      migratedLegacySubscriptions.add(String(row.legacy_subscription_id));
+    }
+    append(row.member_id, {
+      id: row.affiliation_id,
+      affiliationId: row.affiliation_id,
+      subscriptionId: row.subscription_id,
+      planVersionId: row.plan_version_id,
+      planName: row.plan_name || "",
+      description: row.plan_description || null,
+      planType: row.plan_type || "individual",
+      role: row.role || "beneficiary",
+      status: row.affiliation_status,
+      subscriptionStatus: row.subscription_status,
+      paymentStatus: row.payment_status || "pending",
+      isPrimary: Boolean(row.is_primary),
+      startDate: dateOnly(row.start_date),
+      endDate: dateOnly(row.end_date),
+      sessionsUnlimited: Boolean(row.sessions_unlimited),
+      distributionModel: row.distribution_model || "individual",
+      sessionsIncluded: Number(row.sessions_included || 0),
+      sessionsConsumed: Number(row.sessions_consumed || 0),
+      sessionsReserved: Number(row.sessions_reserved || 0),
+      sessionsPending: Number(row.sessions_available || 0),
+    });
+  }
+  for (const row of legacyRows) {
+    if (migratedLegacySubscriptions.has(String(row.subscription_id))) continue;
+    append(row.member_id, {
+      id: `legacy_${row.subscription_id}`,
+      affiliationId: null,
+      subscriptionId: row.subscription_id,
+      planVersionId: null,
+      planName: row.plan_name || "",
+      description: row.plan_description || null,
+      planType: "individual",
+      role: "holder",
+      status: row.status,
+      subscriptionStatus: row.status,
+      paymentStatus: null,
+      isPrimary: false,
+      startDate: dateOnly(row.start_date),
+      endDate: dateOnly(row.end_date),
+      sessionsUnlimited: true,
+      distributionModel: "individual",
+      sessionsIncluded: null,
+      sessionsConsumed: null,
+      sessionsReserved: null,
+      sessionsPending: null,
+    });
+  }
+  return memberships;
+}
+
 function mapSubscriptionGroupMembers(value: unknown) {
   if (typeof value !== "string" || !value) return [];
   return value.split("|||").map((entry) => {
@@ -213,7 +333,11 @@ async function getLegacyPlanDescriptions(pool: Pool) {
   );
 }
 
-function enrichMemberWithSubscription(member: any, multiMembership?: any) {
+function enrichMemberWithSubscription(
+  member: any,
+  multiMembership?: any,
+  memberPlans: any[] = [],
+) {
   const hasLegacySubscription = Boolean(member.currentPlan || member.currentExpiry);
   if (!multiMembership) {
     return {
@@ -228,6 +352,7 @@ function enrichMemberWithSubscription(member: any, multiMembership?: any) {
       multiUserCapacity: null,
       paymentStatus: member.paymentStatus || null,
       paymentAttentionRequired: member.paymentStatus === "pending",
+      plans: memberPlans,
     };
   }
   const multiSubscriptionEndDate = dateOnly(
@@ -263,6 +388,7 @@ function enrichMemberWithSubscription(member: any, multiMembership?: any) {
       paymentAttentionRequired: ["pending", "partial", "overdue"].includes(
         multiMembership.subscription_payment_status,
       ),
+      plans: memberPlans,
     };
   }
   if (!multiActive && hasLegacySubscription) {
@@ -278,6 +404,7 @@ function enrichMemberWithSubscription(member: any, multiMembership?: any) {
       multiUserCapacity: null,
       paymentStatus: member.paymentStatus || null,
       paymentAttentionRequired: member.paymentStatus === "pending",
+      plans: memberPlans,
     };
   }
   return {
@@ -311,6 +438,7 @@ function enrichMemberWithSubscription(member: any, multiMembership?: any) {
     paymentAttentionRequired: ["pending", "partial", "overdue"].includes(
       multiMembership.subscription_payment_status,
     ),
+    plans: memberPlans,
   };
 }
 
@@ -1117,6 +1245,7 @@ export function registerMembershipRoutes(app: Express, poolProvider: PoolProvide
         params,
       );
       const multiMemberships = await getMultiUserMemberships(pool);
+      const memberPlanMemberships = await getMemberPlanMemberships(pool);
       const legacyPlanDescriptions = await getLegacyPlanDescriptions(pool);
       const enrichedMembers = rows.map((row: any) => {
         const member = mapMember(row);
@@ -1125,20 +1254,28 @@ export function registerMembershipRoutes(app: Express, poolProvider: PoolProvide
         return enrichMemberWithSubscription(
           member,
           multiMemberships.get(member.id),
+          memberPlanMemberships.get(member.id) || [],
         );
       });
       const currentPlans = Array.from(
         new Set<string>(
           enrichedMembers
-            .map((member: any) => normalizeString(member.currentPlan))
+            .flatMap((member: any) =>
+              (member.plans || []).map((plan: any) =>
+                normalizeString(plan.planName),
+              ),
+            )
             .filter(Boolean),
         ),
       ).sort((a, b) => a.localeCompare(b));
       const filteredMembers = enrichedMembers.filter((member: any) => {
         if (
           currentPlanFilter &&
-          normalizeString(member.currentPlan).toLowerCase() !==
-            currentPlanFilter
+          !(member.plans || []).some(
+            (plan: any) =>
+              normalizeString(plan.planName).toLowerCase() ===
+              currentPlanFilter,
+          )
         ) {
           return false;
         }
@@ -1158,7 +1295,9 @@ export function registerMembershipRoutes(app: Express, poolProvider: PoolProvide
         }
         if (
           expiryDateFilter &&
-          dateOnly(member.currentExpiry) !== expiryDateFilter
+          !(member.plans || []).some(
+            (plan: any) => dateOnly(plan.endDate) === expiryDateFilter,
+          )
         ) {
           return false;
         }
@@ -1294,6 +1433,10 @@ export function registerMembershipRoutes(app: Express, poolProvider: PoolProvide
         [req.params.id],
       );
       const multiMemberships = await getMultiUserMemberships(pool, req.params.id);
+      const memberPlanMemberships = await getMemberPlanMemberships(
+        pool,
+        req.params.id,
+      );
       const member = mapMember(rows[0]);
       const legacyPlanDescriptions = await getLegacyPlanDescriptions(pool);
       member.planDescription =
@@ -1303,6 +1446,7 @@ export function registerMembershipRoutes(app: Express, poolProvider: PoolProvide
         member: enrichMemberWithSubscription(
           member,
           multiMemberships.get(member.id),
+          memberPlanMemberships.get(member.id) || [],
         ),
         subscriptions: subs.map(mapSubscription),
         invoices: invoices.map(mapInvoice),
