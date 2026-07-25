@@ -108,6 +108,31 @@ export type SessionMovement = {
   createdAt: string | null;
 };
 
+export type SessionSummary = {
+  subscriptionId: string;
+  paymentStatus: string;
+  sessionsUnlimited: boolean;
+  sessionsPerCycle: number | null;
+  cycleFrequency: string;
+  distributionModel: string;
+  cycleId: string | null;
+  cycleNumber: number | null;
+  cycleStartDate: string | null;
+  cycleEndDate: string | null;
+  nextResetDate: string | null;
+  included: number;
+  assigned: number;
+  reserved: number;
+  consumed: number;
+  cancelledOrReturned: number;
+  additional: number;
+  accumulated: number;
+  adjustmentsPositive: number;
+  adjustmentsNegative: number;
+  expired: number;
+  remaining: number;
+};
+
 export type AccessAttempt = {
   id: string;
   accessPointId: string | null;
@@ -169,8 +194,19 @@ export const subscriptionsV2Api = {
   listSubscriptions: (params: { memberId?: string; status?: string } = {}) =>
     apiRequest<{ subscriptions: SubscriptionV2[] }>(`/api/v2/subscriptions${toQuery(params)}`),
 
-  createSubscription: (payload: { planVersionId: string; holderMemberId: string; startDate?: string; endDate?: string }) =>
+  createSubscription: (payload: { planVersionId: string; holderMemberId: string; startDate?: string; endDate?: string; paymentStatus?: string }) =>
     apiRequest<{ subscription: SubscriptionV2; affiliationId: string }>('/api/v2/subscriptions', { method: 'POST', body: JSON.stringify(payload) }),
+
+  updatePaymentStatus: (id: string, paymentStatus: string) =>
+    apiRequest<{ ok: boolean; previousPaymentStatus: string; paymentStatus: string }>(
+      `/api/v2/subscriptions/${encodeURIComponent(id)}/payment-status`,
+      { method: 'PATCH', body: JSON.stringify({ paymentStatus }) },
+    ),
+
+  getSessionSummary: (id: string) =>
+    apiRequest<{ summary: SessionSummary }>(
+      `/api/v2/subscriptions/${encodeURIComponent(id)}/session-summary`,
+    ),
 
   // Subscription Members
   listSubscriptionMembers: (subscriptionId: string) =>
@@ -227,8 +263,8 @@ export const subscriptionsV2Api = {
   cancelSubscription: (id: string, reason?: string) =>
     apiRequest<{ ok: boolean; previousStatus: string; newStatus: string }>(`/api/v2/subscriptions/${encodeURIComponent(id)}/cancel`, { method: 'POST', body: JSON.stringify({ reason }) }),
 
-  renewSubscription: (id: string) =>
-    apiRequest<{ ok: boolean; newStartDate: string; newEndDate: string }>(`/api/v2/subscriptions/${encodeURIComponent(id)}/renew`, { method: 'POST', body: '{}' }),
+  renewSubscription: (id: string, paymentStatus = 'pending') =>
+    apiRequest<{ ok: boolean; newStartDate: string; newEndDate: string; paymentStatus: string }>(`/api/v2/subscriptions/${encodeURIComponent(id)}/renew`, { method: 'POST', body: JSON.stringify({ paymentStatus }) }),
 
   changePlan: (id: string, planVersionId: string) =>
     apiRequest<{ ok: boolean; newPlanVersionId: string; newEndDate: string }>(`/api/v2/subscriptions/${encodeURIComponent(id)}/change-plan`, { method: 'POST', body: JSON.stringify({ planVersionId }) }),
