@@ -158,14 +158,47 @@ export const membershipApi = {
   updatePlan: (id: string, plan: Partial<MembershipPlan>) =>
     apiRequest<{ plan: MembershipPlan }>(`/api/membership/plans/${encodeURIComponent(id)}`, { method: 'PUT', body: plan }),
 
-  listMembers: (params: { search?: string; status?: string; accessedToday?: boolean; accessDate?: string } = {}) => {
+  listMembers: (params: {
+    search?: string;
+    status?: string;
+    accessedToday?: boolean;
+    accessDate?: string;
+    currentPlan?: string;
+    paymentStatus?: string;
+    expiryDate?: string;
+    sortBy?: string;
+    page?: number;
+    pageSize?: number;
+  } = {}) => {
     const query = new URLSearchParams();
     if (params.search) query.set('search', params.search);
     if (params.status) query.set('status', params.status);
     if (params.accessedToday) query.set('accessedToday', 'true');
     if (params.accessDate) query.set('accessDate', params.accessDate);
+    if (params.currentPlan) query.set('currentPlan', params.currentPlan);
+    if (params.paymentStatus) query.set('paymentStatus', params.paymentStatus);
+    if (params.expiryDate) query.set('expiryDate', params.expiryDate);
+    if (params.sortBy) query.set('sortBy', params.sortBy);
+    if (params.page) query.set('page', String(params.page));
+    if (params.pageSize) query.set('pageSize', String(params.pageSize));
     const suffix = query.toString() ? `?${query}` : '';
-    return apiRequest<{ members: MembershipMember[] }>(`/api/membership/members${suffix}`);
+    return apiRequest<{
+      members: MembershipMember[];
+      pagination: {
+        page: number;
+        pageSize: number;
+        total: number;
+        totalPages: number;
+      };
+      summary: {
+        total: number;
+        active: number;
+        archived: number;
+      };
+      filterOptions: {
+        currentPlans: string[];
+      };
+    }>(`/api/membership/members${suffix}`);
   },
 
   createMember: (member: Partial<MembershipMember>) =>
