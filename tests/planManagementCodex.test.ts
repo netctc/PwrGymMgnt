@@ -70,7 +70,9 @@ test("migration seeds bilingual database-backed lists", () => {
 test("multi-user business rules synchronize expiry, preserve history and protect the holder", () => {
   const management = read("server/planManagement.ts");
   const lifecycle = read("server/subscriptionLifecycle.ts");
+  const membership = read("server/membership.ts");
   const managementPage = read("src/pages/MultiUserMemberships.tsx");
+  const membersPage = read("src/pages/Members.tsx");
   const api = read("src/lib/planManagementApi.ts");
 
   assert.match(management, /beneficiary_expiry_changed/);
@@ -84,11 +86,17 @@ test("multi-user business rules synchronize expiry, preserve history and protect
   assert.match(lifecycle, /subscription_renewed/);
   assert.match(lifecycle, /beneficiaries: beneficiaryRows\.map/);
   assert.match(lifecycle, /JSON_REMOVE[\s\S]*expiryOverride/);
+  assert.match(membership, /ACTIVE_MULTI_USER_HOLDER/);
+  assert.match(membership, /assertMemberCanBeRestricted/);
+  assert.match(membership, /subscriptionType: "multi_user"/);
+  assert.match(membership, /multiUserRole/);
   assert.match(api, /updateBeneficiaryExpiry/);
   assert.match(api, /changeSubscriptionHolder/);
   assert.match(managementPage, /canModifyBeneficiaries/);
   assert.match(managementPage, /changeHolder/);
   assert.match(managementPage, /maximumEndDate/);
+  assert.match(membersPage, /Multi-user ·/);
+  assert.match(membersPage, /holderActionLocked/);
 });
 
 test("frontend routes plans to the new page and exposes settings list maintenance", () => {
@@ -147,6 +155,7 @@ test("limited multi-user plans expose distribution, cycles, immutable movements 
   const scheduling = read("server/scheduling.ts");
   const plansPage = read("src/pages/MembershipPlansCodex.tsx");
   const subscriptionsPage = read("src/pages/Subscriptions.tsx");
+  const membersPage = read("src/pages/Members.tsx");
   const migration = read("sql/024_session_distribution_payment_lists.sql");
 
   assert.match(management, /holderSessionsPerCycle/);
@@ -162,6 +171,9 @@ test("limited multi-user plans expose distribution, cycles, immutable movements 
   assert.match(subscriptions, /sessions\/register-event/);
   assert.match(subscriptions, /DEDUCTION_DEFERRED/);
   assert.match(subscriptions, /payment-status/);
+  assert.match(subscriptions, /subscription_v2_payment/);
+  assert.match(subscriptions, /accountingStatus/);
+  assert.match(subscriptions, /paymentStatus === "paid" \? "posted" : "pending"/);
   assert.match(payments, /OUTSTANDING_SUBSCRIPTION_PAYMENT/);
   assert.match(lifecycle, /current subscription payment must be settled/i);
   assert.match(scheduling, /late_cancellation_penalty/);
@@ -169,6 +181,11 @@ test("limited multi-user plans expose distribution, cycles, immutable movements 
   assert.match(plansPage, /lateCancellationThreshold/);
   assert.match(plansPage, /allowExtraSessions/);
   assert.match(subscriptionsPage, /Real-time session summary/);
+  assert.match(membersPage, /paymentAttentionRequired/);
+  assert.match(membersPage, /expandedPlanMemberId/);
+  assert.match(membersPage, /multiUserMembers/);
+  assert.match(membersPage, /multiUserCapacity/);
+  assert.match(membersPage, /Payment pending/);
   assert.match(migration, /mli_cycle_quarterly/);
   assert.match(migration, /mli_payment_overdue/);
 });
