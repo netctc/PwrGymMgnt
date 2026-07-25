@@ -10,7 +10,12 @@ import type { Express, Request, Response, NextFunction } from "express";
 import type { Pool } from "mysql2/promise";
 import { requirePermission } from "./rbac";
 import { isFeatureEnabled } from "./featureFlags";
-import { mapBalance } from "./sessionLedger";
+import { getSessionBalanceContext, mapBalance } from "./sessionLedger";
+import { createInitialCycle } from "./subscriptionCycles";
+import {
+  assertNoOutstandingSubscriptionPayment,
+  normalizePaymentStatus,
+} from "./subscriptionPaymentRules";
 
 type PoolProvider = () => Pool | null;
 type AuthenticatedRequest = Request & { user?: { uid?: string; email?: string; role?: string } };
@@ -155,6 +160,7 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
   });
 
   app.post("/api/v2/subscriptions", requirePermission("membership.write"), async (req: AuthenticatedRequest, res, next) => {
+    let connection: any = null;
     try {
       const pool = requirePool(poolProvider);
       if (!await requireFeature(pool, "ENABLE_NEW_SUBSCRIPTION_MODEL", res)) return;
@@ -166,34 +172,90 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
       const [pvRows]: any = await pool.query("SELECT * FROM plan_versions WHERE id = ? AND status = 'active'", [planVersionId]);
       if (pvRows.length === 0) return res.status(404).json({ error: "Plan version not found or inactive" });
       const pv = pvRows[0];
+      await assertNoOutstandingSubscriptionPayment(pool, holderMemberId);
 
       const startDate = normalizeDate(req.body.startDate) || new Date().toISOString().slice(0, 10);
       const endDate = normalizeDate(req.body.endDate) || addDays(startDate, Number(pv.duration_days));
+      const paymentStatus = normalizePaymentStatus(req.body.paymentStatus, "pending");
 
       const id = createId("sub");
-      await pool.query(
+      connection = await pool.getConnection();
+      await connection.beginTransaction();
+      await connection.query(
         `INSERT INTO subscriptions (id, plan_id, plan_version_id, holder_member_id, status, start_date, end_date, auto_renew, price_paid, currency, payment_status, max_members)
-         VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, 'paid', ?)`,
-        [id, pv.plan_id, planVersionId, holderMemberId, startDate, endDate, pv.auto_renew, Number(pv.price), pv.currency, Number(pv.max_members)],
+         VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)`,
+        [id, pv.plan_id, planVersionId, holderMemberId, startDate, endDate, pv.auto_renew, Number(pv.price), pv.currency, paymentStatus, Number(pv.max_members)],
       );
 
       // Create subscription_member for holder
       const smId = createId("sm");
-      await pool.query(
+      await connection.query(
         "INSERT INTO subscription_members (id, subscription_id, member_id, role, status, joined_at) VALUES (?, ?, ?, 'holder', 'active', NOW())",
         [smId, id, holderMemberId],
       );
 
       // Create affiliation for holder
       const affId = createId("aff");
-      await pool.query(
+      await connection.query(
         `INSERT INTO affiliations (id, member_id, subscription_id, subscription_member_id, plan_version_id, status, role, is_primary, start_date, end_date, consumption_priority)
          VALUES (?, ?, ?, ?, ?, 'active', 'holder', 1, ?, ?, ?)`,
         [affId, holderMemberId, id, smId, planVersionId, startDate, endDate, Number(pv.consumption_priority)],
       );
 
+      await createInitialCycle(
+        connection,
+        id,
+        startDate,
+        endDate,
+        pv.sessions_unlimited ? null : Number(pv.sessions_per_cycle || 0),
+        pv.distribution_model || "individual",
+        [affId],
+        {
+          cycleFrequency: pv.cycle_frequency || "monthly",
+          subscriptionEndDate: endDate,
+          customAllocations: {
+            [affId]: Number(
+              (typeof pv.data === "string" ? JSON.parse(pv.data || "{}") : pv.data)
+                ?.holderSessionsPerCycle || pv.sessions_per_cycle || 0,
+            ),
+          },
+        },
+      );
+      await connection.commit();
       const [rows]: any = await pool.query("SELECT s.*, pv.name AS plan_name, pv.plan_type FROM subscriptions s LEFT JOIN plan_versions pv ON pv.id = s.plan_version_id WHERE s.id = ?", [id]);
       res.status(201).json({ subscription: mapSubscription(rows[0]), affiliationId: affId });
+    } catch (error) {
+      if (connection) await connection.rollback();
+      next(error);
+    } finally {
+      if (connection) connection.release();
+    }
+  });
+
+  app.patch("/api/v2/subscriptions/:id/payment-status", requirePermission("membership.write"), async (req: AuthenticatedRequest, res, next) => {
+    try {
+      const pool = requirePool(poolProvider);
+      const paymentStatus = normalizePaymentStatus(req.body.paymentStatus);
+      const [rows]: any = await pool.query(
+        "SELECT payment_status FROM subscriptions WHERE id = ? LIMIT 1",
+        [req.params.id],
+      );
+      if (!rows.length) return res.status(404).json({ error: "Subscription not found" });
+      const previousPaymentStatus = rows[0].payment_status;
+      await pool.query(
+        "UPDATE subscriptions SET payment_status = ?, version = version + 1, updated_at = NOW() WHERE id = ?",
+        [paymentStatus, req.params.id],
+      );
+      await pool.query(
+        "INSERT INTO outbox_events (id, event_type, payload, status) VALUES (?, 'subscription_payment_status_changed', ?, 'pending')",
+        [createId("evt"), JSON.stringify({
+          subscriptionId: req.params.id,
+          previousPaymentStatus,
+          paymentStatus,
+          changedBy: req.user?.email || req.user?.uid || null,
+        })],
+      );
+      res.json({ ok: true, previousPaymentStatus, paymentStatus });
     } catch (error) { next(error); }
   });
 
@@ -230,6 +292,7 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
       const subscriptionId = req.params.id;
       const memberId = normalizeString(req.body.memberId);
       if (!memberId) return res.status(400).json({ error: "memberId is required" });
+      await assertNoOutstandingSubscriptionPayment(pool, memberId);
 
       // Verify subscription exists and check capacity
       const [subRows]: any = await pool.query(
@@ -341,6 +404,64 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
   });
 
   // --- Session Balances ---
+  app.get("/api/v2/subscriptions/:id/session-summary", requirePermission("membership.read"), async (req, res, next) => {
+    try {
+      const pool = requirePool(poolProvider);
+      const [rows]: any = await pool.query(
+        `SELECT s.id AS subscription_id, s.payment_status,
+                pv.sessions_unlimited, pv.sessions_per_cycle, pv.cycle_frequency,
+                pv.distribution_model, sc.id AS cycle_id, sc.cycle_number,
+                sc.start_date AS cycle_start_date, sc.end_date AS cycle_end_date,
+                COALESCE(SUM(sb.included), 0) AS included,
+                COALESCE(SUM(sb.carried_over), 0) AS carried_over,
+                COALESCE(SUM(sb.purchased), 0) AS purchased,
+                COALESCE(SUM(sb.adjustments_positive), 0) AS adjustments_positive,
+                COALESCE(SUM(sb.refunds), 0) AS refunds,
+                COALESCE(SUM(sb.reserved), 0) AS reserved,
+                COALESCE(SUM(sb.consumed), 0) AS consumed,
+                COALESCE(SUM(sb.expired), 0) AS expired,
+                COALESCE(SUM(sb.adjustments_negative), 0) AS adjustments_negative,
+                COALESCE(SUM(sb.available), 0) AS available
+           FROM subscriptions s
+           JOIN plan_versions pv ON pv.id = s.plan_version_id
+           LEFT JOIN subscription_cycles sc
+             ON sc.subscription_id = s.id AND sc.status = 'active'
+           LEFT JOIN session_balances sb ON sb.cycle_id = sc.id
+          WHERE s.id = ?
+          GROUP BY s.id, pv.id, sc.id`,
+        [req.params.id],
+      );
+      if (!rows.length) return res.status(404).json({ error: "Subscription not found" });
+      const row = rows[0];
+      res.json({
+        summary: {
+          subscriptionId: row.subscription_id,
+          paymentStatus: row.payment_status,
+          sessionsUnlimited: Boolean(row.sessions_unlimited),
+          sessionsPerCycle: row.sessions_per_cycle === null ? null : Number(row.sessions_per_cycle),
+          cycleFrequency: row.cycle_frequency,
+          distributionModel: row.distribution_model,
+          cycleId: row.cycle_id || null,
+          cycleNumber: row.cycle_number ? Number(row.cycle_number) : null,
+          cycleStartDate: row.cycle_start_date ? String(row.cycle_start_date).slice(0, 10) : null,
+          cycleEndDate: row.cycle_end_date ? String(row.cycle_end_date).slice(0, 10) : null,
+          nextResetDate: row.cycle_end_date ? String(row.cycle_end_date).slice(0, 10) : null,
+          included: Number(row.included),
+          assigned: Number(row.included),
+          reserved: Number(row.reserved),
+          consumed: Number(row.consumed),
+          cancelledOrReturned: Number(row.refunds),
+          additional: Number(row.purchased),
+          accumulated: Number(row.carried_over),
+          adjustmentsPositive: Number(row.adjustments_positive),
+          adjustmentsNegative: Number(row.adjustments_negative),
+          expired: Number(row.expired),
+          remaining: Number(row.available),
+        },
+      });
+    } catch (error) { next(error); }
+  });
+
   app.get("/api/v2/session-balances", requirePermission("membership.read"), async (req, res, next) => {
     try {
       const pool = requirePool(poolProvider);
@@ -403,7 +524,13 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
       if (!affiliationId) return res.status(400).json({ error: "affiliationId is required" });
 
       // Find active cycle for this affiliation's subscription
-      const [affRows]: any = await pool.query("SELECT subscription_id FROM affiliations WHERE id = ? AND status = 'active' LIMIT 1", [affiliationId]);
+      const [affRows]: any = await pool.query(
+        `SELECT a.subscription_id, pv.distribution_model
+           FROM affiliations a
+           JOIN plan_versions pv ON pv.id = a.plan_version_id
+          WHERE a.id = ? AND a.status = 'active' LIMIT 1`,
+        [affiliationId],
+      );
       if (affRows.length === 0) return res.status(404).json({ error: "Active affiliation not found", code: "AFFILIATION_NOT_ACTIVE" });
 
       const [cycleRows]: any = await pool.query(
@@ -417,7 +544,8 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
       try {
         await connection.beginTransaction();
         const { getBalanceForUpdate, createMovement } = await import("./sessionLedger");
-        const balance = await getBalanceForUpdate(connection, "affiliation", affiliationId, cycleId);
+        const context = getSessionBalanceContext(affRows[0].distribution_model, affRows[0].subscription_id, affiliationId);
+        const balance = await getBalanceForUpdate(connection, context.contextType, context.contextId, cycleId);
         const movement = await createMovement(connection, {
           balanceId: balance.id,
           affiliationId,
@@ -450,7 +578,13 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
       const affiliationId = normalizeString(req.body.affiliationId);
       if (!affiliationId) return res.status(400).json({ error: "affiliationId is required" });
 
-      const [affRows]: any = await pool.query("SELECT subscription_id FROM affiliations WHERE id = ? AND status = 'active' LIMIT 1", [affiliationId]);
+      const [affRows]: any = await pool.query(
+        `SELECT a.subscription_id, pv.distribution_model
+           FROM affiliations a
+           JOIN plan_versions pv ON pv.id = a.plan_version_id
+          WHERE a.id = ? AND a.status = 'active' LIMIT 1`,
+        [affiliationId],
+      );
       if (affRows.length === 0) return res.status(404).json({ error: "Active affiliation not found", code: "AFFILIATION_NOT_ACTIVE" });
 
       const [cycleRows]: any = await pool.query(
@@ -463,7 +597,8 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
       try {
         await connection.beginTransaction();
         const { getBalanceForUpdate, createMovement } = await import("./sessionLedger");
-        const balance = await getBalanceForUpdate(connection, "affiliation", affiliationId, cycleRows[0].id);
+        const context = getSessionBalanceContext(affRows[0].distribution_model, affRows[0].subscription_id, affiliationId);
+        const balance = await getBalanceForUpdate(connection, context.contextType, context.contextId, cycleRows[0].id);
         const movement = await createMovement(connection, {
           balanceId: balance.id,
           affiliationId,
@@ -497,7 +632,13 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
       const relatedMovementId = normalizeString(req.body.relatedMovementId);
       if (!affiliationId) return res.status(400).json({ error: "affiliationId is required" });
 
-      const [affRows]: any = await pool.query("SELECT subscription_id FROM affiliations WHERE id = ? LIMIT 1", [affiliationId]);
+      const [affRows]: any = await pool.query(
+        `SELECT a.subscription_id, pv.distribution_model
+           FROM affiliations a
+           JOIN plan_versions pv ON pv.id = a.plan_version_id
+          WHERE a.id = ? LIMIT 1`,
+        [affiliationId],
+      );
       if (affRows.length === 0) return res.status(404).json({ error: "Affiliation not found" });
 
       const [cycleRows]: any = await pool.query(
@@ -510,7 +651,8 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
       try {
         await connection.beginTransaction();
         const { getBalanceForUpdate, createMovement } = await import("./sessionLedger");
-        const balance = await getBalanceForUpdate(connection, "affiliation", affiliationId, cycleRows[0].id);
+        const context = getSessionBalanceContext(affRows[0].distribution_model, affRows[0].subscription_id, affiliationId);
+        const balance = await getBalanceForUpdate(connection, context.contextType, context.contextId, cycleRows[0].id);
         const movement = await createMovement(connection, {
           balanceId: balance.id,
           affiliationId,
@@ -546,7 +688,13 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
       if (!affiliationId || !direction || !reason) return res.status(400).json({ error: "affiliationId, direction, and reason are required" });
       if (!["positive", "negative"].includes(direction)) return res.status(400).json({ error: "direction must be 'positive' or 'negative'" });
 
-      const [affRows]: any = await pool.query("SELECT subscription_id FROM affiliations WHERE id = ? LIMIT 1", [affiliationId]);
+      const [affRows]: any = await pool.query(
+        `SELECT a.subscription_id, pv.distribution_model
+           FROM affiliations a
+           JOIN plan_versions pv ON pv.id = a.plan_version_id
+          WHERE a.id = ? LIMIT 1`,
+        [affiliationId],
+      );
       if (affRows.length === 0) return res.status(404).json({ error: "Affiliation not found" });
 
       const [cycleRows]: any = await pool.query(
@@ -559,7 +707,8 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
       try {
         await connection.beginTransaction();
         const { getBalanceForUpdate, createMovement } = await import("./sessionLedger");
-        const balance = await getBalanceForUpdate(connection, "affiliation", affiliationId, cycleRows[0].id);
+        const context = getSessionBalanceContext(affRows[0].distribution_model, affRows[0].subscription_id, affiliationId);
+        const balance = await getBalanceForUpdate(connection, context.contextType, context.contextId, cycleRows[0].id);
         const movementType = direction === "positive" ? "adjustment_positive" : "adjustment_negative";
         const movement = await createMovement(connection, {
           balanceId: balance.id,
@@ -567,6 +716,9 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
           cycleId: cycleRows[0].id,
           movementType,
           quantity: numberOrDefault(req.body.quantity, 1),
+          referenceType: normalizeString(req.body.referenceType) || "manual_adjustment",
+          referenceId: normalizeString(req.body.referenceId) || null,
+          relatedMovementId: normalizeString(req.body.relatedMovementId) || null,
           reason,
           performedBy: req.user?.email || "system",
           idempotencyKey: req.headers["idempotency-key"] as string || normalizeString(req.body.idempotencyKey) || null,
@@ -576,6 +728,77 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
       } catch (error: any) {
         await connection.rollback();
         if (error.code === "NO_SESSIONS_AVAILABLE") return res.status(400).json({ error: error.message, code: error.code });
+        throw error;
+      } finally {
+        connection.release();
+      }
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/v2/sessions/purchase", requirePermission("membership.write"), async (req: AuthenticatedRequest, res, next) => {
+    try {
+      const pool = requirePool(poolProvider);
+      const affiliationId = normalizeString(req.body.affiliationId);
+      const quantity = Math.max(1, numberOrDefault(req.body.quantity, 1));
+      if (!affiliationId) return res.status(400).json({ error: "affiliationId is required" });
+      const [affRows]: any = await pool.query(
+        `SELECT a.subscription_id, pv.distribution_model, pv.extra_session_price,
+                pv.data AS plan_data
+           FROM affiliations a
+           JOIN plan_versions pv ON pv.id = a.plan_version_id
+          WHERE a.id = ? AND a.status = 'active' LIMIT 1`,
+        [affiliationId],
+      );
+      if (!affRows.length) return res.status(404).json({ error: "Active affiliation not found" });
+      const planData = typeof affRows[0].plan_data === "string"
+        ? JSON.parse(affRows[0].plan_data || "{}")
+        : (affRows[0].plan_data || {});
+      if (!planData.allowExtraSessions && affRows[0].extra_session_price === null) {
+        return res.status(409).json({
+          error: "This plan does not allow additional session purchases",
+          code: "EXTRA_SESSIONS_NOT_ALLOWED",
+        });
+      }
+      const [cycleRows]: any = await pool.query(
+        "SELECT id FROM subscription_cycles WHERE subscription_id = ? AND status = 'active' ORDER BY cycle_number DESC LIMIT 1",
+        [affRows[0].subscription_id],
+      );
+      if (!cycleRows.length) return res.status(409).json({ error: "No active cycle found" });
+      const connection = await pool.getConnection();
+      try {
+        await connection.beginTransaction();
+        const { getBalanceForUpdate, createMovement } = await import("./sessionLedger");
+        const context = getSessionBalanceContext(
+          affRows[0].distribution_model,
+          affRows[0].subscription_id,
+          affiliationId,
+        );
+        const balance = await getBalanceForUpdate(
+          connection,
+          context.contextType,
+          context.contextId,
+          cycleRows[0].id,
+        );
+        const movement = await createMovement(connection, {
+          balanceId: balance.id,
+          affiliationId,
+          cycleId: cycleRows[0].id,
+          movementType: "purchase",
+          quantity,
+          referenceType: "additional_session_purchase",
+          referenceId: normalizeString(req.body.referenceId) || null,
+          reason: normalizeString(req.body.reason) || "Additional sessions purchased",
+          performedBy: req.user?.email || req.user?.uid || "system",
+          idempotencyKey: req.headers["idempotency-key"] as string || normalizeString(req.body.idempotencyKey) || null,
+        });
+        await connection.commit();
+        res.status(201).json({
+          movement,
+          unitPrice: Number(affRows[0].extra_session_price || 0),
+          totalPrice: Number(affRows[0].extra_session_price || 0) * quantity,
+        });
+      } catch (error) {
+        await connection.rollback();
         throw error;
       } finally {
         connection.release();
