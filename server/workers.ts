@@ -51,12 +51,16 @@ export async function processCycleClosings(pool: Pool): Promise<{ processed: num
     // Find subscriptions with active cycles past their end date
     const [rows]: any = await pool.query(`
       SELECT sc.id AS cycle_id, sc.subscription_id, s.plan_version_id,
+             s.end_date AS subscription_end_date, s.payment_status,
              pv.sessions_per_cycle, pv.distribution_model, pv.carryover_enabled,
-             pv.carryover_max, pv.cycle_frequency
+             pv.carryover_max, pv.cycle_frequency, pv.data AS plan_data
       FROM subscription_cycles sc
       JOIN subscriptions s ON s.id = sc.subscription_id
       JOIN plan_versions pv ON pv.id = s.plan_version_id
-      WHERE sc.status = 'active' AND sc.end_date < CURDATE() AND s.status = 'active'
+      WHERE sc.status = 'active'
+        AND sc.end_date < CURDATE()
+        AND s.status = 'active'
+        AND s.payment_status IN ('paid', 'waived')
       LIMIT 50
     `);
 
@@ -64,10 +68,33 @@ export async function processCycleClosings(pool: Pool): Promise<{ processed: num
       try {
         // Get active affiliations for this subscription
         const [affRows]: any = await pool.query(
-          "SELECT id FROM affiliations WHERE subscription_id = ? AND status = 'active'",
+          `SELECT id, role, benefits_override
+             FROM affiliations
+            WHERE subscription_id = ? AND status = 'active'`,
           [row.subscription_id],
         );
         const affiliationIds = affRows.map((a: any) => a.id);
+        const planData = typeof row.plan_data === "string"
+          ? JSON.parse(row.plan_data || "{}")
+          : (row.plan_data || {});
+        const customAllocations = Object.fromEntries(
+          affRows.map((affiliation: any) => {
+            const override = typeof affiliation.benefits_override === "string"
+              ? JSON.parse(affiliation.benefits_override || "{}")
+              : (affiliation.benefits_override || {});
+            return [
+              affiliation.id,
+              Number(
+                override.sessionsPerCycle ??
+                (affiliation.role === "holder"
+                  ? planData.holderSessionsPerCycle
+                  : planData.beneficiarySessionsPerCycle) ??
+                row.sessions_per_cycle ??
+                0,
+              ),
+            ];
+          }),
+        );
 
         await closeCycleAndOpenNext(pool, row.subscription_id, {
           sessionsPerCycle: row.sessions_per_cycle ? Number(row.sessions_per_cycle) : null,
@@ -76,6 +103,8 @@ export async function processCycleClosings(pool: Pool): Promise<{ processed: num
           carryoverEnabled: Boolean(row.carryover_enabled),
           carryoverMax: row.carryover_max ? Number(row.carryover_max) : null,
           cycleFrequency: row.cycle_frequency || "monthly",
+          subscriptionEndDate: String(row.subscription_end_date).slice(0, 10),
+          customAllocations,
           performedBy: "system:cycle_worker",
         });
         processed++;
@@ -220,6 +249,62 @@ export async function releaseExpiredReservations(pool: Pool): Promise<{ released
   return { released };
 }
 
+export async function expireCarriedSessions(pool: Pool): Promise<{ expired: number }> {
+  const locked = await acquireLock(pool, "powergym_carryover_expiration");
+  if (!locked) return { expired: 0 };
+  let expired = 0;
+  try {
+    const [rows]: any = await pool.query(
+      `SELECT sb.id AS balance_id, sb.context_type, sb.context_id, sb.cycle_id,
+              sb.carried_over, sb.available
+         FROM session_balances sb
+         JOIN subscription_cycles sc ON sc.id = sb.cycle_id AND sc.status = 'active'
+         JOIN subscriptions s ON s.id = sc.subscription_id
+         JOIN plan_versions pv ON pv.id = s.plan_version_id
+        WHERE sb.carried_over > 0
+          AND sb.available > 0
+          AND pv.carryover_expiry_days IS NOT NULL
+          AND DATE_ADD(sc.start_date, INTERVAL pv.carryover_expiry_days DAY) <= CURDATE()
+          AND NOT EXISTS (
+            SELECT 1 FROM session_movements sm
+             WHERE sm.balance_id = sb.id
+               AND sm.movement_type = 'expiration'
+               AND sm.idempotency_key = CONCAT('carryover_expire_', sb.id)
+          )
+        LIMIT 100`,
+    );
+    for (const row of rows) {
+      const quantity = Math.min(Number(row.carried_over), Number(row.available));
+      if (quantity <= 0) continue;
+      const connection = await pool.getConnection();
+      try {
+        await connection.beginTransaction();
+        const { createMovement } = await import("./sessionLedger");
+        await createMovement(connection, {
+          balanceId: row.balance_id,
+          cycleId: row.cycle_id,
+          movementType: "expiration",
+          quantity,
+          referenceType: "carryover_expiration",
+          referenceId: row.balance_id,
+          reason: "Accumulated sessions reached their configured expiry",
+          performedBy: "system:carryover_expiration",
+          idempotencyKey: `carryover_expire_${row.balance_id}`,
+        });
+        await connection.commit();
+        expired += quantity;
+      } catch {
+        await connection.rollback();
+      } finally {
+        connection.release();
+      }
+    }
+  } finally {
+    await releaseLock(pool, "powergym_carryover_expiration");
+  }
+  return { expired };
+}
+
 /**
  * Reconcile balances: verify that materialized balances match movement sums.
  * Reports discrepancies but does NOT auto-fix (requires manual adjustment).
@@ -282,6 +367,9 @@ export function startWorkers(poolProvider: () => Pool | null, intervalMs = 60_00
 
       const expired = await releaseExpiredReservations(pool);
       if (expired.released > 0) appLogger.info("Expired reservations released", expired);
+
+      const carryover = await expireCarriedSessions(pool);
+      if (carryover.expired > 0) appLogger.info("Carried sessions expired", carryover);
     } catch (error: any) {
       appLogger.error("Worker cycle failed", { error: error.message });
     }
