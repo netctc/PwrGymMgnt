@@ -123,6 +123,22 @@ function getLatestInvoice(invoices: MembershipInvoice[]) {
   return [...invoices].sort((a, b) => String(b.createdAt || b.dueDate || '').localeCompare(String(a.createdAt || a.dueDate || '')))[0] || null;
 }
 
+function dateValue(value?: string | null) {
+  return value ? String(value).slice(0, 10) : '';
+}
+
+function paymentStatusFromInvoice(invoice?: MembershipInvoice | null) {
+  return String(invoice?.status || '').toLowerCase() === 'paid'
+    ? 'paid'
+    : 'pending';
+}
+
+function paymentDateFromInvoice(invoice?: MembershipInvoice | null) {
+  return paymentStatusFromInvoice(invoice) === 'paid'
+    ? dateValue(invoice?.paidAt) || today()
+    : dateValue(invoice?.dueDate);
+}
+
 function getEffectiveMemberStatus(member: MembershipMember) {
   const status = String(member.status || '').toLowerCase();
   const expiry = member.currentExpiry ? String(member.currentExpiry).slice(0, 10) : '';
@@ -206,6 +222,11 @@ export default function Members() {
     '' | 'paid' | 'pending'
   >('');
   const [renewPaymentDate, setRenewPaymentDate] = useState('');
+  const [renewMode, setRenewMode] = useState<'create' | 'edit'>('create');
+  const [renewExistingLegacySubscriptionId, setRenewExistingLegacySubscriptionId] =
+    useState<string | null>(null);
+  const [renewExistingEndDate, setRenewExistingEndDate] = useState('');
+  const [renewPaymentLocked, setRenewPaymentLocked] = useState(false);
   const [renewMultiSubscription, setRenewMultiSubscription] =
     useState<SubscriptionV2 | null>(null);
   const [qrOpen, setQrOpen] = useState(false);
@@ -230,6 +251,7 @@ export default function Members() {
   const selectedRenewPlan = useMemo(() => plans.find((plan) => plan.id === renewPlanId) || null, [plans, renewPlanId]);
   const renewEndDate = useMemo(
     () => {
+      if (renewMode === 'edit') return renewExistingEndDate;
       if (!renewStartDate) return '';
       if (selectedRenewPlan) {
         return addDaysToDate(renewStartDate, selectedRenewPlan.durationDays);
@@ -245,7 +267,13 @@ export default function Members() {
       }
       return '';
     },
-    [renewStartDate, renewMultiSubscription, selectedRenewPlan],
+    [
+      renewExistingEndDate,
+      renewMode,
+      renewStartDate,
+      renewMultiSubscription,
+      selectedRenewPlan,
+    ],
   );
 
   const loadPlans = async () => {
@@ -385,6 +413,14 @@ export default function Members() {
         setRenewMember(newMember);
         setRenewPlanId(plans[0]?.id || '');
         setRenewCurrentExpiry('');
+        setRenewCurrentPlan('');
+        setRenewPaymentStatus('');
+        setRenewPaymentDate('');
+        setRenewMode('create');
+        setRenewExistingLegacySubscriptionId(null);
+        setRenewExistingEndDate('');
+        setRenewPaymentLocked(false);
+        setRenewMultiSubscription(null);
         setRenewStartDate(today());
         setRenewOpen(true);
       }
@@ -430,6 +466,10 @@ export default function Members() {
     setRenewCurrentPlan('');
     setRenewPaymentStatus('');
     setRenewPaymentDate('');
+    setRenewMode('create');
+    setRenewExistingLegacySubscriptionId(null);
+    setRenewExistingEndDate('');
+    setRenewPaymentLocked(false);
     setRenewMultiSubscription(null);
     setRenewStartDate(today());
     setRenewOpen(true);
@@ -445,8 +485,10 @@ export default function Members() {
         multiResponse.subscriptions
           .sort((a, b) => String(b.endDate).localeCompare(String(a.endDate)))[0] ||
         null;
-      const latestLegacySubscription = [...response.subscriptions].sort((a, b) =>
-        String(b.endDate).localeCompare(String(a.endDate)),
+      const latestLegacySubscription = [...response.subscriptions].sort(
+        (a, b) =>
+          Number(b.status === 'active') - Number(a.status === 'active') ||
+          String(b.endDate).localeCompare(String(a.endDate)),
       )[0];
       const currentExpiry =
         multiSubscription?.endDate ||
@@ -462,7 +504,86 @@ export default function Members() {
         setRenewPlanId(multiSubscription.planId);
       }
       setRenewCurrentExpiry(currentExpiry);
-      setRenewStartDate(computeRenewalStartDate(currentExpiry));
+
+      const currentMultiSubscription =
+        multiSubscription?.status === 'active' &&
+        dateValue(multiSubscription.endDate) >= today()
+          ? multiSubscription
+          : null;
+      const multiSubscriptionInvoice = currentMultiSubscription
+        ? response.invoices.find((invoice) => {
+            const invoiceData = invoice.data || {};
+            return (
+              invoiceData.subscriptionV2Id === currentMultiSubscription.id &&
+              (invoiceData.source !== 'subscription_v2_renewal' ||
+                !invoiceData.periodEnd ||
+                dateValue(invoiceData.periodEnd) ===
+                  dateValue(currentMultiSubscription.endDate))
+            );
+          }) || null
+        : null;
+      const shouldEditMultiPayment = Boolean(
+        currentMultiSubscription &&
+          (['pending', 'partial', 'overdue'].includes(
+            String(currentMultiSubscription.paymentStatus).toLowerCase(),
+          ) ||
+            multiSubscriptionInvoice?.data?.source ===
+              'subscription_v2_renewal'),
+      );
+      const legacyInvoice = latestLegacySubscription
+        ? response.invoices.find(
+            (invoice) =>
+              invoice.subscriptionId === latestLegacySubscription.id,
+          ) || null
+        : null;
+      const isExistingLegacyRenewal = Boolean(
+        latestLegacySubscription &&
+          latestLegacySubscription.status === 'active' &&
+          dateValue(latestLegacySubscription.endDate) >= today() &&
+          legacyInvoice &&
+          (paymentStatusFromInvoice(legacyInvoice) === 'pending' ||
+            latestLegacySubscription.data?.source === 'renewal' ||
+            latestLegacySubscription.data?.renewalOfSubscriptionId ||
+            response.subscriptions.some(
+              (subscription) =>
+                subscription.id !== latestLegacySubscription.id,
+            )),
+      );
+
+      if (
+        currentMultiSubscription &&
+        shouldEditMultiPayment
+      ) {
+        const paymentStatus = multiSubscriptionInvoice
+          ? paymentStatusFromInvoice(multiSubscriptionInvoice)
+          : String(currentMultiSubscription.paymentStatus).toLowerCase() ===
+              'paid'
+            ? 'paid'
+            : 'pending';
+        setRenewMode('edit');
+        setRenewStartDate(dateValue(currentMultiSubscription.startDate));
+        setRenewExistingEndDate(dateValue(currentMultiSubscription.endDate));
+        setRenewPaymentStatus(paymentStatus);
+        setRenewPaymentDate(
+          multiSubscriptionInvoice
+            ? paymentDateFromInvoice(multiSubscriptionInvoice)
+            : dateValue(currentMultiSubscription.expectedPaymentDate),
+        );
+        setRenewPaymentLocked(paymentStatus === 'paid');
+      } else if (isExistingLegacyRenewal && latestLegacySubscription) {
+        const paymentStatus = paymentStatusFromInvoice(legacyInvoice);
+        setRenewMode('edit');
+        setRenewMultiSubscription(null);
+        setRenewPlanId(latestLegacySubscription.planId || plans[0]?.id || '');
+        setRenewStartDate(dateValue(latestLegacySubscription.startDate));
+        setRenewExistingEndDate(dateValue(latestLegacySubscription.endDate));
+        setRenewExistingLegacySubscriptionId(latestLegacySubscription.id);
+        setRenewPaymentStatus(paymentStatus);
+        setRenewPaymentDate(paymentDateFromInvoice(legacyInvoice));
+        setRenewPaymentLocked(paymentStatus === 'paid');
+      } else {
+        setRenewStartDate(computeRenewalStartDate(currentExpiry));
+      }
     } catch (err: any) {
       toast.error(err.message || 'Failed to calculate renewal dates');
     }
@@ -493,6 +614,33 @@ export default function Members() {
     }
     setSaving(true);
     try {
+      if (renewMode === 'edit') {
+        if (renewMultiSubscription) {
+          await subscriptionsV2Api.updatePaymentStatus(
+            renewMultiSubscription.id,
+            renewPaymentStatus,
+            renewPaymentDate,
+          );
+        } else if (renewExistingLegacySubscriptionId) {
+          await membershipApi.updateSubscriptionPaymentStatus(
+            renewExistingLegacySubscriptionId,
+            {
+              paymentStatus: renewPaymentStatus,
+              paymentDate: renewPaymentDate,
+            },
+          );
+        } else {
+          throw new Error('Existing renewal subscription was not found.');
+        }
+        toast.success('Subscription payment updated');
+        setRenewOpen(false);
+        await loadMembers();
+        if (detail?.member.id === renewMember.id) {
+          const response = await membershipApi.getMember(renewMember.id);
+          setDetail(response);
+        }
+        return;
+      }
       if (renewMultiSubscription) {
         await subscriptionsV2Api.renewSubscription(
           renewMultiSubscription.id,
@@ -1012,11 +1160,22 @@ The secure QR token is embedded in the attached PDF/QR image.`;
 
       <Dialog open={renewOpen} onOpenChange={setRenewOpen}>
         <DialogContent className="sm:max-w-2xl">
-          <DialogHeader><DialogTitle>Renew Subscription</DialogTitle></DialogHeader>
+          <DialogHeader>
+            <DialogTitle>
+              {renewMode === 'edit'
+                ? 'Edit Subscription Payment'
+                : 'Renew Subscription'}
+            </DialogTitle>
+          </DialogHeader>
           <form onSubmit={submitRenewal} className="min-w-0 space-y-4">
             <div className="rounded-lg bg-slate-50 p-3 text-sm">
               <p className="font-medium text-slate-900">{renewMember?.firstName} {renewMember?.lastName}</p>
               <p className="text-slate-500">Current plan: {renewCurrentPlan || '—'}</p>
+              {renewMode === 'edit' && (
+                <p className="mt-1 text-slate-500">
+                  Editing the payment information of the existing, unexpired subscription or renewal.
+                </p>
+              )}
             </div>
             <div className="min-w-0 space-y-2">
               <Label htmlFor="renewPlan">Plan</Label>
@@ -1025,7 +1184,7 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                 className="h-9 w-full min-w-0 max-w-full rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
                 value={renewPlanId}
                 onChange={(event) => setRenewPlanId(event.target.value)}
-                disabled={Boolean(renewMultiSubscription)}
+                disabled={Boolean(renewMultiSubscription) || renewMode === 'edit'}
                 required
               >
                 {renewMultiSubscription ? (
@@ -1034,6 +1193,13 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                   </option>
                 ) : (
                   <>
+                    {renewMode === 'edit' &&
+                      renewPlanId &&
+                      !plans.some((plan) => plan.id === renewPlanId) && (
+                        <option value={renewPlanId}>
+                          {renewCurrentPlan || 'Existing plan'}
+                        </option>
+                      )}
                     {plans.length === 0 && <option value="">No active plans available</option>}
                     {plans.map((plan) => (
                       <option key={plan.id} value={plan.id}>{plan.name} - {formatMoney(plan.price, plan.currency)} / {plan.durationDays} days</option>
@@ -1044,7 +1210,11 @@ The secure QR token is embedded in the attached PDF/QR image.`;
             </div>
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
               <div className="space-y-2">
-                <Label>Current Expiry</Label>
+                <Label>
+                  {renewMode === 'edit'
+                    ? 'Subscription Expiry'
+                    : 'Current Expiry'}
+                </Label>
                 <Input value={renewCurrentExpiry ? formatDate(renewCurrentExpiry) : 'No active subscription'} readOnly disabled />
               </div>
               <div className="space-y-2">
@@ -1055,7 +1225,11 @@ The secure QR token is embedded in the attached PDF/QR image.`;
             <div className="space-y-2">
               <Label htmlFor="endDate">End Date</Label>
               <Input id="endDate" value={formatDate(renewEndDate)} readOnly disabled />
-              <p className="text-xs text-slate-500">End Date is calculated automatically from the renewal start date plus the selected plan duration.</p>
+              <p className="text-xs text-slate-500">
+                {renewMode === 'edit'
+                  ? 'Start Date and End Date belong to the existing renewal and cannot be changed here.'
+                  : 'End Date is calculated automatically from the renewal start date plus the selected plan duration.'}
+              </p>
             </div>
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
               <div className="space-y-2">
@@ -1065,10 +1239,17 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                   className="h-9 w-full rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
                   value={renewPaymentStatus}
                   required
+                  disabled={renewPaymentLocked}
                   onChange={(event) => {
                     const value = event.target.value as '' | 'paid' | 'pending';
                     setRenewPaymentStatus(value);
-                    setRenewPaymentDate(value === 'paid' ? today() : '');
+                    setRenewPaymentDate(
+                      value === 'paid'
+                        ? today()
+                        : renewMode === 'edit'
+                          ? renewPaymentDate
+                          : '',
+                    );
                   }}
                 >
                   <option value="">Select payment status</option>
@@ -1089,8 +1270,8 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                   min={today()}
                   max={renewEndDate}
                   required
-                  readOnly={renewPaymentStatus === 'paid'}
-                  disabled={!renewPaymentStatus}
+                  readOnly={renewPaymentStatus === 'paid' || renewPaymentLocked}
+                  disabled={!renewPaymentStatus || renewPaymentLocked}
                 />
                 <p className="text-xs text-slate-500">
                   {renewPaymentStatus === 'paid'
@@ -1115,16 +1296,25 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                 type="submit"
                 disabled={
                   saving ||
+                  renewPaymentLocked ||
                   !renewPaymentStatus ||
                   !renewPaymentDate ||
-                  (!renewMultiSubscription && plans.length === 0)
+                  (renewMode === 'create' &&
+                    !renewMultiSubscription &&
+                    plans.length === 0)
                 }
               >
                 {saving
-                  ? 'Renewing...'
-                  : renewMultiSubscription
-                    ? 'Renew Subscription'
-                    : 'Renew & Invoice'}
+                  ? renewMode === 'edit'
+                    ? 'Saving...'
+                    : 'Renewing...'
+                  : renewPaymentLocked
+                    ? 'Payment already paid'
+                    : renewMode === 'edit'
+                      ? 'Save Payment'
+                      : renewMultiSubscription
+                        ? 'Renew Subscription'
+                        : 'Renew & Invoice'}
               </Button>
             </div>
           </form>
