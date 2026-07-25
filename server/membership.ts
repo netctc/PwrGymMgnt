@@ -139,7 +139,8 @@ async function getMultiUserMemberships(pool: Pool, memberId?: string) {
             s.start_date AS subscription_start_date,
             s.end_date AS subscription_end_date,
             s.max_members,
-            pv.name AS plan_name, pv.description AS plan_description,
+            pv.name AS plan_name,
+            COALESCE(sp.description, pv.description) AS plan_description,
             pv.plan_type,
             (
               SELECT COUNT(*)
@@ -166,6 +167,7 @@ async function getMultiUserMemberships(pool: Pool, memberId?: string) {
        FROM affiliations a
        JOIN subscriptions s ON s.id = a.subscription_id
        JOIN plan_versions pv ON pv.id = s.plan_version_id
+       LEFT JOIN subscription_plans sp ON sp.id = s.plan_id
       WHERE 1 = 1
         ${memberFilter}
       ORDER BY
