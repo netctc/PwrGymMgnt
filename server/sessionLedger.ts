@@ -75,6 +75,16 @@ export type SessionMovement = {
   createdAt: string;
 };
 
+export function getSessionBalanceContext(
+  distributionModel: string,
+  subscriptionId: string,
+  affiliationId: string,
+) {
+  return distributionModel === "shared"
+    ? { contextType: "subscription", contextId: subscriptionId }
+    : { contextType: "affiliation", contextId: affiliationId };
+}
+
 function createId(prefix: string) {
   return `${prefix}_${crypto.randomUUID().replace(/-/g, "")}`;
 }
