@@ -10,6 +10,11 @@ import type { Express, Request, Response } from "express";
 import type { Pool } from "mysql2/promise";
 import { requirePermission } from "./rbac";
 import { isFeatureEnabled } from "./featureFlags";
+import {
+  assertNoOutstandingSubscriptionPayment,
+  normalizePaymentStatus,
+  OUTSTANDING_PAYMENT_STATUSES,
+} from "./subscriptionPaymentRules";
 
 type PoolProvider = () => Pool | null;
 type AuthenticatedRequest = Request & { user?: { uid?: string; email?: string; role?: string } };
@@ -166,6 +171,16 @@ export function registerSubscriptionLifecycleRoutes(app: Express, poolProvider: 
       const [subRows]: any = await pool.query("SELECT * FROM subscriptions WHERE id = ?", [req.params.id]);
       if (subRows.length === 0) return res.status(404).json({ error: "Subscription not found" });
       const sub = subRows[0];
+      if (OUTSTANDING_PAYMENT_STATUSES.includes(sub.payment_status)) {
+        return res.status(409).json({
+          error: "The current subscription payment must be settled before renewal",
+          code: "OUTSTANDING_SUBSCRIPTION_PAYMENT",
+          subscriptionId: sub.id,
+          paymentStatus: sub.payment_status,
+        });
+      }
+      await assertNoOutstandingSubscriptionPayment(pool, sub.holder_member_id, req.params.id);
+      const renewalPaymentStatus = normalizePaymentStatus(req.body.paymentStatus, "pending");
 
       const [pvRows]: any = await pool.query("SELECT duration_days FROM plan_versions WHERE id = ?", [sub.plan_version_id]);
       const durationDays = pvRows.length > 0 ? Number(pvRows[0].duration_days || 30) : 30;
@@ -187,8 +202,8 @@ export function registerSubscriptionLifecycleRoutes(app: Express, poolProvider: 
       newEnd.setDate(newEnd.getDate() + durationDays);
 
       await pool.query(
-        "UPDATE subscriptions SET status = 'active', start_date = ?, end_date = ?, payment_status = 'paid', version = version + 1, updated_at = NOW() WHERE id = ?",
-        [newStart.toISOString().slice(0, 10), newEnd.toISOString().slice(0, 10), req.params.id],
+        "UPDATE subscriptions SET status = 'active', start_date = ?, end_date = ?, payment_status = ?, version = version + 1, updated_at = NOW() WHERE id = ?",
+        [newStart.toISOString().slice(0, 10), newEnd.toISOString().slice(0, 10), renewalPaymentStatus, req.params.id],
       );
 
       // Extend current holder/beneficiary affiliations and reactivate expired ones.
@@ -230,6 +245,7 @@ export function registerSubscriptionLifecycleRoutes(app: Express, poolProvider: 
             previousEndDate: sub.end_date,
             newStartDate: newStart.toISOString().slice(0, 10),
             newEndDate: newEnd.toISOString().slice(0, 10),
+            renewalPaymentStatus,
             beneficiaries: beneficiaryRows.map((member: any) => ({
               memberId: member.member_id,
               status: member.status,
@@ -240,7 +256,13 @@ export function registerSubscriptionLifecycleRoutes(app: Express, poolProvider: 
         ],
       );
 
-      res.json({ ok: true, subscriptionId: req.params.id, newStartDate: newStart.toISOString().slice(0, 10), newEndDate: newEnd.toISOString().slice(0, 10) });
+      res.json({
+        ok: true,
+        subscriptionId: req.params.id,
+        newStartDate: newStart.toISOString().slice(0, 10),
+        newEndDate: newEnd.toISOString().slice(0, 10),
+        paymentStatus: renewalPaymentStatus,
+      });
     } catch (error) { next(error); }
   });
 
