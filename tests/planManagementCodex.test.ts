@@ -90,6 +90,10 @@ test("multi-user business rules synchronize expiry, preserve history and protect
   assert.match(membership, /assertMemberCanBeRestricted/);
   assert.match(membership, /subscriptionType: "multi_user"/);
   assert.match(membership, /multiUserRole/);
+  assert.match(
+    membership,
+    /COALESCE\(sp\.description, pv\.description\) AS plan_description/,
+  );
   assert.match(api, /updateBeneficiaryExpiry/);
   assert.match(api, /changeSubscriptionHolder/);
   assert.match(managementPage, /canModifyBeneficiaries/);
@@ -157,6 +161,7 @@ test("limited multi-user plans expose distribution, cycles, immutable movements 
   const subscriptionsPage = read("src/pages/Subscriptions.tsx");
   const membersPage = read("src/pages/Members.tsx");
   const migration = read("sql/024_session_distribution_payment_lists.sql");
+  const reports = read("server/reports.ts");
 
   assert.match(management, /holderSessionsPerCycle/);
   assert.match(management, /beneficiarySessionsPerCycle/);
@@ -174,6 +179,10 @@ test("limited multi-user plans expose distribution, cycles, immutable movements 
   assert.match(subscriptions, /subscription_v2_payment/);
   assert.match(subscriptions, /accountingStatus/);
   assert.match(subscriptions, /paymentStatus === "paid" \? "posted" : "pending"/);
+  assert.match(subscriptions, /PAID_SUBSCRIPTION_LOCKED/);
+  assert.match(subscriptions, /createInvoiceNumber/);
+  assert.match(subscriptions, /subscriptionV2Id/);
+  assert.match(subscriptions, /invoiceNumber/);
   assert.match(payments, /OUTSTANDING_SUBSCRIPTION_PAYMENT/);
   assert.match(lifecycle, /current subscription payment must be settled/i);
   assert.match(scheduling, /late_cancellation_penalty/);
@@ -186,6 +195,8 @@ test("limited multi-user plans expose distribution, cycles, immutable movements 
   assert.match(membersPage, /multiUserMembers/);
   assert.match(membersPage, /multiUserCapacity/);
   assert.match(membersPage, /Payment pending/);
+  assert.match(membersPage, /Paid subscriptions are locked/);
   assert.match(migration, /mli_cycle_quarterly/);
   assert.match(migration, /mli_payment_overdue/);
+  assert.match(reports, /import \{ autoTable \} from "jspdf-autotable"/);
 });
