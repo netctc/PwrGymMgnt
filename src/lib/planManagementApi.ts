@@ -37,8 +37,27 @@ export type ManagedPlan = {
   sessionsPerCycle: number | null;
   cycleFrequency: string;
   distributionModel: string;
+  holderSessionsPerCycle: number;
+  beneficiarySessionsPerCycle: number;
+  carryoverEnabled: boolean;
+  carryoverMax: number | null;
+  carryoverExpiryDays: number | null;
+  allowExtraSessions: boolean;
+  extraSessionPrice: number | null;
+  consumptionPriority: number;
   sharedBenefits: boolean;
   futureBookingPolicy: string;
+  bookingPolicy: {
+    deductionMoment?: string;
+    cancellationWindowMinutes?: number;
+    autoRefundOnTime?: boolean;
+    lateCancellationThreshold?: number;
+    lateCancellationPenalty?: number;
+    noShowConsumesSession?: boolean;
+    reschedulingAllowed?: boolean;
+    staffExceptionsAllowed?: boolean;
+    gymCancellationRefund?: boolean;
+  };
   benefits: Record<string, unknown>;
   restrictions: Record<string, unknown>;
   status: string;
@@ -213,6 +232,7 @@ export const planManagementApi = {
       benefitsOverride?: Record<string, unknown>;
     }>;
     notes?: string;
+    paymentStatus?: "pending" | "partial" | "paid" | "overdue" | "waived" | "refunded";
   }) =>
     request<{
       subscription: {
