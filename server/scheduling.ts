@@ -644,21 +644,81 @@ export function registerSchedulingRoutes(app: Express, poolProvider: PoolProvide
         const { isFeatureEnabled } = await import("./featureFlags");
         const ledgerEnabled = await isFeatureEnabled(pool, "ENABLE_SESSION_LEDGER");
         if (ledgerEnabled) {
-          // Find active affiliation for this member
+          // Resolve the affiliation using explicit choice, primary plan, then gym priority.
           const [affRows]: any = await connection.query(
-            `SELECT a.id, a.subscription_id, pv.sessions_unlimited,
-                    pv.distribution_model, pv.booking_policy
+            `SELECT a.id, a.subscription_id, a.is_primary,
+                    a.consumption_priority, pv.name AS plan_name,
+                    pv.sessions_unlimited, pv.distribution_model,
+                    pv.booking_policy
              FROM affiliations a
              JOIN plan_versions pv ON pv.id = a.plan_version_id
-             JOIN subscriptions s ON s.id = a.subscription_id AND s.status = 'active'
-             WHERE a.member_id = ? AND a.status = 'active' AND a.end_date >= CURDATE()
-             ORDER BY a.is_primary DESC, a.end_date ASC LIMIT 1`,
+             JOIN subscriptions s
+               ON s.id = a.subscription_id
+              AND s.status = 'active'
+              AND s.start_date <= CURDATE()
+              AND s.end_date >= CURDATE()
+             WHERE a.member_id = ?
+               AND a.status = 'active'
+               AND a.start_date <= CURDATE()
+               AND a.end_date >= CURDATE()
+             ORDER BY a.is_primary DESC, a.consumption_priority ASC, a.end_date ASC`,
             [memberId],
           );
-          if (affRows.length > 0 && !affRows[0].sessions_unlimited) {
-            const bookingPolicy = typeof affRows[0].booking_policy === "string"
-              ? JSON.parse(affRows[0].booking_policy || "{}")
-              : (affRows[0].booking_policy || {});
+          if (affRows.length === 0) {
+            throw Object.assign(new Error("No active affiliation can be used for this booking"), {
+              status: 409,
+              code: "NO_ACTIVE_AFFILIATION",
+            });
+          }
+          const requestedAffiliationId = normalizeString(req.body.affiliationId);
+          let selectedAffiliation = requestedAffiliationId
+            ? affRows.find((row: any) => row.id === requestedAffiliationId)
+            : null;
+          if (requestedAffiliationId && !selectedAffiliation) {
+            throw Object.assign(new Error("Selected affiliation is not eligible"), {
+              status: 409,
+              code: "REQUESTED_AFFILIATION_NOT_ELIGIBLE",
+            });
+          }
+          if (!selectedAffiliation) {
+            const primaryRows = affRows.filter((row: any) => Boolean(row.is_primary));
+            if (primaryRows.length === 1) selectedAffiliation = primaryRows[0];
+          }
+          if (!selectedAffiliation) {
+            const priority = Math.min(
+              ...affRows.map((row: any) => Number(row.consumption_priority || 0)),
+            );
+            const priorityRows = affRows.filter(
+              (row: any) => Number(row.consumption_priority || 0) === priority,
+            );
+            if (priorityRows.length === 1) selectedAffiliation = priorityRows[0];
+          }
+          if (!selectedAffiliation) {
+            await connection.rollback();
+            return res.status(409).json({
+              error: "Select the plan to use for this booking",
+              code: "AFFILIATION_SELECTION_REQUIRED",
+              affiliations: affRows.map((row: any) => ({
+                affiliationId: row.id,
+                subscriptionId: row.subscription_id,
+                planName: row.plan_name,
+              })),
+            });
+          }
+          await connection.query(
+            `UPDATE class_bookings
+                SET data = JSON_SET(
+                  COALESCE(data, JSON_OBJECT()),
+                  '$.affiliationId', ?,
+                  '$.subscriptionId', ?
+                )
+              WHERE id = ?`,
+            [selectedAffiliation.id, selectedAffiliation.subscription_id, bookingId],
+          );
+          if (!selectedAffiliation.sessions_unlimited) {
+            const bookingPolicy = typeof selectedAffiliation.booking_policy === "string"
+              ? JSON.parse(selectedAffiliation.booking_policy || "{}")
+              : (selectedAffiliation.booking_policy || {});
             const deductionMoment = bookingPolicy.deductionMoment || "booking_confirmation";
             if (!["reservation", "booking_confirmation"].includes(deductionMoment)) {
               await connection.commit();
@@ -672,14 +732,14 @@ export function registerSchedulingRoutes(app: Express, poolProvider: PoolProvide
             }
             const [cycleRows]: any = await connection.query(
               "SELECT id FROM subscription_cycles WHERE subscription_id = ? AND status = 'active' ORDER BY cycle_number DESC LIMIT 1",
-              [affRows[0].subscription_id],
+              [selectedAffiliation.subscription_id],
             );
             if (cycleRows.length > 0) {
               const { getBalanceForUpdate, createMovement, getSessionBalanceContext } = await import("./sessionLedger");
               const context = getSessionBalanceContext(
-                affRows[0].distribution_model,
-                affRows[0].subscription_id,
-                affRows[0].id,
+                selectedAffiliation.distribution_model,
+                selectedAffiliation.subscription_id,
+                selectedAffiliation.id,
               );
               const balance = await getBalanceForUpdate(
                 connection,
@@ -687,10 +747,15 @@ export function registerSchedulingRoutes(app: Express, poolProvider: PoolProvide
                 context.contextId,
                 cycleRows[0].id,
               );
-              if (balance.available > 0) {
-                const movement = await createMovement(connection, {
+              if (balance.available <= 0) {
+                throw Object.assign(new Error("No sessions are available for this booking"), {
+                  status: 409,
+                  code: "NO_SESSIONS_AVAILABLE",
+                });
+              }
+              const movement = await createMovement(connection, {
                   balanceId: balance.id,
-                  affiliationId: affRows[0].id,
+                  affiliationId: selectedAffiliation.id,
                   cycleId: cycleRows[0].id,
                   movementType: "reservation",
                   quantity: 1,
@@ -699,15 +764,19 @@ export function registerSchedulingRoutes(app: Express, poolProvider: PoolProvide
                   reason: `Class booking: ${classes[0].title}`,
                   performedBy: (req as any).user?.email || "system",
                   idempotencyKey: `booking_reserve_${bookingId}`,
-                });
-                movementId = movement.id;
-                sessionsRemaining = movement.balanceAfter;
-              }
+              });
+              movementId = movement.id;
+              sessionsRemaining = movement.balanceAfter;
+            } else {
+              throw Object.assign(new Error("The subscription has no active session cycle"), {
+                status: 409,
+                code: "NO_ACTIVE_SESSION_CYCLE",
+              });
             }
           }
         }
-      } catch {
-        // Session ledger errors should not block the booking
+      } catch (error) {
+        throw error;
       }
 
       await connection.commit();
