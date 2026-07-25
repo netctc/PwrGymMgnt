@@ -211,6 +211,42 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
       const id = createId("sub");
       connection = await pool.getConnection();
       await connection.beginTransaction();
+      const [duplicateAffiliations]: any = await connection.query(
+        `SELECT a.id
+           FROM affiliations a
+           JOIN subscriptions existing_subscription
+             ON existing_subscription.id = a.subscription_id
+          WHERE a.member_id = ?
+            AND a.status IN ('active', 'suspended')
+            AND a.end_date >= CURDATE()
+            AND existing_subscription.plan_id = ?
+            AND existing_subscription.status = 'active'
+            AND existing_subscription.end_date >= CURDATE()
+          LIMIT 1
+          FOR UPDATE`,
+        [holderMemberId, pv.plan_id],
+      );
+      const [duplicateLegacySubscriptions]: any = await connection.query(
+        `SELECT id
+           FROM member_subscriptions
+          WHERE member_id = ?
+            AND plan_id = ?
+            AND LOWER(TRIM(status)) = 'active'
+            AND end_date >= CURDATE()
+          LIMIT 1
+          FOR UPDATE`,
+        [holderMemberId, pv.plan_id],
+      );
+      if (
+        duplicateAffiliations.length > 0 ||
+        duplicateLegacySubscriptions.length > 0
+      ) {
+        await connection.rollback();
+        return res.status(409).json({
+          error: "The member already has an active subscription to this plan",
+          code: "DUPLICATE_ACTIVE_PLAN",
+        });
+      }
       await connection.query(
         `INSERT INTO subscriptions (id, plan_id, plan_version_id, holder_member_id, status, start_date, end_date, auto_renew, price_paid, currency, payment_status, max_members)
          VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)`,
