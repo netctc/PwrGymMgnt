@@ -24,6 +24,11 @@ function createId(prefix: string) {
   return `${prefix}_${crypto.randomUUID().replace(/-/g, "")}`;
 }
 
+function createInvoiceNumber() {
+  const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
+  return `INV-${stamp}-${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
+}
+
 function requirePool(poolProvider: PoolProvider) {
   const pool = poolProvider();
   if (!pool) throw Object.assign(new Error("Database not connected"), { status: 503 });
@@ -241,6 +246,7 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
       await connection.beginTransaction();
       const [rows]: any = await connection.query(
         `SELECT s.payment_status, s.price_paid, s.currency, s.start_date,
+                s.holder_member_id,
                 pv.name AS plan_name,
                 holder.first_name AS holder_first_name,
                 holder.last_name AS holder_last_name
@@ -248,7 +254,8 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
            LEFT JOIN plan_versions pv ON pv.id = s.plan_version_id
            LEFT JOIN members holder ON holder.id = s.holder_member_id
           WHERE s.id = ?
-          LIMIT 1`,
+          LIMIT 1
+          FOR UPDATE`,
         [req.params.id],
       );
       if (!rows.length) {
@@ -256,6 +263,53 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
         return res.status(404).json({ error: "Subscription not found" });
       }
       const previousPaymentStatus = rows[0].payment_status;
+      if (previousPaymentStatus === "paid" && paymentStatus !== "paid") {
+        await connection.rollback();
+        return res.status(409).json({
+          error: "A paid subscription payment status is locked",
+          code: "PAID_SUBSCRIPTION_LOCKED",
+        });
+      }
+
+      let invoiceNumber: string | null = null;
+      if (paymentStatus === "paid") {
+        const [invoiceRows]: any = await connection.query(
+          `SELECT id, invoice_number
+             FROM invoices
+            WHERE JSON_UNQUOTE(JSON_EXTRACT(data, '$.subscriptionV2Id')) = ?
+            ORDER BY created_at DESC
+            LIMIT 1
+            FOR UPDATE`,
+          [req.params.id],
+        );
+        if (invoiceRows.length) {
+          invoiceNumber = invoiceRows[0].invoice_number;
+          await connection.query(
+            "UPDATE invoices SET status = 'paid', paid_at = COALESCE(paid_at, NOW()), updated_at = NOW() WHERE id = ?",
+            [invoiceRows[0].id],
+          );
+        } else {
+          invoiceNumber = createInvoiceNumber();
+          await connection.query(
+            `INSERT INTO invoices
+              (id, invoice_number, member_id, subscription_id, status,
+               subtotal, tax_amount, total, currency, due_date, paid_at, data)
+             VALUES (?, ?, ?, NULL, 'paid', ?, 0, ?, ?, CURDATE(), NOW(), ?)`,
+            [
+              createId("inv"),
+              invoiceNumber,
+              rows[0].holder_member_id,
+              Number(rows[0].price_paid || 0),
+              Number(rows[0].price_paid || 0),
+              rows[0].currency || "USD",
+              JSON.stringify({
+                source: "subscription_v2",
+                subscriptionV2Id: req.params.id,
+              }),
+            ],
+          );
+        }
+      }
       await connection.query(
         "UPDATE subscriptions SET payment_status = ?, version = version + 1, updated_at = NOW() WHERE id = ?",
         [paymentStatus, req.params.id],
@@ -281,7 +335,7 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
           accountingTransactionId,
           Number(rows[0].price_paid || 0),
           req.params.id,
-          `Subscription payment - ${holderName || "member"} - ${rows[0].plan_name || "plan"}`,
+          `Subscription payment${invoiceNumber ? ` ${invoiceNumber}` : ""} - ${holderName || "member"} - ${rows[0].plan_name || "plan"}`,
           accountingStatus,
           req.user?.email || req.user?.uid || "system",
           paymentStatus === "paid"
@@ -292,6 +346,7 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
             subscriptionId: req.params.id,
             paymentStatus,
             previousPaymentStatus,
+            invoiceNumber,
             currency: rows[0].currency || "USD",
           }),
         ],
@@ -311,6 +366,8 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
         previousPaymentStatus,
         paymentStatus,
         accountingStatus,
+        invoiceNumber,
+        paymentStatusLocked: paymentStatus === "paid",
       });
     } catch (error) {
       if (connection) await connection.rollback();
