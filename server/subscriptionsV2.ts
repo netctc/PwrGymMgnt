@@ -233,20 +233,70 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
   });
 
   app.patch("/api/v2/subscriptions/:id/payment-status", requirePermission("membership.write"), async (req: AuthenticatedRequest, res, next) => {
+    let connection: any = null;
     try {
       const pool = requirePool(poolProvider);
       const paymentStatus = normalizePaymentStatus(req.body.paymentStatus);
-      const [rows]: any = await pool.query(
-        "SELECT payment_status FROM subscriptions WHERE id = ? LIMIT 1",
+      connection = await pool.getConnection();
+      await connection.beginTransaction();
+      const [rows]: any = await connection.query(
+        `SELECT s.payment_status, s.price_paid, s.currency, s.start_date,
+                pv.name AS plan_name,
+                holder.first_name AS holder_first_name,
+                holder.last_name AS holder_last_name
+           FROM subscriptions s
+           LEFT JOIN plan_versions pv ON pv.id = s.plan_version_id
+           LEFT JOIN members holder ON holder.id = s.holder_member_id
+          WHERE s.id = ?
+          LIMIT 1`,
         [req.params.id],
       );
-      if (!rows.length) return res.status(404).json({ error: "Subscription not found" });
+      if (!rows.length) {
+        await connection.rollback();
+        return res.status(404).json({ error: "Subscription not found" });
+      }
       const previousPaymentStatus = rows[0].payment_status;
-      await pool.query(
+      await connection.query(
         "UPDATE subscriptions SET payment_status = ?, version = version + 1, updated_at = NOW() WHERE id = ?",
         [paymentStatus, req.params.id],
       );
-      await pool.query(
+      const accountingStatus = paymentStatus === "paid" ? "posted" : "pending";
+      const holderName = `${rows[0].holder_first_name || ""} ${rows[0].holder_last_name || ""}`.trim();
+      const accountingTransactionId = createId("ftx");
+      await connection.query(
+        `INSERT INTO finance_transactions
+          (id, type, category, amount, transaction_date, source, reference_type,
+           reference_id, description, status, created_by, approved_by, data)
+         VALUES (?, 'income', 'Membership Subscription', ?, CURDATE(),
+                 'subscription', 'subscription_v2_payment', ?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+           amount = VALUES(amount),
+           transaction_date = VALUES(transaction_date),
+           description = VALUES(description),
+           status = VALUES(status),
+           approved_by = VALUES(approved_by),
+           data = VALUES(data),
+           updated_at = CURRENT_TIMESTAMP`,
+        [
+          accountingTransactionId,
+          Number(rows[0].price_paid || 0),
+          req.params.id,
+          `Subscription payment - ${holderName || "member"} - ${rows[0].plan_name || "plan"}`,
+          accountingStatus,
+          req.user?.email || req.user?.uid || "system",
+          paymentStatus === "paid"
+            ? req.user?.email || req.user?.uid || "system"
+            : null,
+          JSON.stringify({
+            source: "subscription_v2",
+            subscriptionId: req.params.id,
+            paymentStatus,
+            previousPaymentStatus,
+            currency: rows[0].currency || "USD",
+          }),
+        ],
+      );
+      await connection.query(
         "INSERT INTO outbox_events (id, event_type, payload, status) VALUES (?, 'subscription_payment_status_changed', ?, 'pending')",
         [createId("evt"), JSON.stringify({
           subscriptionId: req.params.id,
@@ -255,8 +305,19 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
           changedBy: req.user?.email || req.user?.uid || null,
         })],
       );
-      res.json({ ok: true, previousPaymentStatus, paymentStatus });
-    } catch (error) { next(error); }
+      await connection.commit();
+      res.json({
+        ok: true,
+        previousPaymentStatus,
+        paymentStatus,
+        accountingStatus,
+      });
+    } catch (error) {
+      if (connection) await connection.rollback();
+      next(error);
+    } finally {
+      if (connection) connection.release();
+    }
   });
 
   // --- Subscription Members (add/remove beneficiaries) ---
