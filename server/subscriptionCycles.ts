@@ -40,6 +40,11 @@ export async function createInitialCycle(
   sessionsPerCycle: number | null,
   distributionModel: string,
   affiliationIds: string[],
+  options: {
+    cycleFrequency?: string;
+    subscriptionEndDate?: string;
+    customAllocations?: Record<string, number>;
+  } = {},
 ): Promise<CycleInfo> {
   const idempotencyKey = `cycle_init_${subscriptionId}_1`;
 
@@ -51,15 +56,29 @@ export async function createInitialCycle(
   if (existing.length > 0) return mapCycle(existing[0]);
 
   const cycleId = createId("cyc");
+  const cycleEndDate = calculateCycleEnd(
+    startDate,
+    options.cycleFrequency || "plan_duration",
+    options.subscriptionEndDate || endDate,
+  );
   await db.query(
     `INSERT INTO subscription_cycles (id, subscription_id, cycle_number, start_date, end_date, status, sessions_allocated, sessions_carried, idempotency_key)
      VALUES (?, ?, 1, ?, ?, 'active', ?, 0, ?)`,
-    [cycleId, subscriptionId, startDate, endDate, sessionsPerCycle || 0, idempotencyKey],
+    [cycleId, subscriptionId, startDate, cycleEndDate, sessionsPerCycle || 0, idempotencyKey],
   );
 
   // Allocate sessions if plan is limited
   if (sessionsPerCycle && sessionsPerCycle > 0) {
-    await allocateSessions(db, cycleId, subscriptionId, sessionsPerCycle, distributionModel, affiliationIds, null);
+    await allocateSessions(
+      db,
+      cycleId,
+      subscriptionId,
+      sessionsPerCycle,
+      distributionModel,
+      affiliationIds,
+      null,
+      options.customAllocations,
+    );
   }
 
   return {
@@ -67,7 +86,7 @@ export async function createInitialCycle(
     subscriptionId,
     cycleNumber: 1,
     startDate,
-    endDate,
+    endDate: cycleEndDate,
     status: "active",
     sessionsAllocated: sessionsPerCycle || 0,
     sessionsCarried: 0,
@@ -85,6 +104,7 @@ async function allocateSessions(
   distributionModel: string,
   affiliationIds: string[],
   performedBy: string | null,
+  customAllocations?: Record<string, number>,
 ): Promise<void> {
   if (distributionModel === "shared") {
     // Single shared balance for the subscription
@@ -99,27 +119,69 @@ async function allocateSessions(
       idempotencyKey: `alloc_${cycleId}_shared`,
     });
   } else if (distributionModel === "individual") {
-    // Equal split among affiliations
-    const perPerson = Math.floor(totalSessions / Math.max(1, affiliationIds.length));
-    const remainder = totalSessions - perPerson * affiliationIds.length;
-
-    for (let i = 0; i < affiliationIds.length; i++) {
-      const qty = perPerson + (i === 0 ? remainder : 0); // First person gets remainder
+    // The configured quantity belongs to every member, not to the group as a whole.
+    for (const affiliationId of affiliationIds) {
+      const qty = totalSessions;
       if (qty <= 0) continue;
-      const balance = await getBalanceForUpdate(db, "affiliation", affiliationIds[i], cycleId);
+      const balance = await getBalanceForUpdate(db, "affiliation", affiliationId, cycleId);
       await createMovement(db, {
         balanceId: balance.id,
-        affiliationId: affiliationIds[i],
+        affiliationId,
         cycleId,
         movementType: "allocation",
         quantity: qty,
         reason: "Cycle allocation (individual)",
         performedBy: performedBy || "system",
-        idempotencyKey: `alloc_${cycleId}_${affiliationIds[i]}`,
+        idempotencyKey: `alloc_${cycleId}_${affiliationId}`,
+      });
+    }
+  } else if (distributionModel === "custom") {
+    for (const affiliationId of affiliationIds) {
+      const qty = Math.max(0, Number(customAllocations?.[affiliationId] || 0));
+      if (qty <= 0) continue;
+      const balance = await getBalanceForUpdate(db, "affiliation", affiliationId, cycleId);
+      await createMovement(db, {
+        balanceId: balance.id,
+        affiliationId,
+        cycleId,
+        movementType: "allocation",
+        quantity: qty,
+        reason: "Cycle allocation (custom)",
+        performedBy: performedBy || "system",
+        idempotencyKey: `alloc_${cycleId}_${affiliationId}`,
       });
     }
   }
-  // "custom" distribution is handled manually via the API
+}
+
+export async function allocateAffiliationInActiveCycle(
+  db: PoolConnection,
+  input: {
+    cycleId: string;
+    subscriptionId: string;
+    affiliationId: string;
+    distributionModel: string;
+    sessionsPerCycle: number;
+    customQuantity?: number;
+    performedBy?: string;
+  },
+) {
+  if (input.distributionModel === "shared") return null;
+  const quantity = input.distributionModel === "custom"
+    ? Math.max(0, Number(input.customQuantity || 0))
+    : Math.max(0, Number(input.sessionsPerCycle || 0));
+  if (!quantity) return null;
+  await allocateSessions(
+    db,
+    input.cycleId,
+    input.subscriptionId,
+    quantity,
+    input.distributionModel,
+    [input.affiliationId],
+    input.performedBy || null,
+    { [input.affiliationId]: quantity },
+  );
+  return quantity;
 }
 
 /**
@@ -137,6 +199,8 @@ export async function closeCycleAndOpenNext(
     carryoverEnabled: boolean;
     carryoverMax: number | null;
     cycleFrequency: string;
+    subscriptionEndDate?: string;
+    customAllocations?: Record<string, number>;
     performedBy?: string;
   },
 ): Promise<{ closedCycle: CycleInfo; newCycle: CycleInfo } | null> {
@@ -208,8 +272,16 @@ export async function closeCycleAndOpenNext(
     );
 
     // Calculate next cycle dates
-    const nextStart = currentCycle.end_date;
-    const nextEnd = calculateCycleEnd(String(currentCycle.end_date).slice(0, 10), options.cycleFrequency);
+    const nextStart = String(currentCycle.end_date).slice(0, 10);
+    const nextEnd = calculateCycleEnd(
+      nextStart,
+      options.cycleFrequency,
+      options.subscriptionEndDate,
+    );
+    if (options.subscriptionEndDate && nextStart >= options.subscriptionEndDate) {
+      await connection.commit();
+      return { closedCycle: mapCycle(currentCycle), newCycle: mapCycle(currentCycle) };
+    }
 
     // Create next cycle
     const nextCycleId = createId("cyc");
@@ -224,6 +296,7 @@ export async function closeCycleAndOpenNext(
       await allocateSessions(
         connection, nextCycleId, subscriptionId, options.sessionsPerCycle,
         options.distributionModel, options.affiliationIds, options.performedBy || null,
+        options.customAllocations,
       );
     }
 
@@ -273,7 +346,7 @@ export async function closeCycleAndOpenNext(
   }
 }
 
-function calculateCycleEnd(startDate: string, frequency: string): string {
+export function calculateCycleEnd(startDate: string, frequency: string, subscriptionEndDate?: string): string {
   const d = new Date(`${startDate}T00:00:00Z`);
   switch (frequency) {
     case "weekly":
@@ -285,10 +358,16 @@ function calculateCycleEnd(startDate: string, frequency: string): string {
     case "quarterly":
       d.setUTCMonth(d.getUTCMonth() + 3);
       break;
-    default: // plan_duration handled at subscription level
+    case "plan_duration":
+    case "subscription":
+      return subscriptionEndDate || startDate;
+    default:
       d.setUTCMonth(d.getUTCMonth() + 1);
   }
-  return d.toISOString().slice(0, 10);
+  const calculated = d.toISOString().slice(0, 10);
+  return subscriptionEndDate && calculated > subscriptionEndDate
+    ? subscriptionEndDate
+    : calculated;
 }
 
 function mapCycle(row: any): CycleInfo {
