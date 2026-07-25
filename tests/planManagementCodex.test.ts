@@ -162,6 +162,10 @@ test("limited multi-user plans expose distribution, cycles, immutable movements 
   const membersPage = read("src/pages/Members.tsx");
   const membership = read("server/membership.ts");
   const migration = read("sql/024_session_distribution_payment_lists.sql");
+  const affiliationMigration = read("sql/025_affiliation_selection_deduplication.sql");
+  const access = read("server/accessAuthorization.ts");
+  const ledger = read("server/sessionLedger.ts");
+  const listMaintenance = read("src/pages/ListMaintenance.tsx");
   const reports = read("server/reports.ts");
 
   assert.match(management, /holderSessionsPerCycle/);
@@ -197,7 +201,11 @@ test("limited multi-user plans expose distribution, cycles, immutable movements 
   assert.match(plansPage, /allowExtraSessions/);
   assert.match(subscriptionsPage, /Real-time session summary/);
   assert.match(membersPage, /paymentAttentionRequired/);
-  assert.match(membersPage, /expandedPlanMemberId/);
+  assert.match(membersPage, /expandedPlanKey/);
+  assert.match(membersPage, /New Subscriptions/);
+  assert.match(membersPage, /member\.plans/);
+  assert.match(membersPage, /sessionsConsumed/);
+  assert.match(membersPage, /sessionsPending/);
   assert.match(membersPage, /multiUserMembers/);
   assert.match(membersPage, /multiUserCapacity/);
   assert.match(membersPage, /Payment pending/);
@@ -219,5 +227,13 @@ test("limited multi-user plans expose distribution, cycles, immutable movements 
   assert.match(membership, /pageSize/);
   assert.match(migration, /mli_cycle_quarterly/);
   assert.match(migration, /mli_payment_overdue/);
+  assert.match(affiliationMigration, /ml_consumption_deduplication/);
+  assert.match(affiliationMigration, /session_activity_claims/);
+  assert.match(access, /reservationAffiliationId/);
+  assert.match(access, /AFFILIATION_SELECTION_REQUIRED/);
+  assert.match(access, /SESSION_CONSUMPTION_CONFIRMATION_REQUIRED/);
+  assert.match(access, /checkAndClaimCooldown/);
+  assert.match(ledger, /DUPLICATE_ACTIVITY/);
+  assert.match(listMaintenance, /intervalSeconds/);
   assert.match(reports, /import \{ autoTable \} from "jspdf-autotable"/);
 });
