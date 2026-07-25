@@ -834,7 +834,8 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                           aria-label="Payment status"
                           className="mt-2 block h-8 rounded-lg border border-slate-300 bg-white px-2 text-xs"
                           value={member.paymentStatus === 'paid' ? 'paid' : 'pending'}
-                          disabled={paymentUpdatingId === member.id}
+                          disabled={paymentUpdatingId === member.id || member.paymentStatus === 'paid'}
+                          title={member.paymentStatus === 'paid' ? 'Paid subscriptions are locked' : undefined}
                           onChange={(event) => void changePaymentStatus(member, event.target.value as 'paid' | 'pending')}
                         >
                           <option value="paid">{multiUserCopy.paid}</option>
