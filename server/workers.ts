@@ -194,12 +194,25 @@ export async function releaseExpiredReservations(pool: Pool): Promise<{ released
   let released = 0;
 
   try {
+    const [settingRows]: any = await pool.query(
+      `SELECT CAST(JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.seconds')) AS UNSIGNED)
+              AS reservation_seconds
+         FROM maintenance_list_items
+        WHERE list_id = 'ml_consumption_deduplication'
+          AND item_code = 'reservation_lock'
+          AND status = 'active'
+        LIMIT 1`,
+    );
+    const reservationSeconds = Math.max(
+      60,
+      Number(settingRows[0]?.reservation_seconds || 86400),
+    );
     // Find reservation movements without a corresponding consumption or release
     const [rows]: any = await pool.query(`
       SELECT m.id, m.balance_id, m.affiliation_id, m.cycle_id, m.quantity, m.reference_id
       FROM session_movements m
       WHERE m.movement_type = 'reservation'
-        AND m.created_at < DATE_SUB(NOW(), INTERVAL 24 HOUR)
+        AND m.created_at < DATE_SUB(NOW(), INTERVAL ? SECOND)
         AND NOT EXISTS (
           SELECT 1 FROM session_movements m2
           WHERE m2.related_movement_id = m.id
@@ -213,7 +226,7 @@ export async function releaseExpiredReservations(pool: Pool): Promise<{ released
             AND m3.id <> m.id
         )
       LIMIT 50
-    `);
+    `, [reservationSeconds]);
 
     for (const mov of rows) {
       const connection = await pool.getConnection();
