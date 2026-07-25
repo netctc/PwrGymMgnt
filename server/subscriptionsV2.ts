@@ -168,7 +168,6 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
     let connection: any = null;
     try {
       const pool = requirePool(poolProvider);
-      if (!await requireFeature(pool, "ENABLE_NEW_SUBSCRIPTION_MODEL", res)) return;
       const planVersionId = normalizeString(req.body.planVersionId);
       const holderMemberId = normalizeString(req.body.holderMemberId);
       if (!planVersionId || !holderMemberId) return res.status(400).json({ error: "planVersionId and holderMemberId are required" });
