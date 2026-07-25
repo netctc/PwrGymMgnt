@@ -195,7 +195,7 @@ export const subscriptionsV2Api = {
   listSubscriptions: (params: { memberId?: string; status?: string } = {}) =>
     apiRequest<{ subscriptions: SubscriptionV2[] }>(`/api/v2/subscriptions${toQuery(params)}`),
 
-  createSubscription: (payload: { planVersionId: string; holderMemberId: string; startDate?: string; endDate?: string; paymentStatus?: string }) =>
+  createSubscription: (payload: { planVersionId: string; holderMemberId: string; startDate?: string; endDate?: string; paymentStatus?: string; paymentDate?: string }) =>
     apiRequest<{ subscription: SubscriptionV2; affiliationId: string }>('/api/v2/subscriptions', { method: 'POST', body: JSON.stringify(payload) }),
 
   updatePaymentStatus: (
@@ -226,6 +226,12 @@ export const subscriptionsV2Api = {
   // Affiliations
   listAffiliations: (memberId: string) =>
     apiRequest<{ affiliations: Affiliation[] }>(`/api/v2/affiliations?memberId=${encodeURIComponent(memberId)}`),
+
+  setPrimaryAffiliation: (affiliationId: string) =>
+    apiRequest<{ ok: boolean; affiliationId: string }>(
+      `/api/v2/affiliations/${encodeURIComponent(affiliationId)}/primary`,
+      { method: 'POST', body: JSON.stringify({}) },
+    ),
 
   // Session Balances
   listSessionBalances: (params: { affiliationId?: string; subscriptionId?: string }) =>
@@ -258,7 +264,17 @@ export const subscriptionsV2Api = {
     apiRequest<{ ok: boolean; key: string; enabled: boolean }>(`/api/v2/feature-flags/${encodeURIComponent(key)}`, { method: 'PUT', body: JSON.stringify({ enabled }) }),
 
   // Access
-  authorizeAccess: (payload: { method: string; memberId?: string; tokenHash?: string; accessPointId?: string; affiliationId?: string }) =>
+  authorizeAccess: (payload: {
+    method: string;
+    memberId?: string;
+    tokenHash?: string;
+    accessPointId?: string;
+    affiliationId?: string;
+    reservationAffiliationId?: string;
+    serviceType?: string;
+    confirmSessionConsumption?: boolean;
+    idempotencyKey?: string;
+  }) =>
     apiRequest<any>('/api/access/authorize', { method: 'POST', body: JSON.stringify(payload) }),
 
   listAccessAttempts: (params: { memberId?: string; limit?: string } = {}) =>
