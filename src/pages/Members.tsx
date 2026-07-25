@@ -41,9 +41,12 @@ import { usePersistentState } from '../hooks/usePersistentState';
 import { useLocalization } from '../contexts/LocalizationContext';
 import {
   subscriptionsV2Api,
-  type PlanVersion,
   type SubscriptionV2,
 } from '../lib/subscriptionsV2Api';
+import {
+  planManagementApi,
+  type ManagedPlan,
+} from '../lib/planManagementApi';
 
 type MemberForm = {
   id?: string;
@@ -256,7 +259,8 @@ export default function Members() {
       };
   const [members, setMembers] = useState<MembershipMember[]>([]);
   const [plans, setPlans] = useState<MembershipPlan[]>([]);
-  const [planVersions, setPlanVersions] = useState<PlanVersion[]>([]);
+  const [newSubscriptionPlans, setNewSubscriptionPlans] =
+    useState<ManagedPlan[]>([]);
   const [search, setSearch] = usePersistentState('powergym.members.search', '');
   const [statusFilter, setStatusFilter] = usePersistentState('powergym.members.statusFilter', '');
   const [accessFilter, setAccessFilter] = usePersistentState('powergym.members.accessFilter', '');
@@ -311,6 +315,10 @@ export default function Members() {
   const [newSubscriptionPlanVersionId, setNewSubscriptionPlanVersionId] =
     useState('');
   const [newSubscriptionSearching, setNewSubscriptionSearching] = useState(false);
+  const [
+    newSubscriptionRequiresMemberSelection,
+    setNewSubscriptionRequiresMemberSelection,
+  ] = useState(true);
   const [renewMember, setRenewMember] = useState<MembershipMember | null>(null);
   const [renewPlanId, setRenewPlanId] = useState('');
   const [renewStartDate, setRenewStartDate] = useState(today());
@@ -361,12 +369,37 @@ export default function Members() {
     ).sort((a, b) => a - b);
   }, [memberPagination.page, memberPagination.totalPages]);
   const selectedRenewPlan = useMemo(() => plans.find((plan) => plan.id === renewPlanId) || null, [plans, renewPlanId]);
+  const availableNewSubscriptionPlans = useMemo(() => {
+    const currentPlanMemberships = (renewMember?.plans || []).filter(
+      (plan) =>
+        ['active', 'suspended'].includes(plan.status) &&
+        plan.subscriptionStatus === 'active' &&
+        dateValue(plan.endDate) >= today(),
+    );
+    const activePlanIds = new Set(
+      currentPlanMemberships
+        .map((plan) => plan.planId)
+        .filter(Boolean),
+    );
+    const activePlanVersionIds = new Set(
+      currentPlanMemberships
+        .map((plan) => plan.planVersionId)
+        .filter(Boolean),
+    );
+    return newSubscriptionPlans.filter(
+      (plan) =>
+        plan.status === 'active' &&
+        plan.planType === 'individual' &&
+        !activePlanIds.has(plan.id) &&
+        !activePlanVersionIds.has(plan.planVersionId),
+    );
+  }, [newSubscriptionPlans, renewMember]);
   const selectedNewPlanVersion = useMemo(
     () =>
-      planVersions.find(
-        (planVersion) => planVersion.id === newSubscriptionPlanVersionId,
+      availableNewSubscriptionPlans.find(
+        (plan) => plan.planVersionId === newSubscriptionPlanVersionId,
       ) || null,
-    [newSubscriptionPlanVersionId, planVersions],
+    [availableNewSubscriptionPlans, newSubscriptionPlanVersionId],
   );
   const renewEndDate = useMemo(
     () => {
@@ -404,23 +437,28 @@ export default function Members() {
   );
 
   const loadPlans = async () => {
-    try {
-      const [response, v2Response] = await Promise.all([
-        membershipApi.listPlans(),
-        subscriptionsV2Api
-          .listPlanVersions()
-          .catch(() => ({ planVersions: [] as PlanVersion[] })),
-      ]);
-      setPlans(response.plans.filter((plan) => plan.status === 'active'));
-      const activePlanVersions = v2Response.planVersions.filter(
-        (planVersion) => planVersion.status === 'active',
+    const [legacyResult, managedResult] = await Promise.allSettled([
+      membershipApi.listPlans(),
+      planManagementApi.listPlans(),
+    ]);
+    if (legacyResult.status === 'fulfilled') {
+      setPlans(
+        legacyResult.value.plans.filter((plan) => plan.status === 'active'),
       );
-      setPlanVersions(activePlanVersions);
-      setNewSubscriptionPlanVersionId(
-        (current) => current || activePlanVersions[0]?.id || '',
+    }
+    if (managedResult.status === 'fulfilled') {
+      setNewSubscriptionPlans(
+        managedResult.value.plans.filter(
+          (plan) =>
+            plan.status === 'active' && plan.planType === 'individual',
+        ),
       );
-    } catch (err: any) {
-      toast.error(err.message || 'Failed to load plans');
+    } else {
+      setNewSubscriptionPlans([]);
+      toast.error(
+        managedResult.reason?.message ||
+          'Failed to load active individual plans',
+      );
     }
   };
 
@@ -462,6 +500,17 @@ export default function Members() {
     loadMembers();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (subscriptionIntent !== 'new') return;
+    setNewSubscriptionPlanVersionId((current) =>
+      availableNewSubscriptionPlans.some(
+        (plan) => plan.planVersionId === current,
+      )
+        ? current
+        : availableNewSubscriptionPlans[0]?.planVersionId || '',
+    );
+  }, [availableNewSubscriptionPlans, subscriptionIntent]);
 
   const applyFilters = (event?: FormEvent<HTMLFormElement>) => {
     event?.preventDefault();
@@ -614,19 +663,7 @@ export default function Members() {
         await loadMembers();
         // Open renew dialog immediately for the new member
         const newMember: MembershipMember = created.member;
-        setRenewMember(newMember);
-        setRenewPlanId(plans[0]?.id || '');
-        setRenewCurrentExpiry('');
-        setRenewCurrentPlan('');
-        setRenewPaymentStatus('');
-        setRenewPaymentDate('');
-        setRenewMode('create');
-        setRenewExistingLegacySubscriptionId(null);
-        setRenewExistingEndDate('');
-        setRenewPaymentLocked(false);
-        setRenewMultiSubscription(null);
-        setRenewStartDate(today());
-        setRenewOpen(true);
+        openNewSubscription(newMember);
       }
     } catch (err: any) {
       toast.error(err.message || 'Failed to save member');
@@ -690,12 +727,17 @@ export default function Members() {
     }
   };
 
-  const openNewSubscription = () => {
+  const openNewSubscription = (preselectedMember?: MembershipMember) => {
     setSubscriptionIntent('new');
     setRenewMode('create');
-    setRenewMember(null);
-    setRenewCurrentPlan('');
-    setRenewCurrentExpiry('');
+    setNewSubscriptionRequiresMemberSelection(!preselectedMember);
+    if (preselectedMember) {
+      selectNewSubscriptionMember(preselectedMember);
+    } else {
+      setRenewMember(null);
+      setRenewCurrentPlan('');
+      setRenewCurrentExpiry('');
+    }
     setRenewPaymentStatus('');
     setRenewPaymentDate('');
     setRenewStartDate(today());
@@ -704,8 +746,12 @@ export default function Members() {
     setRenewPaymentLocked(false);
     setRenewMultiSubscription(null);
     setNewSubscriptionMemberSearch('');
-    setNewSubscriptionMemberOptions(members);
-    setNewSubscriptionPlanVersionId(planVersions[0]?.id || '');
+    setNewSubscriptionMemberOptions(
+      preselectedMember
+        ? [preselectedMember]
+        : members,
+    );
+    setNewSubscriptionPlanVersionId('');
     setRenewOpen(true);
   };
 
@@ -873,7 +919,7 @@ export default function Members() {
           throw new Error('Select an active plan.');
         }
         await subscriptionsV2Api.createSubscription({
-          planVersionId: selectedNewPlanVersion.id,
+          planVersionId: selectedNewPlanVersion.planVersionId,
           holderMemberId: renewMember.id,
           startDate: renewStartDate,
           endDate: renewEndDate,
@@ -1096,7 +1142,7 @@ The secure QR token is embedded in the attached PDF/QR image.`;
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button variant="outline" onClick={openNewSubscription}>
+          <Button variant="outline" onClick={() => openNewSubscription()}>
             <CreditCard className="mr-2 h-4 w-4" /> {multiUserCopy.newSubscriptions}
           </Button>
           <Button variant="outline" asChild>
@@ -1671,7 +1717,8 @@ The secure QR token is embedded in the attached PDF/QR image.`;
             </DialogTitle>
           </DialogHeader>
           <form onSubmit={submitRenewal} className="min-w-0 space-y-4">
-            {subscriptionIntent === 'new' && (
+            {subscriptionIntent === 'new' &&
+              newSubscriptionRequiresMemberSelection && (
               <div className="space-y-2 rounded-lg border bg-slate-50 p-3">
                 <Label htmlFor="newSubscriptionMemberSearch">
                   {multiUserCopy.searchExistingMember}
@@ -1739,14 +1786,18 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                   }
                   required
                 >
-                  {planVersions.length === 0 && (
-                    <option value="">No active plans available</option>
+                  {availableNewSubscriptionPlans.length === 0 && (
+                    <option value="">
+                      No other active individual plans available
+                    </option>
                   )}
-                  {planVersions.map((planVersion) => (
-                    <option key={planVersion.id} value={planVersion.id}>
-                      {planVersion.name} · {planVersion.planType} ·{' '}
-                      {formatMoney(planVersion.price, planVersion.currency)} /{' '}
-                      {planVersion.durationDays} days
+                  {availableNewSubscriptionPlans.map((plan) => (
+                    <option
+                      key={plan.planVersionId}
+                      value={plan.planVersionId}
+                    >
+                      {plan.name} · {formatMoney(plan.price, plan.currency)} /{' '}
+                      {plan.durationDays} days
                     </option>
                   ))}
                 </select>
