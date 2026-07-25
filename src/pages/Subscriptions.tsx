@@ -9,7 +9,7 @@ import { Badge } from '../components/ui/badge';
 import { CreditCard, Users, Layers, Activity, ToggleLeft, ToggleRight, Shield } from 'lucide-react';
 import { formatDate } from '../lib/formatDate';
 import DateInput from '../components/DateInput';
-import { subscriptionsV2Api, type PlanVersion, type SubscriptionV2, type Affiliation, type SessionBalance, type FeatureFlag } from '../lib/subscriptionsV2Api';
+import { subscriptionsV2Api, type PlanVersion, type SubscriptionV2, type Affiliation, type SessionBalance, type SessionSummary, type FeatureFlag } from '../lib/subscriptionsV2Api';
 import { useAuth } from '../contexts/AuthContext';
 import { hasClientPermission } from '../lib/permissions';
 
@@ -42,7 +42,7 @@ export default function Subscriptions() {
 
   // Subscription creation form
   const [showSubForm, setShowSubForm] = useState(false);
-  const [subForm, setSubForm] = useState({ planVersionId: '', holderMemberId: '', startDate: '' });
+  const [subForm, setSubForm] = useState({ planVersionId: '', holderMemberId: '', startDate: '', paymentStatus: 'pending' });
 
   // Subscription detail / members management
   const [selectedSub, setSelectedSub] = useState<SubscriptionV2 | null>(null);
@@ -51,6 +51,7 @@ export default function Subscriptions() {
 
   // Session balances
   const [balances, setBalances] = useState<SessionBalance[]>([]);
+  const [sessionSummary, setSessionSummary] = useState<SessionSummary | null>(null);
 
   const loadData = async () => {
     setLoading(true);
@@ -126,6 +127,7 @@ export default function Subscriptions() {
         planVersionId: subForm.planVersionId,
         holderMemberId: subForm.holderMemberId,
         startDate: subForm.startDate || undefined,
+        paymentStatus: subForm.paymentStatus,
       });
       toast.success('Subscription created');
       setShowSubForm(false);
@@ -143,6 +145,10 @@ export default function Subscriptions() {
       const res = await subscriptionsV2Api.listSessionBalances({ subscriptionId: sub.id });
       setBalances(res.balances);
     } catch { setBalances([]); }
+    try {
+      const res = await subscriptionsV2Api.getSessionSummary(sub.id);
+      setSessionSummary(res.summary);
+    } catch { setSessionSummary(null); }
   };
 
   const handleAddMember = async () => {
@@ -260,6 +266,7 @@ export default function Subscriptions() {
                   <div><Label>Plan Version</Label><select className="h-10 w-full rounded-md border px-3 text-sm" value={subForm.planVersionId} onChange={(e) => setSubForm({ ...subForm, planVersionId: e.target.value })}><option value="">Select plan version</option>{planVersions.map((pv) => <option key={pv.id} value={pv.id}>{pv.name} (v{pv.versionNumber}) — {pv.planType}</option>)}</select></div>
                   <div><Label>Holder Member ID</Label><Input value={subForm.holderMemberId} onChange={(e) => setSubForm({ ...subForm, holderMemberId: e.target.value })} placeholder="mem_..." /></div>
                   <div><Label>Start Date</Label><DateInput value={subForm.startDate} onChange={(v) => setSubForm({ ...subForm, startDate: v })} /></div>
+                  <div><Label>Payment status</Label><select className="h-10 w-full rounded-md border px-3 text-sm" value={subForm.paymentStatus} onChange={(e) => setSubForm({ ...subForm, paymentStatus: e.target.value })}><option value="pending">Pending</option><option value="partial">Partially paid</option><option value="paid">Paid</option><option value="waived">Waived</option></select></div>
                 </div>
                 <Button onClick={handleCreateSubscription} className="bg-indigo-600 hover:bg-indigo-700 text-white">Create Subscription</Button>
               </div>
@@ -274,7 +281,7 @@ export default function Subscriptions() {
             ) : (
               <div className="space-y-3">
                 {subscriptions.map((sub) => (
-                  <div key={sub.id} className="border rounded-xl p-4 cursor-pointer hover:border-indigo-300 transition-colors" onClick={() => openSubDetail(sub)}>
+                  <div key={sub.id} className={`border rounded-xl p-4 cursor-pointer transition-colors ${['pending', 'partial', 'overdue'].includes(sub.paymentStatus) ? 'border-red-300 bg-red-50 hover:border-red-400' : 'hover:border-indigo-300'}`} onClick={() => openSubDetail(sub)}>
                     <div className="flex items-center justify-between">
                       <div>
                         <p className="font-semibold text-slate-900">{sub.planName}</p>
@@ -282,6 +289,7 @@ export default function Subscriptions() {
                       </div>
                       <div className="flex items-center gap-2">
                         <Badge variant={sub.status === 'active' ? 'default' : 'secondary'}>{sub.status}</Badge>
+                        <Badge variant={['pending', 'partial', 'overdue'].includes(sub.paymentStatus) ? 'destructive' : 'outline'}>{sub.paymentStatus}</Badge>
                         <span className="text-sm text-slate-600">{sub.pricePaid} {sub.currency}</span>
                       </div>
                     </div>
@@ -304,6 +312,25 @@ export default function Subscriptions() {
           <div className="bg-white rounded-2xl p-6 w-full max-w-2xl shadow-xl max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
             <h3 className="text-lg font-bold text-slate-900 mb-1">{selectedSub.planName}</h3>
             <p className="text-sm text-slate-500 mb-4">{selectedSub.planType} • {formatDate(selectedSub.startDate)} – {formatDate(selectedSub.endDate)} • {selectedSub.status}</p>
+
+            <div className={`mb-5 rounded-lg border p-3 ${['pending', 'partial', 'overdue'].includes(selectedSub.paymentStatus) ? 'border-red-300 bg-red-50' : ''}`}>
+              <div className="flex flex-wrap items-end gap-3">
+                <div className="min-w-44 flex-1">
+                  <Label>Payment status</Label>
+                  <select className="h-9 w-full rounded-md border bg-white px-3 text-sm" value={selectedSub.paymentStatus} onChange={async (event) => {
+                    try {
+                      const result = await subscriptionsV2Api.updatePaymentStatus(selectedSub.id, event.target.value);
+                      setSelectedSub({ ...selectedSub, paymentStatus: result.paymentStatus });
+                      toast.success('Payment status updated');
+                      await loadSubscriptions();
+                    } catch (e: any) { toast.error(e.message); }
+                  }}>
+                    <option value="pending">Pending</option><option value="partial">Partially paid</option><option value="paid">Paid</option><option value="overdue">Overdue</option><option value="waived">Waived</option><option value="refunded">Refunded</option>
+                  </select>
+                </div>
+                {['pending', 'partial', 'overdue'].includes(selectedSub.paymentStatus) && <p className="text-sm font-medium text-red-700">Outstanding payment blocks a new subscription or renewal.</p>}
+              </div>
+            </div>
 
             {/* Members */}
             <div className="mb-6">
@@ -349,6 +376,21 @@ export default function Subscriptions() {
                     </div>
                   </div>
                 ))}
+              </div>
+            )}
+            {!selectedSub.sessionsUnlimited && sessionSummary && (
+              <div className="mb-5 rounded-lg border p-4">
+                <div className="mb-3 flex items-center justify-between"><h4 className="font-semibold text-slate-800">Real-time session summary</h4><span className="text-sm text-slate-500">Next reset: {formatDate(sessionSummary.nextResetDate)}</span></div>
+                <div className="grid grid-cols-2 gap-3 text-sm md:grid-cols-4">
+                  <span>Included: <strong>{sessionSummary.included}</strong></span>
+                  <span>Assigned: <strong>{sessionSummary.assigned}</strong></span>
+                  <span>Reserved: <strong>{sessionSummary.reserved}</strong></span>
+                  <span>Consumed: <strong>{sessionSummary.consumed}</strong></span>
+                  <span>Returned: <strong>{sessionSummary.cancelledOrReturned}</strong></span>
+                  <span>Additional: <strong>{sessionSummary.additional}</strong></span>
+                  <span>Accumulated: <strong>{sessionSummary.accumulated}</strong></span>
+                  <span className="text-indigo-700">Remaining: <strong>{sessionSummary.remaining}</strong></span>
+                </div>
               </div>
             )}
 
