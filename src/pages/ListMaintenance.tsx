@@ -20,6 +20,7 @@ const copy = {
     arabic: 'Arabic label', order: 'Order', status: 'Status', actions: 'Actions', edit: 'Edit',
     delete: 'Delete', save: 'Save', cancel: 'Cancel', active: 'Active', inactive: 'Inactive',
     system: 'System', createTitle: 'Add list value', editTitle: 'Edit list value',
+    intervalSeconds: 'Interval (seconds)',
   },
   ar: {
     title: 'صيانة القوائم', subtitle: 'إدارة القيم المخزنة في قاعدة البيانات وتسمياتها بالإنجليزية والعربية.',
@@ -27,11 +28,30 @@ const copy = {
     arabic: 'التسمية بالعربية', order: 'الترتيب', status: 'الحالة', actions: 'الإجراءات', edit: 'تعديل',
     delete: 'حذف', save: 'حفظ', cancel: 'إلغاء', active: 'نشط', inactive: 'غير نشط',
     system: 'نظام', createTitle: 'إضافة قيمة للقائمة', editTitle: 'تعديل قيمة القائمة',
+    intervalSeconds: 'الفاصل الزمني (بالثواني)',
   },
 } as const;
 
-type Form = { id: string; code: string; labelEn: string; labelAr: string; sortOrder: string; status: string };
-const empty: Form = { id: '', code: '', labelEn: '', labelAr: '', sortOrder: '0', status: 'active' };
+type Form = {
+  id: string;
+  code: string;
+  labelEn: string;
+  labelAr: string;
+  sortOrder: string;
+  status: string;
+  intervalSeconds: string;
+  metadata: Record<string, unknown>;
+};
+const empty: Form = {
+  id: '',
+  code: '',
+  labelEn: '',
+  labelAr: '',
+  sortOrder: '0',
+  status: 'active',
+  intervalSeconds: '60',
+  metadata: {},
+};
 
 export default function ListMaintenance() {
   const { locale } = useLocalization();
@@ -40,6 +60,9 @@ export default function ListMaintenance() {
   const [selected, setSelected] = useState('');
   const [form, setForm] = useState<Form>(empty);
   const [open, setOpen] = useState(false);
+  const selectedList = lists.find((list) => list.id === selected);
+  const isDeduplicationList =
+    selectedList?.key === 'consumption_deduplication';
 
   const load = async () => {
     try {
@@ -54,6 +77,8 @@ export default function ListMaintenance() {
     setForm(item ? {
       id: item.id, code: item.code, labelEn: item.labelEn, labelAr: item.labelAr,
       sortOrder: String(item.sortOrder), status: item.status,
+      intervalSeconds: String(Number(item.metadata?.seconds || 60)),
+      metadata: item.metadata || {},
     } : empty);
     setOpen(true);
   };
@@ -61,7 +86,16 @@ export default function ListMaintenance() {
   const save = async (event: FormEvent) => {
     event.preventDefault();
     try {
-      const payload = { ...form, sortOrder: Number(form.sortOrder) };
+      const payload = {
+        ...form,
+        sortOrder: Number(form.sortOrder),
+        metadata: isDeduplicationList
+          ? {
+              ...form.metadata,
+              seconds: Math.max(1, Number(form.intervalSeconds || 60)),
+            }
+          : form.metadata,
+      };
       if (form.id) await planManagementApi.updateListItem(selected, form.id, payload);
       else await planManagementApi.addListItem(selected, payload);
       setOpen(false);
@@ -100,11 +134,11 @@ export default function ListMaintenance() {
               </CardHeader>
               <CardContent>
                 <Table>
-                  <TableHeader><TableRow><TableHead>{c.code}</TableHead><TableHead>{c.english}</TableHead><TableHead>{c.arabic}</TableHead><TableHead>{c.order}</TableHead><TableHead>{c.status}</TableHead><TableHead className="text-end">{c.actions}</TableHead></TableRow></TableHeader>
+                  <TableHeader><TableRow><TableHead>{c.code}</TableHead><TableHead>{c.english}</TableHead><TableHead>{c.arabic}</TableHead>{isDeduplicationList && <TableHead>{c.intervalSeconds}</TableHead>}<TableHead>{c.order}</TableHead><TableHead>{c.status}</TableHead><TableHead className="text-end">{c.actions}</TableHead></TableRow></TableHeader>
                   <TableBody>{list.items.map((item) => (
                     <TableRow key={item.id}>
                       <TableCell className="font-mono text-xs">{item.code}</TableCell><TableCell>{item.labelEn}</TableCell>
-                      <TableCell dir="rtl">{item.labelAr}</TableCell><TableCell>{item.sortOrder}</TableCell>
+                      <TableCell dir="rtl">{item.labelAr}</TableCell>{isDeduplicationList && <TableCell>{Number(item.metadata?.seconds || 60)}</TableCell>}<TableCell>{item.sortOrder}</TableCell>
                       <TableCell><div className="flex gap-1"><Badge variant={item.status === 'active' ? 'default' : 'secondary'}>{item.status === 'active' ? c.active : c.inactive}</Badge>{item.isSystem && <Badge variant="outline">{c.system}</Badge>}</div></TableCell>
                       <TableCell className="text-end"><div className="flex justify-end gap-1"><Button size="sm" variant="outline" onClick={() => edit(item)}><Pencil className="me-1 h-3.5 w-3.5" />{c.edit}</Button>{!item.isSystem && <Button size="sm" variant="destructive" onClick={() => remove(item)}><Trash2 className="me-1 h-3.5 w-3.5" />{c.delete}</Button>}</div></TableCell>
                     </TableRow>
@@ -122,6 +156,18 @@ export default function ListMaintenance() {
             <div className="space-y-2"><Label>{c.code}</Label><Input disabled={Boolean(form.id)} value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} required /></div>
             <div className="space-y-2"><Label>{c.english}</Label><Input value={form.labelEn} onChange={(e) => setForm({ ...form, labelEn: e.target.value })} required /></div>
             <div className="space-y-2"><Label>{c.arabic}</Label><Input dir="rtl" value={form.labelAr} onChange={(e) => setForm({ ...form, labelAr: e.target.value })} required /></div>
+            {isDeduplicationList && (
+              <div className="space-y-2">
+                <Label>{c.intervalSeconds}</Label>
+                <Input
+                  type="number"
+                  min={1}
+                  value={form.intervalSeconds}
+                  onChange={(e) => setForm({ ...form, intervalSeconds: e.target.value })}
+                  required
+                />
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2"><Label>{c.order}</Label><Input type="number" value={form.sortOrder} onChange={(e) => setForm({ ...form, sortOrder: e.target.value })} /></div>
               <div className="space-y-2"><Label>{c.status}</Label><select className="h-9 w-full rounded-md border px-3" value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}><option value="active">{c.active}</option><option value="inactive">{c.inactive}</option></select></div>
