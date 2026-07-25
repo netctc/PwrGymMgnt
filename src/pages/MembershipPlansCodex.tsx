@@ -54,6 +54,22 @@ const copy = {
     sessionsPerCycle: 'Sessions per cycle',
     cycleFrequency: 'Cycle frequency',
     distribution: 'Benefit distribution',
+    holderSessions: 'Holder sessions per cycle',
+    beneficiarySessions: 'Beneficiary sessions per cycle',
+    carryover: 'Carry unused sessions forward',
+    carryoverMax: 'Maximum accumulated sessions',
+    carryoverExpiry: 'Accumulated-session expiry (days)',
+    extraSessions: 'Allow additional session purchases',
+    extraSessionPrice: 'Additional session price',
+    deductionMoment: 'Session deduction moment',
+    cancellationWindow: 'Free cancellation window (minutes)',
+    autoRefund: 'Automatically return an on-time cancellation',
+    lateCancellationThreshold: 'Late cancellations before penalty',
+    lateCancellationPenalty: 'Sessions lost per penalty',
+    noShowConsumes: 'Consume a session on no-show',
+    rescheduling: 'Allow rescheduling',
+    staffExceptions: 'Allow staff exceptions',
+    gymCancellationRefund: 'Return session when the gym cancels',
     sharedBenefits: 'All members share the same benefits',
     benefits: 'Benefits (one per line)',
     restrictions: 'Restrictions (one per line)',
@@ -61,8 +77,8 @@ const copy = {
     version: 'Version',
     loadError: 'Unable to load plan management data.',
     validation: 'Review the required fields and plan limits.',
-    individualRule: 'Individual plans always have one member. Limited sessions can be configured only for individual plans.',
-    multiRule: 'Family, group and corporate plans are multi-user and default to unlimited sessions.',
+    individualRule: 'Individual plans always have one member.',
+    multiRule: 'Every plan may be unlimited or use shared, individual or custom session allocation.',
   },
   ar: {
     title: 'خطط العضوية',
@@ -102,6 +118,22 @@ const copy = {
     sessionsPerCycle: 'الجلسات في كل دورة',
     cycleFrequency: 'دورية الدورة',
     distribution: 'توزيع المزايا',
+    holderSessions: 'جلسات صاحب الاشتراك في كل دورة',
+    beneficiarySessions: 'جلسات كل مستفيد في الدورة',
+    carryover: 'ترحيل الجلسات غير المستخدمة',
+    carryoverMax: 'الحد الأقصى للجلسات المتراكمة',
+    carryoverExpiry: 'صلاحية الجلسات المتراكمة بالأيام',
+    extraSessions: 'السماح بشراء جلسات إضافية',
+    extraSessionPrice: 'سعر الجلسة الإضافية',
+    deductionMoment: 'وقت خصم الجلسة',
+    cancellationWindow: 'مهلة الإلغاء المجاني بالدقائق',
+    autoRefund: 'إرجاع جلسة الإلغاء ضمن المهلة تلقائياً',
+    lateCancellationThreshold: 'عدد الإلغاءات المتأخرة قبل العقوبة',
+    lateCancellationPenalty: 'الجلسات المخصومة عند العقوبة',
+    noShowConsumes: 'احتساب جلسة عند عدم الحضور',
+    rescheduling: 'السماح بإعادة الجدولة',
+    staffExceptions: 'السماح باستثناءات الموظفين',
+    gymCancellationRefund: 'إرجاع الجلسة عند إلغاء النادي',
     sharedBenefits: 'جميع الأعضاء يتشاركون المزايا نفسها',
     benefits: 'المزايا (ميزة في كل سطر)',
     restrictions: 'القيود (قيد في كل سطر)',
@@ -109,8 +141,8 @@ const copy = {
     version: 'الإصدار',
     loadError: 'تعذر تحميل بيانات إدارة الخطط.',
     validation: 'راجع الحقول المطلوبة وحدود الخطة.',
-    individualRule: 'الخطة الفردية مخصصة لعضو واحد. يمكن تحديد عدد الجلسات للخطة الفردية فقط.',
-    multiRule: 'الخطط العائلية والجماعية وخطط الشركات متعددة المستخدمين وجلساتها غير محدودة افتراضياً.',
+    individualRule: 'الخطة الفردية مخصصة لعضو واحد.',
+    multiRule: 'يمكن أن تكون أي خطة غير محدودة أو ذات توزيع مشترك أو فردي أو مخصص للجلسات.',
   },
 } as const;
 
@@ -129,6 +161,22 @@ type FormState = {
   sessionsPerCycle: string;
   cycleFrequency: string;
   distributionModel: string;
+  holderSessionsPerCycle: string;
+  beneficiarySessionsPerCycle: string;
+  carryoverEnabled: boolean;
+  carryoverMax: string;
+  carryoverExpiryDays: string;
+  allowExtraSessions: boolean;
+  extraSessionPrice: string;
+  deductionMoment: string;
+  cancellationWindowMinutes: string;
+  autoRefundOnTime: boolean;
+  lateCancellationThreshold: string;
+  lateCancellationPenalty: string;
+  noShowConsumesSession: boolean;
+  reschedulingAllowed: boolean;
+  staffExceptionsAllowed: boolean;
+  gymCancellationRefund: boolean;
   sharedBenefits: boolean;
   futureBookingPolicy: string;
   benefits: string;
@@ -141,6 +189,13 @@ const emptyForm: FormState = {
   durationDays: '30', validFrom: '', validTo: '', maxMembers: '1',
   sessionsUnlimited: true, sessionsPerCycle: '', cycleFrequency: 'monthly',
   distributionModel: 'individual', sharedBenefits: true, futureBookingPolicy: 'cancel',
+  holderSessionsPerCycle: '', beneficiarySessionsPerCycle: '',
+  carryoverEnabled: false, carryoverMax: '', carryoverExpiryDays: '30',
+  allowExtraSessions: false, extraSessionPrice: '',
+  deductionMoment: 'booking_confirmation', cancellationWindowMinutes: '120',
+  autoRefundOnTime: true, lateCancellationThreshold: '2', lateCancellationPenalty: '1',
+  noShowConsumesSession: true, reschedulingAllowed: true,
+  staffExceptionsAllowed: true, gymCancellationRefund: true,
   benefits: '', restrictions: '', status: 'draft',
 };
 
@@ -186,7 +241,12 @@ export default function MembershipPlansCodex() {
     { code: 'cancelled', en: 'Cancelled', ar: 'ملغاة' },
     { code: 'archived', en: 'Archived', ar: 'مؤرشفة' },
   ]);
-  const cycles = labels('cycle_frequency', [{ code: 'monthly', en: 'Monthly', ar: 'شهرياً' }]);
+  const cycles = labels('cycle_frequency', [
+    { code: 'monthly', en: 'Monthly from subscription start', ar: 'شهرياً من بداية الاشتراك' },
+    { code: 'weekly', en: 'Weekly', ar: 'أسبوعياً' },
+    { code: 'quarterly', en: 'Quarterly', ar: 'ربع سنوي' },
+    { code: 'plan_duration', en: 'Full plan duration', ar: 'مدة الخطة كاملة' },
+  ]);
   const distributions = labels('distribution_model', [
     { code: 'individual', en: 'Individual allocation', ar: 'تخصيص فردي' },
     { code: 'shared', en: 'Shared benefits', ar: 'مزايا مشتركة' },
@@ -196,6 +256,14 @@ export default function MembershipPlansCodex() {
     { code: 'cancel', en: 'Cancel future bookings', ar: 'إلغاء الحجوزات المستقبلية' },
     { code: 'keep', en: 'Keep future bookings', ar: 'الإبقاء على الحجوزات المستقبلية' },
     { code: 'manual_review', en: 'Send to manual review', ar: 'إرسال للمراجعة اليدوية' },
+  ]);
+  const deductionMoments = labels('deduction_moment', [
+    { code: 'reservation', en: 'When booking', ar: 'عند الحجز' },
+    { code: 'booking_confirmation', en: 'When booking is confirmed', ar: 'عند تأكيد الحجز' },
+    { code: 'check_in', en: 'At check-in', ar: 'عند تسجيل الدخول' },
+    { code: 'service_start', en: 'When the activity starts', ar: 'عند بدء النشاط' },
+    { code: 'attendance_confirmation', en: 'When attendance is confirmed', ar: 'عند تأكيد الحضور' },
+    { code: 'service_completion', en: 'When the activity finishes', ar: 'عند انتهاء النشاط' },
   ]);
 
   const labelFor = (options: Array<{ code: string; label: string }>, code: string) =>
@@ -231,6 +299,22 @@ export default function MembershipPlansCodex() {
       validFrom: plan.validFrom || '', validTo: plan.validTo || '', maxMembers: String(plan.maxMembers),
       sessionsUnlimited: plan.sessionsUnlimited, sessionsPerCycle: plan.sessionsPerCycle ? String(plan.sessionsPerCycle) : '',
       cycleFrequency: plan.cycleFrequency, distributionModel: plan.distributionModel,
+      holderSessionsPerCycle: String(plan.holderSessionsPerCycle || ''),
+      beneficiarySessionsPerCycle: String(plan.beneficiarySessionsPerCycle || ''),
+      carryoverEnabled: plan.carryoverEnabled,
+      carryoverMax: String(plan.carryoverMax ?? ''),
+      carryoverExpiryDays: String(plan.carryoverExpiryDays ?? 30),
+      allowExtraSessions: plan.allowExtraSessions,
+      extraSessionPrice: String(plan.extraSessionPrice ?? ''),
+      deductionMoment: plan.bookingPolicy?.deductionMoment || 'booking_confirmation',
+      cancellationWindowMinutes: String(plan.bookingPolicy?.cancellationWindowMinutes ?? 120),
+      autoRefundOnTime: plan.bookingPolicy?.autoRefundOnTime !== false,
+      lateCancellationThreshold: String(plan.bookingPolicy?.lateCancellationThreshold ?? 2),
+      lateCancellationPenalty: String(plan.bookingPolicy?.lateCancellationPenalty ?? 1),
+      noShowConsumesSession: plan.bookingPolicy?.noShowConsumesSession !== false,
+      reschedulingAllowed: plan.bookingPolicy?.reschedulingAllowed !== false,
+      staffExceptionsAllowed: plan.bookingPolicy?.staffExceptionsAllowed !== false,
+      gymCancellationRefund: plan.bookingPolicy?.gymCancellationRefund !== false,
       sharedBenefits: plan.sharedBenefits, futureBookingPolicy: plan.futureBookingPolicy,
       benefits: toLines(plan.benefits), restrictions: toLines(plan.restrictions), status: plan.status,
     });
@@ -243,8 +327,6 @@ export default function MembershipPlansCodex() {
       if (key === 'planType') {
         const individual = value === 'individual';
         next.maxMembers = individual ? '1' : (Number(current.maxMembers) > 1 ? current.maxMembers : '2');
-        next.sessionsUnlimited = true;
-        next.sessionsPerCycle = '';
         next.distributionModel = individual ? 'individual' : 'shared';
       }
       if (key === 'validFrom' && value && !current.validTo) {
@@ -259,7 +341,13 @@ export default function MembershipPlansCodex() {
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     const individual = form.planType === 'individual';
-    if (!form.name.trim() || Number(form.durationDays) < 1 || Number(form.price) < 0 || (!individual && Number(form.maxMembers) < 2)) {
+    if (
+      !form.name.trim() ||
+      Number(form.durationDays) < 1 ||
+      Number(form.price) < 0 ||
+      (!individual && Number(form.maxMembers) < 2) ||
+      (!form.sessionsUnlimited && Number(form.sessionsPerCycle) < 1)
+    ) {
       toast.error(c.validation);
       return;
     }
@@ -270,10 +358,26 @@ export default function MembershipPlansCodex() {
         price: Number(form.price), currency: form.currency, durationDays: Number(form.durationDays),
         validFrom: form.validFrom || null, validTo: form.validTo || null,
         maxMembers: individual ? 1 : Number(form.maxMembers),
-        sessionsUnlimited: individual ? form.sessionsUnlimited : true,
-        sessionsPerCycle: individual && !form.sessionsUnlimited ? Number(form.sessionsPerCycle) : null,
+        sessionsUnlimited: form.sessionsUnlimited,
+        sessionsPerCycle: !form.sessionsUnlimited ? Number(form.sessionsPerCycle) : null,
         cycleFrequency: form.cycleFrequency,
         distributionModel: individual ? 'individual' : form.distributionModel,
+        holderSessionsPerCycle: Number(form.holderSessionsPerCycle || form.sessionsPerCycle || 0),
+        beneficiarySessionsPerCycle: Number(form.beneficiarySessionsPerCycle || form.sessionsPerCycle || 0),
+        carryoverEnabled: !form.sessionsUnlimited && form.carryoverEnabled,
+        carryoverMax: form.carryoverEnabled && form.carryoverMax ? Number(form.carryoverMax) : null,
+        carryoverExpiryDays: form.carryoverEnabled ? Number(form.carryoverExpiryDays || 30) : null,
+        allowExtraSessions: !form.sessionsUnlimited && form.allowExtraSessions,
+        extraSessionPrice: form.allowExtraSessions ? Number(form.extraSessionPrice || 0) : null,
+        deductionMoment: form.deductionMoment,
+        cancellationWindowMinutes: Number(form.cancellationWindowMinutes || 0),
+        autoRefundOnTime: form.autoRefundOnTime,
+        lateCancellationThreshold: Number(form.lateCancellationThreshold || 2),
+        lateCancellationPenalty: Number(form.lateCancellationPenalty || 1),
+        noShowConsumesSession: form.noShowConsumesSession,
+        reschedulingAllowed: form.reschedulingAllowed,
+        staffExceptionsAllowed: form.staffExceptionsAllowed,
+        gymCancellationRefund: form.gymCancellationRefund,
         sharedBenefits: individual ? true : form.sharedBenefits,
         futureBookingPolicy: form.futureBookingPolicy,
         benefits: fromLines(form.benefits), restrictions: fromLines(form.restrictions),
@@ -334,7 +438,7 @@ export default function MembershipPlansCodex() {
                   <TableCell><span className="inline-flex items-center gap-1"><CalendarDays className="h-3.5 w-3.5" />{plan.durationDays} {c.days}</span></TableCell>
                   <TableCell>{formatCurrency(plan.price, plan.currency)}</TableCell>
                   <TableCell><span className="inline-flex items-center gap-1"><Users className="h-3.5 w-3.5" />{plan.maxMembers}</span></TableCell>
-                  <TableCell>{plan.sessionsUnlimited ? <span className="inline-flex items-center gap-1"><InfinityIcon className="h-4 w-4" />{c.unlimited}</span> : `${plan.sessionsPerCycle} / ${labelFor(cycles, plan.cycleFrequency)}`}</TableCell>
+                  <TableCell>{plan.sessionsUnlimited ? <span className="inline-flex items-center gap-1"><InfinityIcon className="h-4 w-4" />{c.unlimited}</span> : `${plan.sessionsPerCycle} / ${labelFor(cycles, plan.cycleFrequency)} · ${labelFor(distributions, plan.distributionModel)}`}</TableCell>
                   <TableCell><Badge variant={plan.status === 'active' ? 'default' : 'secondary'}>{labelFor(statuses, plan.status)}</Badge></TableCell>
                   <TableCell className="text-end"><Button variant="outline" size="sm" onClick={() => openEdit(plan)}><Pencil className="me-2 h-3.5 w-3.5" />{c.edit}</Button></TableCell>
                 </TableRow>
@@ -363,18 +467,58 @@ export default function MembershipPlansCodex() {
               <div className="space-y-2"><Label>{c.startDate}</Label><DateInput value={form.validFrom} onChange={(value) => update('validFrom', value)} /></div>
               <div className="space-y-2"><Label>{c.endDate}</Label><DateInput value={form.validTo} onChange={(value) => update('validTo', value)} /></div>
             </div>
-            {form.planType === 'individual' ? (
-              <div className="rounded-lg border p-4">
-                <label className="flex items-center gap-2"><input type="checkbox" checked={form.sessionsUnlimited} onChange={(e) => update('sessionsUnlimited', e.target.checked)} />{c.sessionsUnlimited}</label>
-                {!form.sessionsUnlimited && <div className="mt-3 grid gap-4 md:grid-cols-2"><div className="space-y-2"><Label>{c.sessionsPerCycle}</Label><Input type="number" min="1" value={form.sessionsPerCycle} onChange={(e) => update('sessionsPerCycle', e.target.value)} /></div><div className="space-y-2"><Label>{c.cycleFrequency}</Label><select className="h-9 w-full rounded-md border px-3" value={form.cycleFrequency} onChange={(e) => update('cycleFrequency', e.target.value)}>{cycles.map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}</select></div></div>}
-              </div>
-            ) : (
-              <div className="rounded-lg border p-4 space-y-4">
+            <div className="rounded-lg border p-4 space-y-4">
+              <label className="flex items-center gap-2"><input type="checkbox" checked={form.sessionsUnlimited} onChange={(e) => update('sessionsUnlimited', e.target.checked)} />{c.sessionsUnlimited}</label>
+              {!form.sessionsUnlimited && (
+                <>
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div className="space-y-2"><Label>{c.sessionsPerCycle}</Label><Input type="number" min="1" value={form.sessionsPerCycle} onChange={(e) => update('sessionsPerCycle', e.target.value)} /></div>
+                    <div className="space-y-2"><Label>{c.cycleFrequency}</Label><select className="h-9 w-full rounded-md border px-3" value={form.cycleFrequency} onChange={(e) => update('cycleFrequency', e.target.value)}>{cycles.map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}</select></div>
+                  </div>
+                  {form.planType !== 'individual' && (
+                    <>
+                      {form.distributionModel === 'custom' && (
+                        <div className="grid gap-4 md:grid-cols-2">
+                          <div className="space-y-2"><Label>{c.holderSessions}</Label><Input type="number" min="0" value={form.holderSessionsPerCycle} onChange={(e) => update('holderSessionsPerCycle', e.target.value)} /></div>
+                          <div className="space-y-2"><Label>{c.beneficiarySessions}</Label><Input type="number" min="0" value={form.beneficiarySessionsPerCycle} onChange={(e) => update('beneficiarySessionsPerCycle', e.target.value)} /></div>
+                        </div>
+                      )}
+                    </>
+                  )}
+                  <label className="flex items-center gap-2"><input type="checkbox" checked={form.carryoverEnabled} onChange={(e) => update('carryoverEnabled', e.target.checked)} />{c.carryover}</label>
+                  {form.carryoverEnabled && (
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <div className="space-y-2"><Label>{c.carryoverMax}</Label><Input type="number" min="0" value={form.carryoverMax} onChange={(e) => update('carryoverMax', e.target.value)} /></div>
+                      <div className="space-y-2"><Label>{c.carryoverExpiry}</Label><Input type="number" min="1" value={form.carryoverExpiryDays} onChange={(e) => update('carryoverExpiryDays', e.target.value)} /></div>
+                    </div>
+                  )}
+                  <label className="flex items-center gap-2"><input type="checkbox" checked={form.allowExtraSessions} onChange={(e) => update('allowExtraSessions', e.target.checked)} />{c.extraSessions}</label>
+                  {form.allowExtraSessions && <div className="space-y-2"><Label>{c.extraSessionPrice}</Label><Input type="number" min="0" step="0.01" value={form.extraSessionPrice} onChange={(e) => update('extraSessionPrice', e.target.value)} /></div>}
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div className="space-y-2"><Label>{c.deductionMoment}</Label><select className="h-9 w-full rounded-md border px-3" value={form.deductionMoment} onChange={(e) => update('deductionMoment', e.target.value)}>{deductionMoments.map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}</select></div>
+                    <div className="space-y-2"><Label>{c.cancellationWindow}</Label><Input type="number" min="0" value={form.cancellationWindowMinutes} onChange={(e) => update('cancellationWindowMinutes', e.target.value)} /></div>
+                    <div className="space-y-2"><Label>{c.lateCancellationThreshold}</Label><Input type="number" min="1" value={form.lateCancellationThreshold} onChange={(e) => update('lateCancellationThreshold', e.target.value)} /></div>
+                    <div className="space-y-2"><Label>{c.lateCancellationPenalty}</Label><Input type="number" min="0" value={form.lateCancellationPenalty} onChange={(e) => update('lateCancellationPenalty', e.target.value)} /></div>
+                  </div>
+                  {([
+                    ['autoRefundOnTime', c.autoRefund],
+                    ['noShowConsumesSession', c.noShowConsumes],
+                    ['reschedulingAllowed', c.rescheduling],
+                    ['staffExceptionsAllowed', c.staffExceptions],
+                    ['gymCancellationRefund', c.gymCancellationRefund],
+                  ] as const).map(([key, label]) => (
+                    <label key={key} className="flex items-center gap-2"><input type="checkbox" checked={form[key]} onChange={(e) => update(key, e.target.checked)} />{label}</label>
+                  ))}
+                </>
+              )}
+              {form.planType !== 'individual' && (
+                <>
                 <div className="space-y-2"><Label>{c.distribution}</Label><select className="h-9 w-full rounded-md border px-3" value={form.distributionModel} onChange={(e) => update('distributionModel', e.target.value)}>{distributions.map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}</select></div>
                 <label className="flex items-center gap-2"><input type="checkbox" checked={form.sharedBenefits} onChange={(e) => update('sharedBenefits', e.target.checked)} />{c.sharedBenefits}</label>
                 <div className="space-y-2"><Label>{c.bookingPolicy}</Label><select className="h-9 w-full rounded-md border px-3" value={form.futureBookingPolicy} onChange={(e) => update('futureBookingPolicy', e.target.value)}>{bookingPolicies.map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}</select></div>
-              </div>
-            )}
+                </>
+              )}
+            </div>
             <div className="grid gap-4 md:grid-cols-2">
               <div className="space-y-2"><Label>{c.benefits}</Label><textarea className="min-h-24 w-full rounded-md border p-3 text-sm" value={form.benefits} onChange={(e) => update('benefits', e.target.value)} /></div>
               <div className="space-y-2"><Label>{c.restrictions}</Label><textarea className="min-h-24 w-full rounded-md border p-3 text-sm" value={form.restrictions} onChange={(e) => update('restrictions', e.target.value)} /></div>
