@@ -1035,6 +1035,26 @@ export function registerMembershipRoutes(app: Express, poolProvider: PoolProvide
       const status = normalizeString(req.query.status);
       const accessDate = normalizeDate(req.query.accessDate);
       const accessedToday = normalizeString(req.query.accessedToday).toLowerCase() === "true";
+      const currentPlanFilter = normalizeString(req.query.currentPlan).toLowerCase();
+      const paymentStatusFilter = normalizeString(req.query.paymentStatus).toLowerCase();
+      const expiryDateFilter = normalizeDate(req.query.expiryDate);
+      const requestedSort = normalizeString(req.query.sortBy).toLowerCase();
+      const allowedSorts = new Set([
+        "expiry_asc",
+        "expiry_desc",
+        "joined_asc",
+        "joined_desc",
+        "last_access_asc",
+        "last_access_desc",
+      ]);
+      const sortBy = allowedSorts.has(requestedSort)
+        ? requestedSort
+        : "joined_desc";
+      const requestedPage = Math.max(1, Number.parseInt(normalizeString(req.query.page) || "1", 10) || 1);
+      const requestedPageSize = Number.parseInt(normalizeString(req.query.pageSize) || "25", 10);
+      const pageSize = [10, 25, 50].includes(requestedPageSize)
+        ? requestedPageSize
+        : 25;
       const params: any[] = [];
       const filters: string[] = [];
 
@@ -1093,23 +1113,107 @@ export function registerMembershipRoutes(app: Express, poolProvider: PoolProvide
                 ORDER BY i_latest.created_at DESC
                 LIMIT 1
              )
-          ${where}
-          ORDER BY m.created_at DESC
-          LIMIT 500`,
+          ${where}`,
         params,
       );
       const multiMemberships = await getMultiUserMemberships(pool);
       const legacyPlanDescriptions = await getLegacyPlanDescriptions(pool);
-      res.json({
-        members: rows.map((row: any) => {
-          const member = mapMember(row);
-          member.planDescription =
-            legacyPlanDescriptions.get(member.currentPlan || "") || null;
-          return enrichMemberWithSubscription(
-            member,
-            multiMemberships.get(member.id),
+      const enrichedMembers = rows.map((row: any) => {
+        const member = mapMember(row);
+        member.planDescription =
+          legacyPlanDescriptions.get(member.currentPlan || "") || null;
+        return enrichMemberWithSubscription(
+          member,
+          multiMemberships.get(member.id),
+        );
+      });
+      const currentPlans = Array.from(
+        new Set<string>(
+          enrichedMembers
+            .map((member: any) => normalizeString(member.currentPlan))
+            .filter(Boolean),
+        ),
+      ).sort((a, b) => a.localeCompare(b));
+      const filteredMembers = enrichedMembers.filter((member: any) => {
+        if (
+          currentPlanFilter &&
+          normalizeString(member.currentPlan).toLowerCase() !==
+            currentPlanFilter
+        ) {
+          return false;
+        }
+        const memberPaymentStatus =
+          normalizeString(member.paymentStatus).toLowerCase();
+        if (
+          paymentStatusFilter === "paid" &&
+          memberPaymentStatus !== "paid"
+        ) {
+          return false;
+        }
+        if (
+          paymentStatusFilter === "pending" &&
+          !["pending", "partial", "overdue"].includes(memberPaymentStatus)
+        ) {
+          return false;
+        }
+        if (
+          expiryDateFilter &&
+          dateOnly(member.currentExpiry) !== expiryDateFilter
+        ) {
+          return false;
+        }
+        return true;
+      });
+      const sortValue = (member: any) => {
+        if (sortBy.startsWith("expiry_")) {
+          return dateOnly(member.currentExpiry) || "";
+        }
+        if (sortBy.startsWith("last_access_")) {
+          return normalizeDate(member.lastAccess) || "";
+        }
+        return normalizeDate(member.joinDate) || "";
+      };
+      const sortDirection = sortBy.endsWith("_asc") ? 1 : -1;
+      filteredMembers.sort((left: any, right: any) => {
+        const leftValue = sortValue(left);
+        const rightValue = sortValue(right);
+        if (!leftValue && !rightValue) {
+          return String(left.lastName || left.firstName || "").localeCompare(
+            String(right.lastName || right.firstName || ""),
           );
-        }),
+        }
+        if (!leftValue) return 1;
+        if (!rightValue) return -1;
+        const comparison = leftValue.localeCompare(rightValue);
+        if (comparison !== 0) return comparison * sortDirection;
+        return String(left.lastName || left.firstName || "").localeCompare(
+          String(right.lastName || right.firstName || ""),
+        );
+      });
+      const total = filteredMembers.length;
+      const totalPages = Math.max(1, Math.ceil(total / pageSize));
+      const page = Math.min(requestedPage, totalPages);
+      const offset = (page - 1) * pageSize;
+      res.json({
+        members: filteredMembers.slice(offset, offset + pageSize),
+        pagination: {
+          page,
+          pageSize,
+          total,
+          totalPages,
+        },
+        summary: {
+          total,
+          active: filteredMembers.filter(
+            (member: any) => member.status === "active",
+          ).length,
+          archived: filteredMembers.filter(
+            (member: any) => member.status === "archived",
+          ).length,
+        },
+        filterOptions: {
+          currentPlans,
+        },
       });
     } catch (error) {
       next(error);
