@@ -246,7 +246,7 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
       await connection.beginTransaction();
       const [rows]: any = await connection.query(
         `SELECT s.payment_status, s.price_paid, s.currency, s.start_date,
-                s.holder_member_id,
+                s.end_date, s.data, s.holder_member_id,
                 pv.name AS plan_name,
                 holder.first_name AS holder_first_name,
                 holder.last_name AS holder_last_name
@@ -270,63 +270,123 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
           code: "PAID_SUBSCRIPTION_LOCKED",
         });
       }
+      const today = new Date().toISOString().slice(0, 10);
+      const paymentDate =
+        paymentStatus === "paid" ? today : normalizeDate(req.body.paymentDate);
+      if (!paymentDate) {
+        await connection.rollback();
+        return res.status(400).json({
+          error: "An estimated payment date is required for pending payments",
+        });
+      }
+      if (paymentStatus === "pending" && paymentDate < today) {
+        await connection.rollback();
+        return res.status(400).json({
+          error: "The estimated payment date cannot be in the past",
+        });
+      }
+      if (
+        paymentStatus === "pending" &&
+        paymentDate > String(rows[0].end_date).slice(0, 10)
+      ) {
+        await connection.rollback();
+        return res.status(400).json({
+          error: "The estimated payment date cannot be after the subscription end date",
+        });
+      }
 
       let invoiceNumber: string | null = null;
+      let invoiceId: string | null = null;
       let accountingReferenceType = "subscription_v2_payment";
       let accountingReferenceId = req.params.id;
       let accountingCategory = "Membership Subscription";
       let accountingDescriptionPrefix = "Subscription payment";
-      if (paymentStatus === "paid") {
-        const [invoiceRows]: any = await connection.query(
-          `SELECT id, invoice_number, data
-             FROM invoices
-            WHERE JSON_UNQUOTE(JSON_EXTRACT(data, '$.subscriptionV2Id')) = ?
-            ORDER BY created_at DESC
-            LIMIT 1
-            FOR UPDATE`,
-          [req.params.id],
-        );
-        if (invoiceRows.length) {
-          invoiceNumber = invoiceRows[0].invoice_number;
-          const invoiceData =
-            typeof invoiceRows[0].data === "string"
-              ? JSON.parse(invoiceRows[0].data || "{}")
-              : invoiceRows[0].data || {};
-          if (invoiceData.source === "subscription_v2_renewal") {
-            accountingReferenceType = "subscription_v2_renewal_invoice";
-            accountingReferenceId = invoiceRows[0].id;
-            accountingCategory = "Membership Renewal";
-            accountingDescriptionPrefix = "Subscription renewal";
-          }
-          await connection.query(
-            "UPDATE invoices SET status = 'paid', paid_at = COALESCE(paid_at, NOW()), updated_at = NOW() WHERE id = ?",
-            [invoiceRows[0].id],
-          );
-        } else {
-          invoiceNumber = createInvoiceNumber();
-          await connection.query(
-            `INSERT INTO invoices
-              (id, invoice_number, member_id, subscription_id, status,
-               subtotal, tax_amount, total, currency, due_date, paid_at, data)
-             VALUES (?, ?, ?, NULL, 'paid', ?, 0, ?, ?, CURDATE(), NOW(), ?)`,
-            [
-              createId("inv"),
-              invoiceNumber,
-              rows[0].holder_member_id,
-              Number(rows[0].price_paid || 0),
-              Number(rows[0].price_paid || 0),
-              rows[0].currency || "USD",
-              JSON.stringify({
-                source: "subscription_v2",
-                subscriptionV2Id: req.params.id,
-              }),
-            ],
-          );
+      const [invoiceRows]: any = await connection.query(
+        `SELECT id, invoice_number, data
+           FROM invoices
+          WHERE JSON_UNQUOTE(JSON_EXTRACT(data, '$.subscriptionV2Id')) = ?
+          ORDER BY created_at DESC
+          LIMIT 1
+          FOR UPDATE`,
+        [req.params.id],
+      );
+      const existingInvoiceData =
+        typeof invoiceRows[0]?.data === "string"
+          ? JSON.parse(invoiceRows[0].data || "{}")
+          : invoiceRows[0]?.data || {};
+      if (invoiceRows.length) {
+        invoiceId = invoiceRows[0].id;
+        invoiceNumber = invoiceRows[0].invoice_number;
+        if (existingInvoiceData.source === "subscription_v2_renewal") {
+          accountingReferenceType = "subscription_v2_renewal_invoice";
+          accountingReferenceId = invoiceId!;
+          accountingCategory = "Membership Renewal";
+          accountingDescriptionPrefix = "Subscription renewal";
         }
+        await connection.query(
+          `UPDATE invoices
+              SET status = ?,
+                  due_date = ?,
+                  paid_at = CASE WHEN ? = 'paid' THEN COALESCE(paid_at, NOW()) ELSE NULL END,
+                  data = JSON_SET(
+                    COALESCE(data, JSON_OBJECT()),
+                    '$.paymentStatus', ?,
+                    '$.expectedPaymentDate', ?
+                  ),
+                  updated_at = NOW()
+            WHERE id = ?`,
+          [
+            paymentStatus === "paid" ? "paid" : "issued",
+            paymentDate,
+            paymentStatus,
+            paymentStatus,
+            paymentStatus === "pending" ? paymentDate : null,
+            invoiceId,
+          ],
+        );
+      } else {
+        invoiceId = createId("inv");
+        invoiceNumber = createInvoiceNumber();
+        await connection.query(
+          `INSERT INTO invoices
+            (id, invoice_number, member_id, subscription_id, status,
+             subtotal, tax_amount, total, currency, due_date, paid_at, data)
+           VALUES (?, ?, ?, NULL, ?, ?, 0, ?, ?, ?, ?, ?)`,
+          [
+            invoiceId,
+            invoiceNumber,
+            rows[0].holder_member_id,
+            paymentStatus === "paid" ? "paid" : "issued",
+            Number(rows[0].price_paid || 0),
+            Number(rows[0].price_paid || 0),
+            rows[0].currency || "USD",
+            paymentDate,
+            paymentStatus === "paid" ? new Date() : null,
+            JSON.stringify({
+              source: "subscription_v2",
+              subscriptionV2Id: req.params.id,
+              paymentStatus,
+              expectedPaymentDate:
+                paymentStatus === "pending" ? paymentDate : null,
+            }),
+          ],
+        );
       }
       await connection.query(
-        "UPDATE subscriptions SET payment_status = ?, version = version + 1, updated_at = NOW() WHERE id = ?",
-        [paymentStatus, req.params.id],
+        `UPDATE subscriptions
+            SET payment_status = ?,
+                data = JSON_SET(
+                  COALESCE(data, JSON_OBJECT()),
+                  '$.expectedPaymentDate', ?
+                ),
+                version = version + 1,
+                updated_at = NOW()
+          WHERE id = ?`,
+        [
+          paymentStatus,
+          paymentStatus === "pending" ? paymentDate : null,
+          req.params.id,
+        ],
       );
       const accountingStatus = paymentStatus === "paid" ? "posted" : "pending";
       const holderName = `${rows[0].holder_first_name || ""} ${rows[0].holder_last_name || ""}`.trim();
@@ -335,7 +395,7 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
         `INSERT INTO finance_transactions
           (id, type, category, amount, transaction_date, source, reference_type,
            reference_id, description, status, created_by, approved_by, data)
-         VALUES (?, 'income', ?, ?, CURDATE(),
+         VALUES (?, 'income', ?, ?, ?,
                  'subscription', ?, ?, ?, ?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE
            amount = VALUES(amount),
@@ -349,6 +409,7 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
           accountingTransactionId,
           accountingCategory,
           Number(rows[0].price_paid || 0),
+          paymentDate,
           accountingReferenceType,
           accountingReferenceId,
           `${accountingDescriptionPrefix}${invoiceNumber ? ` ${invoiceNumber}` : ""} - ${holderName || "member"} - ${rows[0].plan_name || "plan"}`,
@@ -381,6 +442,7 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
         ok: true,
         previousPaymentStatus,
         paymentStatus,
+        paymentDate,
         accountingStatus,
         invoiceNumber,
         paymentStatusLocked: paymentStatus === "paid",
@@ -1144,6 +1206,10 @@ function mapPlanVersion(row: any) {
 function mapSubscription(row: any) {
   const holderFirstName = row.holder_first_name || "";
   const holderLastName = row.holder_last_name || "";
+  const subscriptionData =
+    typeof row.data === "string"
+      ? JSON.parse(row.data || "{}")
+      : row.data || {};
   return {
     id: row.id,
     planId: row.plan_id,
@@ -1161,6 +1227,8 @@ function mapSubscription(row: any) {
     pricePaid: Number(row.price_paid || 0),
     currency: row.currency || "USD",
     paymentStatus: row.payment_status || "pending",
+    expectedPaymentDate:
+      subscriptionData.expectedPaymentDate || null,
     maxMembers: Number(row.max_members || 1),
     sessionsUnlimited: row.sessions_unlimited !== undefined ? Boolean(row.sessions_unlimited) : true,
     sessionsPerCycle: row.sessions_per_cycle ? Number(row.sessions_per_cycle) : null,
