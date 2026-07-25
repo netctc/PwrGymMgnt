@@ -117,12 +117,213 @@ function mapMember(row: any) {
     storedStatus: row.status ?? data.status ?? "active",
     joinDate: row.join_date ?? data.joinDate ?? null,
     currentPlan: row.plan ?? data.currentPlan ?? data.subPlan ?? null,
+    planDescription: data.planDescription ?? null,
     currentExpiry: dateOnly(row.current_expiry ?? data.currentExpiry ?? data.expiryDate),
     lastAccess: row.last_access_at ?? data.lastAccess ?? data.last_access_at ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     data,
   };
+}
+
+async function getMultiUserMemberships(pool: Pool, memberId?: string) {
+  const params: string[] = [];
+  const memberFilter = memberId ? "AND a.member_id = ?" : "";
+  if (memberId) params.push(memberId);
+  const [rows]: any = await pool.query(
+    `SELECT a.member_id, a.role, a.status AS affiliation_status,
+            a.start_date AS affiliation_start_date,
+            a.end_date AS affiliation_end_date,
+            s.id AS subscription_id, s.status AS subscription_status,
+            s.payment_status AS subscription_payment_status,
+            s.start_date AS subscription_start_date,
+            s.end_date AS subscription_end_date,
+            s.max_members,
+            pv.name AS plan_name, pv.description AS plan_description,
+            pv.plan_type,
+            (
+              SELECT COUNT(*)
+                FROM subscription_members sm_count
+               WHERE sm_count.subscription_id = s.id
+                 AND sm_count.status IN ('active', 'suspended')
+            ) AS occupied_members,
+            (
+              SELECT GROUP_CONCAT(
+                       CONCAT(
+                         sm_group.member_id, '::',
+                         COALESCE(m_group.first_name, ''), ' ',
+                         COALESCE(m_group.last_name, ''), '::',
+                         sm_group.role
+                       )
+                       ORDER BY (sm_group.role = 'holder') DESC, sm_group.joined_at
+                       SEPARATOR '|||'
+                     )
+                FROM subscription_members sm_group
+                JOIN members m_group ON m_group.id = sm_group.member_id
+               WHERE sm_group.subscription_id = s.id
+                 AND sm_group.status IN ('active', 'suspended')
+            ) AS subscription_members_summary
+       FROM affiliations a
+       JOIN subscriptions s ON s.id = a.subscription_id
+       JOIN plan_versions pv ON pv.id = s.plan_version_id
+      WHERE 1 = 1
+        ${memberFilter}
+      ORDER BY
+        (s.status = 'active' AND s.end_date >= CURDATE()
+         AND a.status IN ('active', 'suspended')) DESC,
+        s.end_date DESC,
+        a.updated_at DESC`,
+    params,
+  );
+  const memberships = new Map<string, any>();
+  for (const row of rows) {
+    if (!memberships.has(row.member_id)) memberships.set(row.member_id, row);
+  }
+  return memberships;
+}
+
+function mapSubscriptionGroupMembers(value: unknown) {
+  if (typeof value !== "string" || !value) return [];
+  return value.split("|||").map((entry) => {
+    const [memberId, name, role] = entry.split("::");
+    return {
+      memberId,
+      name: String(name || "").trim(),
+      role: role || "beneficiary",
+    };
+  }).filter((entry) => entry.memberId);
+}
+
+async function getLegacyPlanDescriptions(pool: Pool) {
+  const [rows]: any = await pool.query(
+    "SELECT name, description FROM subscription_plans",
+  );
+  return new Map(
+    rows.map((row: any) => [String(row.name || ""), row.description || null]),
+  );
+}
+
+function enrichMemberWithSubscription(member: any, multiMembership?: any) {
+  const hasLegacySubscription = Boolean(member.currentPlan || member.currentExpiry);
+  if (!multiMembership) {
+    return {
+      ...member,
+      subscriptionType: hasLegacySubscription ? "individual" : "none",
+      multiUserRole: null,
+      multiUserPlanType: null,
+      multiUserSubscriptionId: null,
+      holderActionLocked: false,
+      planDescription: member.planDescription || null,
+      multiUserMembers: [],
+      multiUserCapacity: null,
+      paymentStatus: null,
+      paymentAttentionRequired: false,
+    };
+  }
+  const multiSubscriptionEndDate = dateOnly(
+    multiMembership.subscription_end_date,
+  );
+  const multiActive =
+    multiMembership.subscription_status === "active" &&
+    Boolean(
+      multiSubscriptionEndDate &&
+        multiSubscriptionEndDate >= todayDateString(),
+    ) &&
+    ["active", "suspended"].includes(multiMembership.affiliation_status);
+  if (multiMembership.plan_type === "individual") {
+    return {
+      ...member,
+      currentPlan: multiMembership.plan_name || member.currentPlan,
+      currentExpiry:
+        dateOnly(multiMembership.affiliation_end_date) ||
+        multiSubscriptionEndDate ||
+        member.currentExpiry,
+      subscriptionType: "individual",
+      multiUserRole: null,
+      multiUserPlanType: null,
+      multiUserSubscriptionId: multiMembership.subscription_id,
+      multiUserSubscriptionStatus: multiMembership.subscription_status,
+      multiUserSubscriptionEndDate: multiSubscriptionEndDate,
+      holderActionLocked: false,
+      planDescription:
+        multiMembership.plan_description || member.planDescription || null,
+      multiUserMembers: [],
+      multiUserCapacity: null,
+      paymentStatus: multiMembership.subscription_payment_status || null,
+      paymentAttentionRequired: ["pending", "partial", "overdue"].includes(
+        multiMembership.subscription_payment_status,
+      ),
+    };
+  }
+  if (!multiActive && hasLegacySubscription) {
+    return {
+      ...member,
+      subscriptionType: "individual",
+      multiUserRole: null,
+      multiUserPlanType: null,
+      multiUserSubscriptionId: null,
+      holderActionLocked: false,
+      planDescription: member.planDescription || null,
+      multiUserMembers: [],
+      multiUserCapacity: null,
+      paymentStatus: null,
+      paymentAttentionRequired: false,
+    };
+  }
+  return {
+    ...member,
+    currentPlan: multiMembership.plan_name || member.currentPlan,
+    currentExpiry:
+      dateOnly(multiMembership.affiliation_end_date) ||
+      dateOnly(multiMembership.subscription_end_date) ||
+      member.currentExpiry,
+    subscriptionType: "multi_user",
+    multiUserRole: multiMembership.role,
+    multiUserPlanType: multiMembership.plan_type,
+    multiUserSubscriptionId: multiMembership.subscription_id,
+    multiUserSubscriptionStatus: multiMembership.subscription_status,
+    multiUserSubscriptionEndDate: multiSubscriptionEndDate,
+    holderActionLocked: multiActive && multiMembership.role === "holder",
+    planDescription: multiMembership.plan_description || null,
+    multiUserMembers: mapSubscriptionGroupMembers(
+      multiMembership.subscription_members_summary,
+    ),
+    multiUserCapacity: {
+      maximum: Number(multiMembership.max_members || 0),
+      occupied: Number(multiMembership.occupied_members || 0),
+      available: Math.max(
+        0,
+        Number(multiMembership.max_members || 0) -
+          Number(multiMembership.occupied_members || 0),
+      ),
+    },
+    paymentStatus: multiMembership.subscription_payment_status || null,
+    paymentAttentionRequired: ["pending", "partial", "overdue"].includes(
+      multiMembership.subscription_payment_status,
+    ),
+  };
+}
+
+async function assertMemberCanBeRestricted(pool: Pool, memberId: string) {
+  const [rows]: any = await pool.query(
+    `SELECT s.id, pv.name AS plan_name
+       FROM subscriptions s
+       JOIN plan_versions pv ON pv.id = s.plan_version_id
+      WHERE s.holder_member_id = ?
+        AND s.status = 'active'
+        AND s.end_date >= CURDATE()
+        AND pv.plan_type <> 'individual'
+      LIMIT 1`,
+    [memberId],
+  );
+  if (rows.length) {
+    throw Object.assign(
+      new Error(
+        `Transfer the holder role to an active beneficiary before changing or archiving this member (${rows[0].plan_name})`,
+      ),
+      { status: 409, code: "ACTIVE_MULTI_USER_HOLDER" },
+    );
+  }
 }
 
 function mapPlan(row: any) {
@@ -861,7 +1062,19 @@ export function registerMembershipRoutes(app: Express, poolProvider: PoolProvide
           LIMIT 500`,
         params,
       );
-      res.json({ members: rows.map(mapMember) });
+      const multiMemberships = await getMultiUserMemberships(pool);
+      const legacyPlanDescriptions = await getLegacyPlanDescriptions(pool);
+      res.json({
+        members: rows.map((row: any) => {
+          const member = mapMember(row);
+          member.planDescription =
+            legacyPlanDescriptions.get(member.currentPlan || "") || null;
+          return enrichMemberWithSubscription(
+            member,
+            multiMemberships.get(member.id),
+          );
+        }),
+      });
     } catch (error) {
       next(error);
     }
@@ -917,9 +1130,17 @@ export function registerMembershipRoutes(app: Express, poolProvider: PoolProvide
         "SELECT * FROM invoices WHERE member_id = ? ORDER BY created_at DESC LIMIT 50",
         [req.params.id],
       );
+      const multiMemberships = await getMultiUserMemberships(pool, req.params.id);
+      const member = mapMember(rows[0]);
+      const legacyPlanDescriptions = await getLegacyPlanDescriptions(pool);
+      member.planDescription =
+        legacyPlanDescriptions.get(member.currentPlan || "") || null;
 
       res.json({
-        member: mapMember(rows[0]),
+        member: enrichMemberWithSubscription(
+          member,
+          multiMemberships.get(member.id),
+        ),
         subscriptions: subs.map(mapSubscription),
         invoices: invoices.map(mapInvoice),
       });
@@ -939,11 +1160,16 @@ export function registerMembershipRoutes(app: Express, poolProvider: PoolProvide
       const lastName = normalizeString(req.body.lastName) || current.lastName;
       const email = normalizeEmail(req.body.email) || current.email;
       const phone = req.body.phone === undefined ? current.phone : normalizeString(req.body.phone);
-      const status = normalizeString(req.body.status) || current.status;
+      const requestedStatus = normalizeString(req.body.status).toLowerCase();
+      const status = requestedStatus || existing[0].status || current.status;
       const joinDate = normalizeDate(req.body.joinDate) || current.joinDate;
       const currentPlan = req.body.currentPlan === undefined && req.body.plan === undefined
         ? current.currentPlan
         : normalizeString(req.body.currentPlan || req.body.plan);
+
+      if (requestedStatus && requestedStatus !== "active") {
+        await assertMemberCanBeRestricted(pool, req.params.id);
+      }
 
       await pool.query(
         `UPDATE members
@@ -961,6 +1187,7 @@ export function registerMembershipRoutes(app: Express, poolProvider: PoolProvide
   app.delete("/api/membership/members/:id", requirePermission("membership.write"), async (req, res, next) => {
     try {
       const pool = await getReadyPool();
+      await assertMemberCanBeRestricted(pool, req.params.id);
       await pool.query("UPDATE members SET status = 'archived' WHERE id = ?", [req.params.id]);
       res.json({ success: true, status: "archived" });
     } catch (error) {
