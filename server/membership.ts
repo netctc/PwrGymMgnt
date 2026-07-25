@@ -1292,7 +1292,7 @@ export function registerMembershipRoutes(app: Express, poolProvider: PoolProvide
 
       const planName = normalizeString(req.body.planName) || plan?.name || "Custom plan";
       const [currentSubscriptionRows]: any = await connection.query(
-        `SELECT end_date FROM member_subscriptions
+        `SELECT id, end_date FROM member_subscriptions
          WHERE member_id = ? AND status = 'active'
          ORDER BY end_date DESC
          LIMIT 1`,
@@ -1305,6 +1305,13 @@ export function registerMembershipRoutes(app: Express, poolProvider: PoolProvide
       const price = numberOrDefault(req.body.price, plan?.price || 0);
       const currency = normalizeString(req.body.currency) || plan?.currency || "USD";
       const subscriptionId = createId("sub");
+      const previousSubscriptionId =
+        currentSubscriptionRows[0]?.id || null;
+      const subscriptionData = {
+        ...parseJsonField(req.body.data),
+        source: previousSubscriptionId ? "renewal" : "subscription",
+        renewalOfSubscriptionId: previousSubscriptionId,
+      };
       const paymentStatus = normalizeString(req.body.paymentStatus).toLowerCase();
       if (!["paid", "pending"].includes(paymentStatus)) {
         await connection.rollback();
@@ -1347,7 +1354,7 @@ export function registerMembershipRoutes(app: Express, poolProvider: PoolProvide
         `INSERT INTO member_subscriptions
          (id, member_id, plan_id, plan_name, status, start_date, end_date, price, currency, data)
          VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)`,
-        [subscriptionId, req.params.id, planId || null, planName, startDate, endDate, price, currency, toMysqlJson(req.body.data)],
+        [subscriptionId, req.params.id, planId || null, planName, startDate, endDate, price, currency, toMysqlJson(subscriptionData)],
       );
       await connection.query(
         "UPDATE members SET plan = ?, status = 'active' WHERE id = ?",
@@ -1378,6 +1385,7 @@ export function registerMembershipRoutes(app: Express, poolProvider: PoolProvide
             paymentStatus === "paid" ? new Date() : null,
             toMysqlJson({
               source: "subscription",
+              renewalOfSubscriptionId: previousSubscriptionId,
               paymentStatus,
               expectedPaymentDate:
                 paymentStatus === "pending" ? paymentDate : null,
@@ -1478,6 +1486,12 @@ export function registerMembershipRoutes(app: Express, poolProvider: PoolProvide
         await connection.rollback();
         return res.status(400).json({
           error: "The estimated payment date cannot be after the subscription end date",
+        });
+      }
+      if (paymentStatus === "pending" && paymentDate < todayDate()) {
+        await connection.rollback();
+        return res.status(400).json({
+          error: "The estimated payment date cannot be in the past",
         });
       }
 
