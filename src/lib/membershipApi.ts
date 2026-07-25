@@ -46,6 +46,7 @@ export type MembershipMember = {
     id: string;
     affiliationId: string | null;
     subscriptionId: string;
+    planId: string | null;
     planVersionId: string | null;
     planName: string;
     description?: string | null;
