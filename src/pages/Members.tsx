@@ -202,6 +202,10 @@ export default function Members() {
   const [renewStartDate, setRenewStartDate] = useState(today());
   const [renewCurrentExpiry, setRenewCurrentExpiry] = useState('');
   const [renewCurrentPlan, setRenewCurrentPlan] = useState('');
+  const [renewPaymentStatus, setRenewPaymentStatus] = useState<
+    '' | 'paid' | 'pending'
+  >('');
+  const [renewPaymentDate, setRenewPaymentDate] = useState('');
   const [renewMultiSubscription, setRenewMultiSubscription] =
     useState<SubscriptionV2 | null>(null);
   const [qrOpen, setQrOpen] = useState(false);
@@ -286,15 +290,26 @@ export default function Members() {
     member: MembershipMember,
     paymentStatus: 'paid' | 'pending',
   ) => {
-    if (!member.multiUserSubscriptionId) return;
+    if (!member.multiUserSubscriptionId && !member.legacySubscriptionId) return;
     setPaymentUpdatingId(member.id);
     try {
-      const result = await subscriptionsV2Api.updatePaymentStatus(
-        member.multiUserSubscriptionId,
-        paymentStatus,
-      );
+      const result = member.multiUserSubscriptionId
+        ? await subscriptionsV2Api.updatePaymentStatus(
+            member.multiUserSubscriptionId,
+            paymentStatus,
+          )
+        : await membershipApi.updateSubscriptionPaymentStatus(
+            member.legacySubscriptionId!,
+            { paymentStatus, paymentDate: today() },
+          );
       toast.success(
-        `${paymentStatus === 'paid' ? multiUserCopy.paid : multiUserCopy.pending} · Accounting: ${result.accountingStatus}`,
+        `${paymentStatus === 'paid' ? multiUserCopy.paid : multiUserCopy.pending} · Accounting: ${
+          'accountingStatus' in result
+            ? result.accountingStatus
+            : paymentStatus === 'paid'
+              ? 'posted'
+              : 'pending'
+        }`,
       );
       await loadMembers();
       if (detail?.member.id === member.id) {
@@ -413,6 +428,8 @@ export default function Members() {
     setRenewPlanId(plans[0]?.id || '');
     setRenewCurrentExpiry('');
     setRenewCurrentPlan('');
+    setRenewPaymentStatus('');
+    setRenewPaymentDate('');
     setRenewMultiSubscription(null);
     setRenewStartDate(today());
     setRenewOpen(true);
@@ -426,7 +443,6 @@ export default function Members() {
       ]);
       const multiSubscription =
         multiResponse.subscriptions
-          .filter((subscription) => subscription.planType !== 'individual')
           .sort((a, b) => String(b.endDate).localeCompare(String(a.endDate)))[0] ||
         null;
       const latestLegacySubscription = [...response.subscriptions].sort((a, b) =>
@@ -455,13 +471,37 @@ export default function Members() {
   const submitRenewal = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!renewMember) return;
+    if (!renewPaymentStatus) {
+      toast.error('Select Paid or Payment pending.');
+      return;
+    }
+    if (!renewPaymentDate) {
+      toast.error(
+        renewPaymentStatus === 'paid'
+          ? 'Payment date is required.'
+          : 'Estimated payment date is required.',
+      );
+      return;
+    }
+    if (renewPaymentStatus === 'pending' && renewPaymentDate > renewEndDate) {
+      toast.error('Estimated payment date cannot be after End Date.');
+      return;
+    }
+    if (renewPaymentStatus === 'pending' && renewPaymentDate < today()) {
+      toast.error('Estimated payment date cannot be in the past.');
+      return;
+    }
     setSaving(true);
     try {
       if (renewMultiSubscription) {
         await subscriptionsV2Api.renewSubscription(
           renewMultiSubscription.id,
+          {
+            paymentStatus: renewPaymentStatus,
+            paymentDate: renewPaymentDate,
+          },
         );
-        toast.success('Multi-user subscription renewed');
+        toast.success('Subscription renewed and invoice created');
         setRenewOpen(false);
         await loadMembers();
         return;
@@ -471,6 +511,8 @@ export default function Members() {
       await membershipApi.createSubscription(renewMember.id, {
         planId: plan.id,
         createInvoice: true,
+        paymentStatus: renewPaymentStatus,
+        paymentDate: renewPaymentDate,
       });
       toast.success('Subscription renewed and invoice created');
       setRenewOpen(false);
@@ -829,7 +871,7 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                           Payment {member.paymentStatus || 'pending'}
                         </Badge>
                       )}
-                      {member.multiUserSubscriptionId && (
+                      {(member.multiUserSubscriptionId || member.legacySubscriptionId) && (
                         <select
                           aria-label="Payment status"
                           className="mt-2 block h-8 rounded-lg border border-slate-300 bg-white px-2 text-xs"
@@ -1015,6 +1057,48 @@ The secure QR token is embedded in the attached PDF/QR image.`;
               <Input id="endDate" value={formatDate(renewEndDate)} readOnly disabled />
               <p className="text-xs text-slate-500">End Date is calculated automatically from the renewal start date plus the selected plan duration.</p>
             </div>
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <Label htmlFor="renewPaymentStatus">Payment status</Label>
+                <select
+                  id="renewPaymentStatus"
+                  className="h-9 w-full rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+                  value={renewPaymentStatus}
+                  required
+                  onChange={(event) => {
+                    const value = event.target.value as '' | 'paid' | 'pending';
+                    setRenewPaymentStatus(value);
+                    setRenewPaymentDate(value === 'paid' ? today() : '');
+                  }}
+                >
+                  <option value="">Select payment status</option>
+                  <option value="paid">{multiUserCopy.paid}</option>
+                  <option value="pending">{multiUserCopy.pending}</option>
+                </select>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="renewPaymentDate">
+                  {renewPaymentStatus === 'paid'
+                    ? 'Payment date'
+                    : 'Estimated payment date'}
+                </Label>
+                <DateInput
+                  id="renewPaymentDate"
+                  value={renewPaymentDate}
+                  onChange={setRenewPaymentDate}
+                  min={today()}
+                  max={renewEndDate}
+                  required
+                  readOnly={renewPaymentStatus === 'paid'}
+                  disabled={!renewPaymentStatus}
+                />
+                <p className="text-xs text-slate-500">
+                  {renewPaymentStatus === 'paid'
+                    ? 'Paid subscriptions use today as the payment date.'
+                    : 'Pending payment date must be today or later and cannot exceed End Date.'}
+                </p>
+              </div>
+            </div>
             <div className="flex flex-wrap justify-end gap-2 pt-2">
               {renewMember && (
                 <>
@@ -1030,7 +1114,10 @@ The secure QR token is embedded in the attached PDF/QR image.`;
               <Button
                 type="submit"
                 disabled={
-                  saving || (!renewMultiSubscription && plans.length === 0)
+                  saving ||
+                  !renewPaymentStatus ||
+                  !renewPaymentDate ||
+                  (!renewMultiSubscription && plans.length === 0)
                 }
               >
                 {saving
