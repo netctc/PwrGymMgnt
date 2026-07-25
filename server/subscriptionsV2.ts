@@ -272,9 +272,13 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
       }
 
       let invoiceNumber: string | null = null;
+      let accountingReferenceType = "subscription_v2_payment";
+      let accountingReferenceId = req.params.id;
+      let accountingCategory = "Membership Subscription";
+      let accountingDescriptionPrefix = "Subscription payment";
       if (paymentStatus === "paid") {
         const [invoiceRows]: any = await connection.query(
-          `SELECT id, invoice_number
+          `SELECT id, invoice_number, data
              FROM invoices
             WHERE JSON_UNQUOTE(JSON_EXTRACT(data, '$.subscriptionV2Id')) = ?
             ORDER BY created_at DESC
@@ -284,6 +288,16 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
         );
         if (invoiceRows.length) {
           invoiceNumber = invoiceRows[0].invoice_number;
+          const invoiceData =
+            typeof invoiceRows[0].data === "string"
+              ? JSON.parse(invoiceRows[0].data || "{}")
+              : invoiceRows[0].data || {};
+          if (invoiceData.source === "subscription_v2_renewal") {
+            accountingReferenceType = "subscription_v2_renewal_invoice";
+            accountingReferenceId = invoiceRows[0].id;
+            accountingCategory = "Membership Renewal";
+            accountingDescriptionPrefix = "Subscription renewal";
+          }
           await connection.query(
             "UPDATE invoices SET status = 'paid', paid_at = COALESCE(paid_at, NOW()), updated_at = NOW() WHERE id = ?",
             [invoiceRows[0].id],
@@ -321,8 +335,8 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
         `INSERT INTO finance_transactions
           (id, type, category, amount, transaction_date, source, reference_type,
            reference_id, description, status, created_by, approved_by, data)
-         VALUES (?, 'income', 'Membership Subscription', ?, CURDATE(),
-                 'subscription', 'subscription_v2_payment', ?, ?, ?, ?, ?, ?)
+         VALUES (?, 'income', ?, ?, CURDATE(),
+                 'subscription', ?, ?, ?, ?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE
            amount = VALUES(amount),
            transaction_date = VALUES(transaction_date),
@@ -333,9 +347,11 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
            updated_at = CURRENT_TIMESTAMP`,
         [
           accountingTransactionId,
+          accountingCategory,
           Number(rows[0].price_paid || 0),
-          req.params.id,
-          `Subscription payment${invoiceNumber ? ` ${invoiceNumber}` : ""} - ${holderName || "member"} - ${rows[0].plan_name || "plan"}`,
+          accountingReferenceType,
+          accountingReferenceId,
+          `${accountingDescriptionPrefix}${invoiceNumber ? ` ${invoiceNumber}` : ""} - ${holderName || "member"} - ${rows[0].plan_name || "plan"}`,
           accountingStatus,
           req.user?.email || req.user?.uid || "system",
           paymentStatus === "paid"
