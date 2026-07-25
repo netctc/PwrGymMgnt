@@ -148,6 +148,12 @@ function formatMoney(value: number, currency: string) {
   }
 }
 
+function reducedDescription(value?: string | null) {
+  const description = String(value || '').trim();
+  if (description.length <= 180) return description;
+  return `${description.slice(0, 177).trimEnd()}…`;
+}
+
 function badgeVariant(status?: string) {
   if (status === 'active' || status === 'paid') return 'default';
   if (status === 'archived' || status === 'expired') return 'destructive';
@@ -157,8 +163,24 @@ function badgeVariant(status?: string) {
 export default function Members() {
   const { locale } = useLocalization();
   const multiUserCopy = locale === 'ar'
-    ? { create: 'اشتراك جديد متعدد المستخدمين', manage: 'إدارة المستفيدين' }
-    : { create: 'New multi-user subscription', manage: 'Manage beneficiaries' };
+    ? {
+        create: 'اشتراك جديد متعدد المستخدمين',
+        manage: 'إدارة المستفيدين',
+        paid: 'مدفوع',
+        pending: 'الدفع معلّق',
+        otherMembers: 'الأعضاء الآخرون',
+        capacity: 'السعة',
+        available: 'المتاح',
+      }
+    : {
+        create: 'New multi-user subscription',
+        manage: 'Manage beneficiaries',
+        paid: 'Paid',
+        pending: 'Payment pending',
+        otherMembers: 'Other members',
+        capacity: 'Capacity',
+        available: 'Available',
+      };
   const [members, setMembers] = useState<MembershipMember[]>([]);
   const [plans, setPlans] = useState<MembershipPlan[]>([]);
   const [search, setSearch] = usePersistentState('powergym.members.search', '');
@@ -170,6 +192,7 @@ export default function Members() {
   const [error, setError] = useState<string | null>(null);
   const [formOpen, setFormOpen] = useState(false);
   const [memberForm, setMemberForm] = useState<MemberForm>(emptyMemberForm);
+  const [editMember, setEditMember] = useState<MembershipMember | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [detail, setDetail] = useState<MemberDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -188,6 +211,9 @@ export default function Members() {
   const [qrExpiryDate, setQrExpiryDate] = useState('');
   const [qrPlanName, setQrPlanName] = useState('');
   const [archiveTarget, setArchiveTarget] = useState<MembershipMember | null>(null);
+  const [expandedPlanMemberId, setExpandedPlanMemberId] = useState<string | null>(null);
+  const [expandedGroupMemberId, setExpandedGroupMemberId] = useState<string | null>(null);
+  const [paymentUpdatingId, setPaymentUpdatingId] = useState<string | null>(null);
   const qrCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const newMultiUserUrl = (memberId?: string) =>
@@ -256,12 +282,40 @@ export default function Members() {
     loadMembers();
   };
 
+  const changePaymentStatus = async (
+    member: MembershipMember,
+    paymentStatus: 'paid' | 'pending',
+  ) => {
+    if (!member.multiUserSubscriptionId) return;
+    setPaymentUpdatingId(member.id);
+    try {
+      const result = await subscriptionsV2Api.updatePaymentStatus(
+        member.multiUserSubscriptionId,
+        paymentStatus,
+      );
+      toast.success(
+        `${paymentStatus === 'paid' ? multiUserCopy.paid : multiUserCopy.pending} · Accounting: ${result.accountingStatus}`,
+      );
+      await loadMembers();
+      if (detail?.member.id === member.id) {
+        const response = await membershipApi.getMember(member.id);
+        setDetail(response);
+      }
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to update payment status');
+    } finally {
+      setPaymentUpdatingId(null);
+    }
+  };
+
   const openCreate = () => {
+    setEditMember(null);
     setMemberForm(emptyMemberForm);
     setFormOpen(true);
   };
 
   const openEdit = (member: MembershipMember) => {
+    setEditMember(member);
     setMemberForm(toMemberForm(member));
     setFormOpen(true);
   };
@@ -700,16 +754,94 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                 </TableRow>
               ) : (
                 members.map((member) => (
-                  <TableRow key={member.id}>
+                  <TableRow key={member.id} className={member.paymentAttentionRequired ? 'bg-red-50 hover:bg-red-100' : undefined}>
                     <TableCell>
-                      <div className="font-medium text-slate-900">{member.firstName} {member.lastName}</div>
+                      {member.subscriptionType === 'multi_user' ? (
+                        <button
+                          type="button"
+                          className="font-medium text-slate-900 underline decoration-dotted underline-offset-4 hover:text-indigo-700"
+                          onClick={() => setExpandedGroupMemberId((current) => current === member.id ? null : member.id)}
+                        >
+                          {member.firstName} {member.lastName}
+                        </button>
+                      ) : (
+                        <div className="font-medium text-slate-900">{member.firstName} {member.lastName}</div>
+                      )}
                       <div className="text-xs text-slate-500">{member.id}</div>
+                      {expandedGroupMemberId === member.id && member.subscriptionType === 'multi_user' && (
+                        <div className="mt-2 max-w-xs rounded-xl border border-indigo-200 bg-indigo-50 p-2.5 text-xs text-indigo-950 shadow-sm">
+                          <p className="font-semibold">{multiUserCopy.otherMembers}</p>
+                          <div className="mt-1 flex flex-wrap gap-1">
+                            {(member.multiUserMembers || [])
+                              .filter((groupMember) => groupMember.memberId !== member.id)
+                              .map((groupMember) => (
+                                <span key={groupMember.memberId} className="rounded-full bg-white px-2 py-1 ring-1 ring-indigo-200">
+                                  {groupMember.name} · {groupMember.role}
+                                </span>
+                              ))}
+                            {(member.multiUserMembers || []).filter((groupMember) => groupMember.memberId !== member.id).length === 0 && (
+                              <span className="text-indigo-700">—</span>
+                            )}
+                          </div>
+                          {member.multiUserCapacity && (
+                            <p className="mt-2 font-medium">
+                              {multiUserCopy.capacity}: {member.multiUserCapacity.occupied}/{member.multiUserCapacity.maximum}
+                              {' · '}
+                              {multiUserCopy.available}: {member.multiUserCapacity.available}
+                            </p>
+                          )}
+                        </div>
+                      )}
                     </TableCell>
                     <TableCell>
                       <div>{member.email}</div>
                       <div className="text-xs text-slate-500">{member.phone || 'No phone'}</div>
                     </TableCell>
-                    <TableCell>{member.currentPlan || '—'}</TableCell>
+                    <TableCell>
+                      {member.currentPlan ? (
+                        <button
+                          type="button"
+                          className="text-left font-medium text-slate-900 underline decoration-dotted underline-offset-4 hover:text-indigo-700"
+                          onClick={() => setExpandedPlanMemberId((current) => current === member.id ? null : member.id)}
+                        >
+                          {member.currentPlan}
+                        </button>
+                      ) : (
+                        <div>—</div>
+                      )}
+                      {expandedPlanMemberId === member.id && (
+                        <div className="mt-2 max-w-sm rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-xs leading-relaxed text-sky-950 shadow-sm">
+                          {reducedDescription(member.planDescription) || 'No plan description available.'}
+                        </div>
+                      )}
+                      {member.subscriptionType === 'multi_user' ? (
+                        <Badge variant="outline" className="mt-1">
+                          Multi-user · {member.multiUserRole === 'holder' ? 'Holder' : 'Beneficiary'}
+                          {member.multiUserPlanType ? ` · ${member.multiUserPlanType}` : ''}
+                        </Badge>
+                      ) : member.subscriptionType === 'individual' || member.currentPlan ? (
+                        <Badge variant="secondary" className="mt-1">Individual</Badge>
+                      ) : (
+                        <Badge variant="outline" className="mt-1">No subscription</Badge>
+                      )}
+                      {member.paymentAttentionRequired && (
+                        <Badge variant="destructive" className="ms-1 mt-1">
+                          Payment {member.paymentStatus || 'pending'}
+                        </Badge>
+                      )}
+                      {member.multiUserSubscriptionId && (
+                        <select
+                          aria-label="Payment status"
+                          className="mt-2 block h-8 rounded-lg border border-slate-300 bg-white px-2 text-xs"
+                          value={member.paymentStatus === 'paid' ? 'paid' : 'pending'}
+                          disabled={paymentUpdatingId === member.id}
+                          onChange={(event) => void changePaymentStatus(member, event.target.value as 'paid' | 'pending')}
+                        >
+                          <option value="paid">{multiUserCopy.paid}</option>
+                          <option value="pending">{multiUserCopy.pending}</option>
+                        </select>
+                      )}
+                    </TableCell>
                     <TableCell>{formatDate(member.currentExpiry)}</TableCell>
                     <TableCell>{formatDate(member.joinDate)}</TableCell>
                     <TableCell>{formatDate(member.lastAccess)}</TableCell>
@@ -720,7 +852,19 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                         <Button variant="outline" size="sm" onClick={() => openRenew(member)}><CreditCard className="mr-1 h-3.5 w-3.5" /> Renew</Button>
                         <Button variant="outline" size="sm" onClick={() => openQr(member)}><QrCode className="mr-1 h-3.5 w-3.5" /> QR</Button>
                         <Button variant="outline" size="sm" onClick={() => openEdit(member)}><Pencil className="mr-1 h-3.5 w-3.5" /> Edit</Button>
-                        <Button variant="destructive" size="sm" onClick={() => setArchiveTarget(member)}><Archive className="mr-1 h-3.5 w-3.5" /> Archive</Button>
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          onClick={() => setArchiveTarget(member)}
+                          disabled={member.holderActionLocked}
+                          title={
+                            member.holderActionLocked
+                              ? 'Transfer the holder role before archiving this member'
+                              : undefined
+                          }
+                        >
+                          <Archive className="mr-1 h-3.5 w-3.5" /> Archive
+                        </Button>
                       </div>
                     </TableCell>
                   </TableRow>
@@ -782,9 +926,24 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                     onChange={(event) => updateMemberForm('status', event.target.value)}
                   >
                     {MEMBER_STATUSES.map((status) => (
-                      <option key={status.value} value={status.value}>{status.label}</option>
+                      <option
+                        key={status.value}
+                        value={status.value}
+                        disabled={
+                          Boolean(editMember?.holderActionLocked) &&
+                          status.value !== 'active'
+                        }
+                      >
+                        {status.label}
+                      </option>
                     ))}
                   </select>
+                  {editMember?.holderActionLocked && (
+                    <p className="text-xs text-amber-700">
+                      Transfer the holder role to an active beneficiary before
+                      suspending, cancelling or archiving this member.
+                    </p>
+                  )}
                 </div>
               )}
             </div>
@@ -942,6 +1101,15 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                     <div><span className="text-slate-500">Joined:</span> {formatDate(detail.member.joinDate)}</div>
                     <div><span className="text-slate-500">Current Plan:</span> {detail.member.currentPlan || '—'}</div>
                     <div><span className="text-slate-500">Expiry:</span> {formatDate(detail.member.currentExpiry)}</div>
+                    <div><span className="text-slate-500">Payment:</span> <Badge variant={detail.member.paymentAttentionRequired ? 'destructive' : 'outline'}>{detail.member.paymentStatus || '—'}</Badge></div>
+                    <div>
+                      <span className="text-slate-500">Subscription type:</span>{' '}
+                      {detail.member.subscriptionType === 'multi_user'
+                        ? `Multi-user · ${detail.member.multiUserRole === 'holder' ? 'Holder' : 'Beneficiary'}${detail.member.multiUserPlanType ? ` · ${detail.member.multiUserPlanType}` : ''}`
+                        : detail.member.subscriptionType === 'individual'
+                          ? 'Individual'
+                          : 'No subscription'}
+                    </div>
                     <div><span className="text-slate-500">Last Access:</span> {formatDate(detail.member.lastAccess)}</div>
                     <div><span className="text-slate-500">Member ID:</span> {detail.member.id}</div>
                     <div className="flex flex-wrap gap-2 md:col-span-2">
