@@ -198,7 +198,7 @@ export const subscriptionsV2Api = {
     apiRequest<{ subscription: SubscriptionV2; affiliationId: string }>('/api/v2/subscriptions', { method: 'POST', body: JSON.stringify(payload) }),
 
   updatePaymentStatus: (id: string, paymentStatus: string) =>
-    apiRequest<{ ok: boolean; previousPaymentStatus: string; paymentStatus: string }>(
+    apiRequest<{ ok: boolean; previousPaymentStatus: string; paymentStatus: string; accountingStatus: string }>(
       `/api/v2/subscriptions/${encodeURIComponent(id)}/payment-status`,
       { method: 'PATCH', body: JSON.stringify({ paymentStatus }) },
     ),
