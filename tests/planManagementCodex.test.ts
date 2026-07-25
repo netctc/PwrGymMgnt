@@ -137,3 +137,36 @@ test("hybrid subscription flow is atomic and supports deferred member assignment
   assert.match(members, /New multi-user subscription/);
   assert.match(members, /Manage beneficiaries/);
 });
+
+test("limited multi-user plans expose distribution, cycles, immutable movements and payment controls", () => {
+  const management = read("server/planManagement.ts");
+  const cycles = read("server/subscriptionCycles.ts");
+  const subscriptions = read("server/subscriptionsV2.ts");
+  const lifecycle = read("server/subscriptionLifecycle.ts");
+  const payments = read("server/subscriptionPaymentRules.ts");
+  const scheduling = read("server/scheduling.ts");
+  const plansPage = read("src/pages/MembershipPlansCodex.tsx");
+  const subscriptionsPage = read("src/pages/Subscriptions.tsx");
+  const migration = read("sql/024_session_distribution_payment_lists.sql");
+
+  assert.match(management, /holderSessionsPerCycle/);
+  assert.match(management, /beneficiarySessionsPerCycle/);
+  assert.match(management, /carryoverExpiryDays/);
+  assert.match(management, /deductionMoment/);
+  assert.match(cycles, /distributionModel === "shared"/);
+  assert.match(cycles, /distributionModel === "individual"/);
+  assert.match(cycles, /distributionModel === "custom"/);
+  assert.match(cycles, /allocateAffiliationInActiveCycle/);
+  assert.match(subscriptions, /session-summary/);
+  assert.match(subscriptions, /sessions\/purchase/);
+  assert.match(subscriptions, /payment-status/);
+  assert.match(payments, /OUTSTANDING_SUBSCRIPTION_PAYMENT/);
+  assert.match(lifecycle, /current subscription payment must be settled/i);
+  assert.match(scheduling, /late_cancellation_penalty/);
+  assert.match(scheduling, /deductionDeferredUntil/);
+  assert.match(plansPage, /lateCancellationThreshold/);
+  assert.match(plansPage, /allowExtraSessions/);
+  assert.match(subscriptionsPage, /Real-time session summary/);
+  assert.match(migration, /mli_cycle_quarterly/);
+  assert.match(migration, /mli_payment_overdue/);
+});
