@@ -29,6 +29,12 @@ test("multi-user member contract covers capacity, new members, history and futur
       'app.post("/api/v2/subscriptions/:id/members"',
     ),
   );
+  const subscriptionCreationRoute = subscriptions.slice(
+    subscriptions.indexOf('app.post("/api/v2/subscriptions"'),
+    subscriptions.indexOf(
+      'app.patch("/api/v2/subscriptions/:id/payment-status"',
+    ),
+  );
   assert.match(source, /CAPACITY_LIMIT_REACHED/);
   assert.match(source, /newMember/);
   assert.match(source, /email address or phone number is required for a new member/);
@@ -49,6 +55,11 @@ test("multi-user member contract covers capacity, new members, history and futur
     subscriptionMembersListRoute,
     /requireFeature/,
     "existing beneficiaries must remain readable when rollout flags are off",
+  );
+  assert.doesNotMatch(
+    subscriptionCreationRoute,
+    /requireFeature/,
+    "standard subscription creation must remain operational when rollout flags are off",
   );
   assert.match(lifecycle, /currentEnd >= today/);
   assert.match(lifecycle, /SET a\.end_date = \?/);
