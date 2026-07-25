@@ -54,6 +54,7 @@ export type MembershipSubscription = {
   endDate: string;
   price: number;
   currency: string;
+  data?: Record<string, any> | null;
 };
 
 export type MembershipInvoice = {
@@ -70,6 +71,7 @@ export type MembershipInvoice = {
   paidAt?: string | null;
   createdAt?: string | null;
   updatedAt?: string | null;
+  data?: Record<string, any> | null;
 };
 
 type ApiOptions = Omit<RequestInit, 'body'> & { body?: BodyInit | Record<string, unknown> | null };
