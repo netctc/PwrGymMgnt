@@ -159,6 +159,8 @@ test("limited multi-user plans expose distribution, cycles, immutable movements 
   assert.match(cycles, /allocateAffiliationInActiveCycle/);
   assert.match(subscriptions, /session-summary/);
   assert.match(subscriptions, /sessions\/purchase/);
+  assert.match(subscriptions, /sessions\/register-event/);
+  assert.match(subscriptions, /DEDUCTION_DEFERRED/);
   assert.match(subscriptions, /payment-status/);
   assert.match(payments, /OUTSTANDING_SUBSCRIPTION_PAYMENT/);
   assert.match(lifecycle, /current subscription payment must be settled/i);
