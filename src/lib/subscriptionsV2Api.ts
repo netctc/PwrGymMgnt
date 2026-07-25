@@ -48,6 +48,7 @@ export type SubscriptionV2 = {
   pricePaid: number;
   currency: string;
   paymentStatus: string;
+  expectedPaymentDate?: string | null;
   maxMembers: number;
   sessionsUnlimited: boolean;
   sessionsPerCycle: number | null;
@@ -197,10 +198,14 @@ export const subscriptionsV2Api = {
   createSubscription: (payload: { planVersionId: string; holderMemberId: string; startDate?: string; endDate?: string; paymentStatus?: string }) =>
     apiRequest<{ subscription: SubscriptionV2; affiliationId: string }>('/api/v2/subscriptions', { method: 'POST', body: JSON.stringify(payload) }),
 
-  updatePaymentStatus: (id: string, paymentStatus: string) =>
-    apiRequest<{ ok: boolean; previousPaymentStatus: string; paymentStatus: string; accountingStatus: string; invoiceNumber: string | null; paymentStatusLocked: boolean }>(
+  updatePaymentStatus: (
+    id: string,
+    paymentStatus: string,
+    paymentDate?: string,
+  ) =>
+    apiRequest<{ ok: boolean; previousPaymentStatus: string; paymentStatus: string; paymentDate: string; accountingStatus: string; invoiceNumber: string | null; paymentStatusLocked: boolean }>(
       `/api/v2/subscriptions/${encodeURIComponent(id)}/payment-status`,
-      { method: 'PATCH', body: JSON.stringify({ paymentStatus }) },
+      { method: 'PATCH', body: JSON.stringify({ paymentStatus, paymentDate }) },
     ),
 
   getSessionSummary: (id: string) =>
