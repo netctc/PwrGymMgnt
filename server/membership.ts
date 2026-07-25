@@ -119,6 +119,14 @@ function mapMember(row: any) {
     currentPlan: row.plan ?? data.currentPlan ?? data.subPlan ?? null,
     planDescription: data.planDescription ?? null,
     currentExpiry: dateOnly(row.current_expiry ?? data.currentExpiry ?? data.expiryDate),
+    legacySubscriptionId: row.legacy_subscription_id ?? null,
+    paymentInvoiceId: row.payment_invoice_id ?? null,
+    paymentDueDate: dateOnly(row.payment_due_date),
+    paymentStatus: row.legacy_subscription_id
+      ? String(row.payment_invoice_status || "").toLowerCase() === "paid"
+        ? "paid"
+        : "pending"
+      : null,
     lastAccess: row.last_access_at ?? data.lastAccess ?? data.last_access_at ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -218,8 +226,8 @@ function enrichMemberWithSubscription(member: any, multiMembership?: any) {
       planDescription: member.planDescription || null,
       multiUserMembers: [],
       multiUserCapacity: null,
-      paymentStatus: null,
-      paymentAttentionRequired: false,
+      paymentStatus: member.paymentStatus || null,
+      paymentAttentionRequired: member.paymentStatus === "pending",
     };
   }
   const multiSubscriptionEndDate = dateOnly(
@@ -268,8 +276,8 @@ function enrichMemberWithSubscription(member: any, multiMembership?: any) {
       planDescription: member.planDescription || null,
       multiUserMembers: [],
       multiUserCapacity: null,
-      paymentStatus: null,
-      paymentAttentionRequired: false,
+      paymentStatus: member.paymentStatus || null,
+      paymentAttentionRequired: member.paymentStatus === "pending",
     };
   }
   return {
@@ -905,19 +913,21 @@ function buildReceiptPdf(invoice: any, member: any, subscription: any) {
   return Buffer.from(doc.output("arraybuffer"));
 }
 
-async function insertMembershipRenewalFinanceTransaction(connection: any, payload: { invoiceId: string; invoiceNumber: string; memberId: string; subscriptionId: string; memberName: string; planName: string; total: number; currency: string; date: string; userEmail?: string }) {
+async function insertMembershipRenewalFinanceTransaction(connection: any, payload: { invoiceId: string; invoiceNumber: string; memberId: string; subscriptionId: string; memberName: string; planName: string; total: number; currency: string; date: string; status?: "posted" | "pending"; userEmail?: string }) {
   const amount = Number(payload.total || 0);
   if (amount <= 0) return;
+  const accountingStatus = payload.status || "posted";
   const transactionId = createId("ftx");
   await connection.query(
     `INSERT INTO finance_transactions
       (id, type, category, amount, transaction_date, source, reference_type, reference_id, description, status, attachment_url, created_by, approved_by, data)
-     VALUES (?, 'income', 'Membership Renewal', ?, ?, 'membership', 'membership_invoice', ?, ?, 'posted', NULL, ?, ?, ?)
+     VALUES (?, 'income', 'Membership Renewal', ?, ?, 'membership', 'membership_invoice', ?, ?, ?, NULL, ?, ?, ?)
      ON DUPLICATE KEY UPDATE
        amount = VALUES(amount),
        transaction_date = VALUES(transaction_date),
        description = VALUES(description),
        status = VALUES(status),
+       approved_by = VALUES(approved_by),
        updated_at = CURRENT_TIMESTAMP`,
     [
       transactionId,
@@ -925,8 +935,9 @@ async function insertMembershipRenewalFinanceTransaction(connection: any, payloa
       payload.date,
       payload.invoiceId,
       `Membership renewal ${payload.invoiceNumber} - ${payload.memberName} - ${payload.planName}`,
+      accountingStatus,
       payload.userEmail || "system",
-      payload.userEmail || "system",
+      accountingStatus === "posted" ? payload.userEmail || "system" : null,
       toMysqlJson({ source: "membership_renewal", memberId: payload.memberId, subscriptionId: payload.subscriptionId, invoiceId: payload.invoiceId, invoiceNumber: payload.invoiceNumber, currency: payload.currency }),
     ],
   );
@@ -1051,7 +1062,11 @@ export function registerMembershipRoutes(app: Express, poolProvider: PoolProvide
 
       const where = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
       const [rows]: any = await pool.query(
-        `SELECT m.*, current_subscription.current_expiry
+        `SELECT m.*, current_subscription.current_expiry,
+                legacy_subscription.id AS legacy_subscription_id,
+                legacy_invoice.id AS payment_invoice_id,
+                legacy_invoice.status AS payment_invoice_status,
+                legacy_invoice.due_date AS payment_due_date
            FROM members m
            LEFT JOIN (
              SELECT member_id, MAX(end_date) AS current_expiry
@@ -1059,6 +1074,25 @@ export function registerMembershipRoutes(app: Express, poolProvider: PoolProvide
               WHERE LOWER(TRIM(status)) = 'active'
               GROUP BY member_id
            ) current_subscription ON current_subscription.member_id = m.id
+           LEFT JOIN member_subscriptions legacy_subscription
+             ON legacy_subscription.id = (
+               SELECT ms_latest.id
+                 FROM member_subscriptions ms_latest
+                WHERE ms_latest.member_id = m.id
+                ORDER BY
+                  (LOWER(TRIM(ms_latest.status)) = 'active') DESC,
+                  ms_latest.end_date DESC,
+                  ms_latest.created_at DESC
+                LIMIT 1
+             )
+           LEFT JOIN invoices legacy_invoice
+             ON legacy_invoice.id = (
+               SELECT i_latest.id
+                 FROM invoices i_latest
+                WHERE i_latest.subscription_id = legacy_subscription.id
+                ORDER BY i_latest.created_at DESC
+                LIMIT 1
+             )
           ${where}
           ORDER BY m.created_at DESC
           LIMIT 500`,
@@ -1113,7 +1147,11 @@ export function registerMembershipRoutes(app: Express, poolProvider: PoolProvide
   app.get("/api/membership/members/:id", async (req, res, next) => {
     try {
       const pool = await getReadyPool();
-      const [rows]: any = await pool.query(`SELECT m.*, current_subscription.current_expiry
+      const [rows]: any = await pool.query(`SELECT m.*, current_subscription.current_expiry,
+                  legacy_subscription.id AS legacy_subscription_id,
+                  legacy_invoice.id AS payment_invoice_id,
+                  legacy_invoice.status AS payment_invoice_status,
+                  legacy_invoice.due_date AS payment_due_date
            FROM members m
            LEFT JOIN (
              SELECT member_id, MAX(end_date) AS current_expiry
@@ -1121,6 +1159,25 @@ export function registerMembershipRoutes(app: Express, poolProvider: PoolProvide
               WHERE LOWER(TRIM(status)) = 'active'
               GROUP BY member_id
            ) current_subscription ON current_subscription.member_id = m.id
+           LEFT JOIN member_subscriptions legacy_subscription
+             ON legacy_subscription.id = (
+               SELECT ms_latest.id
+                 FROM member_subscriptions ms_latest
+                WHERE ms_latest.member_id = m.id
+                ORDER BY
+                  (LOWER(TRIM(ms_latest.status)) = 'active') DESC,
+                  ms_latest.end_date DESC,
+                  ms_latest.created_at DESC
+                LIMIT 1
+             )
+           LEFT JOIN invoices legacy_invoice
+             ON legacy_invoice.id = (
+               SELECT i_latest.id
+                 FROM invoices i_latest
+                WHERE i_latest.subscription_id = legacy_subscription.id
+                ORDER BY i_latest.created_at DESC
+                LIMIT 1
+             )
           WHERE m.id = ?`, [req.params.id]);
       if (rows.length === 0) return res.status(404).json({ error: "Member not found" });
 
@@ -1208,6 +1265,24 @@ export function registerMembershipRoutes(app: Express, poolProvider: PoolProvide
         await connection.rollback();
         return res.status(404).json({ error: "Member not found" });
       }
+      const [outstandingInvoices]: any = await connection.query(
+        `SELECT i.id, i.invoice_number, i.status
+           FROM invoices i
+           JOIN member_subscriptions ms ON ms.id = i.subscription_id
+          WHERE ms.member_id = ?
+            AND LOWER(TRIM(i.status)) NOT IN ('paid', 'cancelled', 'void')
+          ORDER BY i.created_at DESC
+          LIMIT 1`,
+        [req.params.id],
+      );
+      if (outstandingInvoices.length) {
+        await connection.rollback();
+        return res.status(409).json({
+          error: `Outstanding payment for invoice ${outstandingInvoices[0].invoice_number} must be settled before renewal`,
+          code: "OUTSTANDING_SUBSCRIPTION_PAYMENT",
+          invoiceId: outstandingInvoices[0].id,
+        });
+      }
 
       const planId = normalizeString(req.body.planId);
       const [plans]: any = planId
@@ -1230,10 +1305,38 @@ export function registerMembershipRoutes(app: Express, poolProvider: PoolProvide
       const price = numberOrDefault(req.body.price, plan?.price || 0);
       const currency = normalizeString(req.body.currency) || plan?.currency || "USD";
       const subscriptionId = createId("sub");
+      const paymentStatus = normalizeString(req.body.paymentStatus).toLowerCase();
+      if (!["paid", "pending"].includes(paymentStatus)) {
+        await connection.rollback();
+        return res.status(400).json({
+          error: "paymentStatus is required and must be paid or pending",
+        });
+      }
+      const requestedPaymentDate = normalizeDate(req.body.paymentDate);
+      const paymentDate =
+        paymentStatus === "paid" ? todayDate() : requestedPaymentDate;
+      if (!paymentDate) {
+        await connection.rollback();
+        return res.status(400).json({
+          error: "An estimated payment date is required for pending payments",
+        });
+      }
 
       if (new Date(endDate) < new Date(startDate)) {
         await connection.rollback();
         return res.status(400).json({ error: "endDate must be after startDate" });
+      }
+      if (paymentStatus === "pending" && paymentDate > endDate) {
+        await connection.rollback();
+        return res.status(400).json({
+          error: "The estimated payment date cannot be after the subscription end date",
+        });
+      }
+      if (paymentStatus === "pending" && paymentDate < todayDate()) {
+        await connection.rollback();
+        return res.status(400).json({
+          error: "The estimated payment date cannot be in the past",
+        });
       }
 
       await connection.query(
@@ -1259,20 +1362,27 @@ export function registerMembershipRoutes(app: Express, poolProvider: PoolProvide
         const total = price + taxAmount;
         await connection.query(
           `INSERT INTO invoices
-           (id, invoice_number, member_id, subscription_id, status, subtotal, tax_amount, total, currency, due_date, data)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (id, invoice_number, member_id, subscription_id, status, subtotal, tax_amount, total, currency, due_date, paid_at, data)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             invoiceId,
             invoiceNumber,
             req.params.id,
             subscriptionId,
-            normalizeString(req.body.invoiceStatus) || "issued",
+            paymentStatus === "paid" ? "paid" : "issued",
             price,
             taxAmount,
             total,
             currency,
-            normalizeDate(req.body.dueDate) || startDate,
-            toMysqlJson({ source: "subscription", ...(req.body.invoiceData || {}) }),
+            paymentDate,
+            paymentStatus === "paid" ? new Date() : null,
+            toMysqlJson({
+              source: "subscription",
+              paymentStatus,
+              expectedPaymentDate:
+                paymentStatus === "pending" ? paymentDate : null,
+              ...(req.body.invoiceData || {}),
+            }),
           ],
         );
         await insertMembershipRenewalFinanceTransaction(connection, {
@@ -1284,7 +1394,8 @@ export function registerMembershipRoutes(app: Express, poolProvider: PoolProvide
           planName,
           total,
           currency,
-          date: normalizeDate(req.body.paymentDate) || startDate,
+          date: paymentDate,
+          status: paymentStatus === "paid" ? "posted" : "pending",
           userEmail: (req as AuthenticatedRequest).user?.email,
         });
         const [invoiceRows]: any = await connection.query("SELECT * FROM invoices WHERE id = ?", [invoiceId]);
@@ -1312,6 +1423,146 @@ export function registerMembershipRoutes(app: Express, poolProvider: PoolProvide
       res.json({ subscriptions: rows.map(mapSubscription) });
     } catch (error) {
       next(error);
+    }
+  });
+
+  app.patch("/api/membership/subscriptions/:id/payment-status", requirePermission("membership.write"), async (req: AuthenticatedRequest, res, next) => {
+    const pool = await getReadyPool();
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      const paymentStatus = normalizeString(req.body.paymentStatus).toLowerCase();
+      if (!["paid", "pending"].includes(paymentStatus)) {
+        await connection.rollback();
+        return res.status(400).json({
+          error: "paymentStatus must be paid or pending",
+        });
+      }
+
+      const [subscriptionRows]: any = await connection.query(
+        `SELECT ms.*, m.first_name, m.last_name
+           FROM member_subscriptions ms
+           JOIN members m ON m.id = ms.member_id
+          WHERE ms.id = ?
+          LIMIT 1
+          FOR UPDATE`,
+        [req.params.id],
+      );
+      if (!subscriptionRows.length) {
+        await connection.rollback();
+        return res.status(404).json({ error: "Subscription not found" });
+      }
+      const subscription = subscriptionRows[0];
+      const [invoiceRows]: any = await connection.query(
+        "SELECT * FROM invoices WHERE subscription_id = ? ORDER BY created_at DESC LIMIT 1 FOR UPDATE",
+        [req.params.id],
+      );
+      if (
+        String(invoiceRows[0]?.status || "").toLowerCase() === "paid" &&
+        paymentStatus !== "paid"
+      ) {
+        await connection.rollback();
+        return res.status(409).json({
+          error: "A paid subscription payment status is locked",
+          code: "PAID_SUBSCRIPTION_LOCKED",
+        });
+      }
+
+      const endDate = dateOnly(subscription.end_date) || todayDate();
+      const requestedDate = normalizeDate(req.body.paymentDate);
+      const paymentDate =
+        paymentStatus === "paid"
+          ? todayDate()
+          : requestedDate || dateOnly(invoiceRows[0]?.due_date) || todayDate();
+      if (paymentStatus === "pending" && paymentDate > endDate) {
+        await connection.rollback();
+        return res.status(400).json({
+          error: "The estimated payment date cannot be after the subscription end date",
+        });
+      }
+
+      let invoiceId = invoiceRows[0]?.id;
+      if (!invoiceId) {
+        invoiceId = createId("inv");
+        await connection.query(
+          `INSERT INTO invoices
+            (id, invoice_number, member_id, subscription_id, status,
+             subtotal, tax_amount, total, currency, due_date, paid_at, data)
+           VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`,
+          [
+            invoiceId,
+            makeInvoiceNumber(),
+            subscription.member_id,
+            subscription.id,
+            paymentStatus === "paid" ? "paid" : "issued",
+            Number(subscription.price || 0),
+            Number(subscription.price || 0),
+            subscription.currency || "USD",
+            paymentDate,
+            paymentStatus === "paid" ? new Date() : null,
+            toMysqlJson({
+              source: "subscription",
+              paymentStatus,
+              expectedPaymentDate:
+                paymentStatus === "pending" ? paymentDate : null,
+            }),
+          ],
+        );
+      } else {
+        await connection.query(
+          `UPDATE invoices
+              SET status = ?,
+                  due_date = ?,
+                  paid_at = CASE WHEN ? = 'paid' THEN COALESCE(paid_at, NOW()) ELSE NULL END,
+                  data = JSON_SET(
+                    COALESCE(data, JSON_OBJECT()),
+                    '$.paymentStatus', ?,
+                    '$.expectedPaymentDate', ?
+                  ),
+                  updated_at = NOW()
+            WHERE id = ?`,
+          [
+            paymentStatus === "paid" ? "paid" : "issued",
+            paymentDate,
+            paymentStatus,
+            paymentStatus,
+            paymentStatus === "pending" ? paymentDate : null,
+            invoiceId,
+          ],
+        );
+      }
+
+      const [updatedInvoiceRows]: any = await connection.query(
+        "SELECT * FROM invoices WHERE id = ?",
+        [invoiceId],
+      );
+      const invoice = updatedInvoiceRows[0];
+      await insertMembershipRenewalFinanceTransaction(connection, {
+        invoiceId,
+        invoiceNumber: invoice.invoice_number,
+        memberId: subscription.member_id,
+        subscriptionId: subscription.id,
+        memberName:
+          `${subscription.first_name || ""} ${subscription.last_name || ""}`.trim() ||
+          subscription.member_id,
+        planName: subscription.plan_name || "Membership payment",
+        total: Number(invoice.total || 0),
+        currency: invoice.currency || "USD",
+        date: paymentDate,
+        status: paymentStatus === "paid" ? "posted" : "pending",
+        userEmail: req.user?.email,
+      });
+      await connection.commit();
+      res.json({
+        paymentStatus,
+        paymentStatusLocked: paymentStatus === "paid",
+        invoice: mapInvoice(invoice),
+      });
+    } catch (error) {
+      await connection.rollback();
+      next(error);
+    } finally {
+      connection.release();
     }
   });
 
