@@ -1,7 +1,7 @@
 import type { Express, NextFunction, Request, Response } from "express";
 import type { Pool } from "mysql2/promise";
 import { jsPDF } from "jspdf";
-import autoTable from "jspdf-autotable";
+import { autoTable } from "jspdf-autotable";
 
 type PoolProvider = () => Pool | null;
 
