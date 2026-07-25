@@ -181,7 +181,32 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
 
       const startDate = normalizeDate(req.body.startDate) || new Date().toISOString().slice(0, 10);
       const endDate = normalizeDate(req.body.endDate) || addDays(startDate, Number(pv.duration_days));
-      const paymentStatus = normalizePaymentStatus(req.body.paymentStatus, "pending");
+      const rawPaymentStatus = normalizeString(req.body.paymentStatus);
+      if (!["paid", "pending"].includes(rawPaymentStatus)) {
+        return res.status(400).json({ error: "paymentStatus must be paid or pending" });
+      }
+      if (endDate < startDate) {
+        return res.status(400).json({ error: "endDate cannot be before startDate" });
+      }
+      const paymentStatus = normalizePaymentStatus(rawPaymentStatus);
+      const today = new Date().toISOString().slice(0, 10);
+      const paymentDate =
+        paymentStatus === "paid" ? today : normalizeDate(req.body.paymentDate);
+      if (!paymentDate) {
+        return res.status(400).json({
+          error: "An estimated payment date is required for pending payments",
+        });
+      }
+      if (paymentStatus === "pending" && paymentDate < today) {
+        return res.status(400).json({
+          error: "The estimated payment date cannot be in the past",
+        });
+      }
+      if (paymentStatus === "pending" && paymentDate > endDate) {
+        return res.status(400).json({
+          error: "The estimated payment date cannot be after the subscription end date",
+        });
+      }
 
       const id = createId("sub");
       connection = await pool.getConnection();
@@ -201,10 +226,21 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
 
       // Create affiliation for holder
       const affId = createId("aff");
+      const [existingAffiliations]: any = await connection.query(
+        `SELECT id
+           FROM affiliations
+          WHERE member_id = ?
+            AND status = 'active'
+            AND end_date >= CURDATE()
+          LIMIT 1
+          FOR UPDATE`,
+        [holderMemberId],
+      );
+      const isPrimary = existingAffiliations.length === 0 ? 1 : 0;
       await connection.query(
         `INSERT INTO affiliations (id, member_id, subscription_id, subscription_member_id, plan_version_id, status, role, is_primary, start_date, end_date, consumption_priority)
-         VALUES (?, ?, ?, ?, ?, 'active', 'holder', 1, ?, ?, ?)`,
-        [affId, holderMemberId, id, smId, planVersionId, startDate, endDate, Number(pv.consumption_priority)],
+         VALUES (?, ?, ?, ?, ?, 'active', 'holder', ?, ?, ?, ?)`,
+        [affId, holderMemberId, id, smId, planVersionId, isPrimary, startDate, endDate, Number(pv.consumption_priority)],
       );
 
       await createInitialCycle(
@@ -226,9 +262,87 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
           },
         },
       );
+      const invoiceId = createId("inv");
+      const invoiceNumber = createInvoiceNumber();
+      await connection.query(
+        `INSERT INTO invoices
+          (id, invoice_number, member_id, subscription_id, status,
+           subtotal, tax_amount, total, currency, due_date, paid_at, data)
+         VALUES (?, ?, ?, NULL, ?, ?, 0, ?, ?, ?, ?, ?)`,
+        [
+          invoiceId,
+          invoiceNumber,
+          holderMemberId,
+          paymentStatus === "paid" ? "paid" : "issued",
+          Number(pv.price || 0),
+          Number(pv.price || 0),
+          pv.currency || "USD",
+          paymentDate,
+          paymentStatus === "paid" ? new Date() : null,
+          JSON.stringify({
+            source: "subscription_v2",
+            subscriptionV2Id: id,
+            paymentStatus,
+            expectedPaymentDate:
+              paymentStatus === "pending" ? paymentDate : null,
+          }),
+        ],
+      );
+      await connection.query(
+        `UPDATE subscriptions
+            SET data = JSON_SET(
+              COALESCE(data, JSON_OBJECT()),
+              '$.expectedPaymentDate', ?
+            )
+          WHERE id = ?`,
+        [paymentStatus === "pending" ? paymentDate : null, id],
+      );
+      await connection.query(
+        `INSERT INTO finance_transactions
+          (id, type, category, amount, transaction_date, source, reference_type,
+           reference_id, description, status, created_by, approved_by, data)
+         VALUES (?, 'income', 'Membership Subscription', ?, ?,
+                 'subscription', 'subscription_v2_payment', ?, ?, ?, ?, ?, ?)`,
+        [
+          createId("ftx"),
+          Number(pv.price || 0),
+          paymentDate,
+          id,
+          `Subscription payment ${invoiceNumber} - member ${holderMemberId} - ${pv.name || "plan"}`,
+          paymentStatus === "paid" ? "posted" : "pending",
+          req.user?.email || req.user?.uid || "system",
+          paymentStatus === "paid"
+            ? req.user?.email || req.user?.uid || "system"
+            : null,
+          JSON.stringify({
+            source: "subscription_v2",
+            subscriptionId: id,
+            paymentStatus,
+            invoiceNumber,
+            currency: pv.currency || "USD",
+          }),
+        ],
+      );
+      await connection.query(
+        "INSERT INTO outbox_events (id, event_type, payload, status) VALUES (?, 'subscription_created', ?, 'pending')",
+        [
+          createId("evt"),
+          JSON.stringify({
+            subscriptionId: id,
+            holderMemberId,
+            planVersionId,
+            paymentStatus,
+          }),
+        ],
+      );
       await connection.commit();
       const [rows]: any = await pool.query("SELECT s.*, pv.name AS plan_name, pv.plan_type FROM subscriptions s LEFT JOIN plan_versions pv ON pv.id = s.plan_version_id WHERE s.id = ?", [id]);
-      res.status(201).json({ subscription: mapSubscription(rows[0]), affiliationId: affId });
+      res.status(201).json({
+        subscription: mapSubscription(rows[0]),
+        affiliationId: affId,
+        invoiceNumber,
+        paymentDate,
+      });
     } catch (error) {
       if (connection) await connection.rollback();
       next(error);
@@ -656,6 +770,50 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
         },
       });
     } catch (error) { next(error); }
+  });
+
+  app.post("/api/v2/affiliations/:id/primary", requirePermission("membership.write"), async (req, res, next) => {
+    let connection: any = null;
+    try {
+      const pool = requirePool(poolProvider);
+      connection = await pool.getConnection();
+      await connection.beginTransaction();
+      const [rows]: any = await connection.query(
+        `SELECT a.id, a.member_id
+           FROM affiliations a
+           JOIN subscriptions s ON s.id = a.subscription_id
+          WHERE a.id = ?
+            AND a.status = 'active'
+            AND a.end_date >= CURDATE()
+            AND s.status = 'active'
+            AND s.end_date >= CURDATE()
+          LIMIT 1
+          FOR UPDATE`,
+        [req.params.id],
+      );
+      if (!rows.length) {
+        await connection.rollback();
+        return res.status(409).json({
+          error: "Only an active affiliation can be selected as primary",
+          code: "AFFILIATION_NOT_ACTIVE",
+        });
+      }
+      await connection.query(
+        "UPDATE affiliations SET is_primary = 0, updated_at = NOW() WHERE member_id = ?",
+        [rows[0].member_id],
+      );
+      await connection.query(
+        "UPDATE affiliations SET is_primary = 1, updated_at = NOW() WHERE id = ?",
+        [req.params.id],
+      );
+      await connection.commit();
+      res.json({ ok: true, affiliationId: req.params.id });
+    } catch (error) {
+      if (connection) await connection.rollback();
+      next(error);
+    } finally {
+      if (connection) connection.release();
+    }
   });
 
   app.get("/api/v2/session-balances", requirePermission("membership.read"), async (req, res, next) => {
