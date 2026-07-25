@@ -160,6 +160,7 @@ test("limited multi-user plans expose distribution, cycles, immutable movements 
   const plansPage = read("src/pages/MembershipPlansCodex.tsx");
   const subscriptionsPage = read("src/pages/Subscriptions.tsx");
   const membersPage = read("src/pages/Members.tsx");
+  const membership = read("server/membership.ts");
   const migration = read("sql/024_session_distribution_payment_lists.sql");
   const reports = read("server/reports.ts");
 
@@ -206,6 +207,16 @@ test("limited multi-user plans expose distribution, cycles, immutable movements 
   assert.match(membersPage, /Estimated payment date cannot be after End Date/);
   assert.match(membersPage, /renewMode/);
   assert.match(membersPage, /Subscription payment updated/);
+  assert.match(membersPage, /Current Plan/);
+  assert.match(membersPage, /Payment Status/);
+  assert.match(membersPage, /Expiry Date/);
+  assert.match(membersPage, /Sort by/);
+  assert.match(membersPage, /Members per page/);
+  assert.match(membersPage, /paginationPages/);
+  assert.match(membership, /currentPlanFilter/);
+  assert.match(membership, /paymentStatusFilter/);
+  assert.match(membership, /expiryDateFilter/);
+  assert.match(membership, /pageSize/);
   assert.match(migration, /mli_cycle_quarterly/);
   assert.match(migration, /mli_payment_overdue/);
   assert.match(reports, /import \{ autoTable \} from "jspdf-autotable"/);
