@@ -252,6 +252,58 @@ export async function createMovement(db: PoolConnection, input: CreateMovementIn
     }
   }
 
+  let activityKey: string | null = null;
+  if (
+    input.affiliationId &&
+    input.referenceType &&
+    input.referenceId &&
+    ["reservation", "consumption"].includes(input.movementType)
+  ) {
+    activityKey = crypto
+      .createHash("sha256")
+      .update(
+        [
+          input.affiliationId,
+          input.referenceType,
+          input.referenceId,
+          input.movementType,
+        ].join("|"),
+      )
+      .digest("hex");
+    try {
+      await db.query(
+        `INSERT INTO session_activity_claims
+          (activity_key, affiliation_id, reference_type, reference_id,
+           movement_type, expires_at)
+         VALUES (?, ?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL 24 HOUR))`,
+        [
+          activityKey,
+          input.affiliationId,
+          input.referenceType,
+          input.referenceId,
+          input.movementType,
+        ],
+      );
+    } catch (error: any) {
+      if (error?.code !== "ER_DUP_ENTRY") throw error;
+      const [claimRows]: any = await db.query(
+        "SELECT movement_id FROM session_activity_claims WHERE activity_key = ? LIMIT 1",
+        [activityKey],
+      );
+      if (claimRows[0]?.movement_id) {
+        const [movementRows]: any = await db.query(
+          "SELECT * FROM session_movements WHERE id = ? LIMIT 1",
+          [claimRows[0].movement_id],
+        );
+        if (movementRows.length) return mapMovement(movementRows[0]);
+      }
+      throw Object.assign(
+        new Error("This activity has already claimed a session"),
+        { status: 409, code: "DUPLICATE_ACTIVITY" },
+      );
+    }
+  }
+
   // Get balance with lock
   const [balRows]: any = await db.query(
     "SELECT * FROM session_balances WHERE id = ? FOR UPDATE",
@@ -313,6 +365,12 @@ export async function createMovement(db: PoolConnection, input: CreateMovementIn
       input.idempotencyKey || null,
     ],
   );
+  if (activityKey) {
+    await db.query(
+      "UPDATE session_activity_claims SET movement_id = ? WHERE activity_key = ?",
+      [movementId, activityKey],
+    );
+  }
 
   // Update balance with optimistic lock
   const [result]: any = await db.query(updateSql, [input.quantity, balanceAfter, movementId, input.balanceId, Number(bal.version)]);
