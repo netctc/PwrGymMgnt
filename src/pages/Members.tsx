@@ -187,6 +187,26 @@ export default function Members() {
         otherMembers: 'الأعضاء الآخرون',
         capacity: 'السعة',
         available: 'المتاح',
+        currentPlanFilter: 'الخطة الحالية',
+        paymentStatusFilter: 'حالة الدفع',
+        expiryDateFilter: 'تاريخ الانتهاء',
+        sortBy: 'الترتيب حسب',
+        membersPerPage: 'عدد الأعضاء في الصفحة',
+        allCurrentPlans: 'جميع الخطط الحالية',
+        allPaymentStatuses: 'جميع حالات الدفع',
+        expiryAsc: 'الانتهاء تصاعدياً',
+        expiryDesc: 'الانتهاء تنازلياً',
+        joinedAsc: 'الانضمام تصاعدياً',
+        joinedDesc: 'الانضمام تنازلياً',
+        lastAccessAsc: 'آخر دخول تصاعدياً',
+        lastAccessDesc: 'آخر دخول تنازلياً',
+        previous: 'السابق',
+        next: 'التالي',
+        showing: 'عرض',
+        of: 'من',
+        members: 'أعضاء',
+        apply: 'تطبيق',
+        clear: 'مسح',
       }
     : {
         create: 'New multi-user subscription',
@@ -196,6 +216,26 @@ export default function Members() {
         otherMembers: 'Other members',
         capacity: 'Capacity',
         available: 'Available',
+        currentPlanFilter: 'Current Plan',
+        paymentStatusFilter: 'Payment Status',
+        expiryDateFilter: 'Expiry Date',
+        sortBy: 'Sort by',
+        membersPerPage: 'Members per page',
+        allCurrentPlans: 'All current plans',
+        allPaymentStatuses: 'All payment statuses',
+        expiryAsc: 'Expiry Asc',
+        expiryDesc: 'Expiry Desc',
+        joinedAsc: 'Joined Asc',
+        joinedDesc: 'Joined Desc',
+        lastAccessAsc: 'Last Access Asc',
+        lastAccessDesc: 'Last Access Desc',
+        previous: 'Previous',
+        next: 'Next',
+        showing: 'Showing',
+        of: 'of',
+        members: 'members',
+        apply: 'Apply',
+        clear: 'Clear',
       };
   const [members, setMembers] = useState<MembershipMember[]>([]);
   const [plans, setPlans] = useState<MembershipPlan[]>([]);
@@ -203,6 +243,39 @@ export default function Members() {
   const [statusFilter, setStatusFilter] = usePersistentState('powergym.members.statusFilter', '');
   const [accessFilter, setAccessFilter] = usePersistentState('powergym.members.accessFilter', '');
   const [accessDate, setAccessDate] = usePersistentState('powergym.members.accessDate', today());
+  const [currentPlanFilter, setCurrentPlanFilter] = usePersistentState(
+    'powergym.members.currentPlanFilter',
+    '',
+  );
+  const [paymentStatusFilter, setPaymentStatusFilter] = usePersistentState(
+    'powergym.members.paymentStatusFilter',
+    '',
+  );
+  const [expiryDateFilter, setExpiryDateFilter] = usePersistentState(
+    'powergym.members.expiryDateFilter',
+    '',
+  );
+  const [sortBy, setSortBy] = usePersistentState(
+    'powergym.members.sortBy',
+    'joined_desc',
+  );
+  const [membersPerPage, setMembersPerPage] = usePersistentState(
+    'powergym.members.pageSize',
+    25,
+  );
+  const [memberPage, setMemberPage] = useState(1);
+  const [memberPagination, setMemberPagination] = useState({
+    page: 1,
+    pageSize: 25,
+    total: 0,
+    totalPages: 1,
+  });
+  const [memberSummary, setMemberSummary] = useState({
+    total: 0,
+    active: 0,
+    archived: 0,
+  });
+  const [currentPlanOptions, setCurrentPlanOptions] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -246,8 +319,22 @@ export default function Members() {
   const manageBeneficiariesUrl = (memberId: string) =>
     `/plans/multi-user?memberId=${encodeURIComponent(memberId)}`;
 
-  const activeCount = useMemo(() => members.filter((member) => member.status === 'active').length, [members]);
-  const archivedCount = useMemo(() => members.filter((member) => member.status === 'archived').length, [members]);
+  const paginationPages = useMemo(() => {
+    const candidates = [
+      1,
+      memberPagination.page - 1,
+      memberPagination.page,
+      memberPagination.page + 1,
+      memberPagination.totalPages,
+    ];
+    return Array.from(
+      new Set(
+        candidates.filter(
+          (page) => page >= 1 && page <= memberPagination.totalPages,
+        ),
+      ),
+    ).sort((a, b) => a - b);
+  }, [memberPagination.page, memberPagination.totalPages]);
   const selectedRenewPlan = useMemo(() => plans.find((plan) => plan.id === renewPlanId) || null, [plans, renewPlanId]);
   const renewEndDate = useMemo(
     () => {
@@ -285,17 +372,32 @@ export default function Members() {
     }
   };
 
-  const loadMembers = async () => {
+  const loadMembers = async (
+    requestedPage = memberPage,
+    requestedPageSize = membersPerPage,
+    clearFilters = false,
+  ) => {
     setLoading(true);
     setError(null);
     try {
       const response = await membershipApi.listMembers({
-        search,
-        status: statusFilter,
-        accessedToday: accessFilter === 'today',
-        accessDate: accessFilter === 'date' ? accessDate : undefined,
+        search: clearFilters ? '' : search,
+        status: clearFilters ? '' : statusFilter,
+        accessedToday: !clearFilters && accessFilter === 'today',
+        accessDate:
+          !clearFilters && accessFilter === 'date' ? accessDate : undefined,
+        currentPlan: clearFilters ? '' : currentPlanFilter,
+        paymentStatus: clearFilters ? '' : paymentStatusFilter,
+        expiryDate: clearFilters ? '' : expiryDateFilter,
+        sortBy: clearFilters ? 'joined_desc' : sortBy,
+        page: requestedPage,
+        pageSize: requestedPageSize,
       });
       setMembers(response.members);
+      setMemberPagination(response.pagination);
+      setMemberSummary(response.summary);
+      setCurrentPlanOptions(response.filterOptions.currentPlans);
+      setMemberPage(response.pagination.page);
     } catch (err: any) {
       setError(err.message || 'Failed to load members');
     } finally {
@@ -311,7 +413,40 @@ export default function Members() {
 
   const applyFilters = (event?: FormEvent<HTMLFormElement>) => {
     event?.preventDefault();
-    loadMembers();
+    setMemberPage(1);
+    loadMembers(1);
+  };
+
+  const clearMemberFilters = () => {
+    setSearch('');
+    setStatusFilter('');
+    setAccessFilter('');
+    setAccessDate(today());
+    setCurrentPlanFilter('');
+    setPaymentStatusFilter('');
+    setExpiryDateFilter('');
+    setSortBy('joined_desc');
+    setMemberPage(1);
+    loadMembers(1, membersPerPage, true);
+  };
+
+  const changeMemberPage = (page: number) => {
+    if (
+      loading ||
+      page < 1 ||
+      page > memberPagination.totalPages ||
+      page === memberPagination.page
+    ) {
+      return;
+    }
+    setMemberPage(page);
+    loadMembers(page);
+  };
+
+  const changeMembersPerPage = (value: number) => {
+    setMembersPerPage(value);
+    setMemberPage(1);
+    loadMembers(1, value);
   };
 
   const changePaymentStatus = async (
@@ -848,19 +983,19 @@ The secure QR token is embedded in the attached PDF/QR image.`;
         <Card>
           <CardHeader>
             <CardDescription>Total Members</CardDescription>
-            <CardTitle className="text-2xl">{members.length}</CardTitle>
+            <CardTitle className="text-2xl">{memberSummary.total}</CardTitle>
           </CardHeader>
         </Card>
         <Card>
           <CardHeader>
             <CardDescription>Active Members</CardDescription>
-            <CardTitle className="text-2xl">{activeCount}</CardTitle>
+            <CardTitle className="text-2xl">{memberSummary.active}</CardTitle>
           </CardHeader>
         </Card>
         <Card>
           <CardHeader>
             <CardDescription>Archived Members</CardDescription>
-            <CardTitle className="text-2xl">{archivedCount}</CardTitle>
+            <CardTitle className="text-2xl">{memberSummary.archived}</CardTitle>
           </CardHeader>
         </Card>
       </div>
@@ -871,39 +1006,143 @@ The secure QR token is embedded in the attached PDF/QR image.`;
           <CardDescription>Search, create, renew, and issue QR e-cards.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <form onSubmit={applyFilters} className="flex flex-col gap-3 md:flex-row">
-            <div className="relative flex-1">
-              <Search className="absolute left-2.5 top-2 h-4 w-4 text-slate-400" />
-              <Input
-                className="pl-8"
-                placeholder="Search by name, email, or phone"
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
+          <form
+            onSubmit={applyFilters}
+            className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4"
+          >
+            <div className="space-y-1 md:col-span-2">
+              <Label htmlFor="memberSearch">Search</Label>
+              <div className="relative">
+                <Search className="absolute left-2.5 top-2 h-4 w-4 text-slate-400" />
+                <Input
+                  id="memberSearch"
+                  className="pl-8"
+                  placeholder="Search by name, email, or phone"
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                />
+              </div>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="memberStatusFilter">Member status</Label>
+              <select
+                id="memberStatusFilter"
+                className="h-8 w-full rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+                value={statusFilter}
+                onChange={(event) => setStatusFilter(event.target.value)}
+              >
+                <option value="">All statuses</option>
+                {MEMBER_STATUSES.map((status) => (
+                  <option key={status.value} value={status.value}>{status.label}</option>
+                ))}
+              </select>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="currentPlanFilter">{multiUserCopy.currentPlanFilter}</Label>
+              <select
+                id="currentPlanFilter"
+                className="h-8 w-full rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+                value={currentPlanFilter}
+                onChange={(event) => setCurrentPlanFilter(event.target.value)}
+              >
+                <option value="">{multiUserCopy.allCurrentPlans}</option>
+                {currentPlanFilter &&
+                  !currentPlanOptions.includes(currentPlanFilter) && (
+                    <option value={currentPlanFilter}>
+                      {currentPlanFilter}
+                    </option>
+                  )}
+                {currentPlanOptions.map((planName) => (
+                  <option key={planName} value={planName}>{planName}</option>
+                ))}
+              </select>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="paymentStatusFilter">{multiUserCopy.paymentStatusFilter}</Label>
+              <select
+                id="paymentStatusFilter"
+                className="h-8 w-full rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+                value={paymentStatusFilter}
+                onChange={(event) => setPaymentStatusFilter(event.target.value)}
+              >
+                <option value="">{multiUserCopy.allPaymentStatuses}</option>
+                <option value="paid">{multiUserCopy.paid}</option>
+                <option value="pending">{multiUserCopy.pending}</option>
+              </select>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="expiryDateFilter">{multiUserCopy.expiryDateFilter}</Label>
+              <DateInput
+                id="expiryDateFilter"
+                value={expiryDateFilter}
+                onChange={setExpiryDateFilter}
               />
             </div>
-            <select
-              className="h-8 rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
-              value={statusFilter}
-              onChange={(event) => setStatusFilter(event.target.value)}
-            >
-              <option value="">All statuses</option>
-              {MEMBER_STATUSES.map((status) => (
-                <option key={status.value} value={status.value}>{status.label}</option>
-              ))}
-            </select>
-            <select
-              className="h-8 rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
-              value={accessFilter}
-              onChange={(event) => setAccessFilter(event.target.value)}
-            >
-              <option value="">All access dates</option>
-              <option value="today">Accessed today</option>
-              <option value="date">Accessed on date</option>
-            </select>
+            <div className="space-y-1">
+              <Label htmlFor="memberAccessFilter">Last Access</Label>
+              <select
+                id="memberAccessFilter"
+                className="h-8 w-full rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+                value={accessFilter}
+                onChange={(event) => setAccessFilter(event.target.value)}
+              >
+                <option value="">All access dates</option>
+                <option value="today">Accessed today</option>
+                <option value="date">Accessed on date</option>
+              </select>
+            </div>
             {accessFilter === 'date' && (
-              <DateInput value={accessDate} onChange={(v) => setAccessDate(v)} />
+              <div className="space-y-1">
+                <Label htmlFor="memberAccessDate">Access Date</Label>
+                <DateInput
+                  id="memberAccessDate"
+                  value={accessDate}
+                  onChange={setAccessDate}
+                />
+              </div>
             )}
-            <Button type="submit" disabled={loading}>Apply</Button>
+            <div className="space-y-1">
+              <Label htmlFor="memberSortBy">{multiUserCopy.sortBy}</Label>
+              <select
+                id="memberSortBy"
+                className="h-8 w-full rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+                value={sortBy}
+                onChange={(event) => setSortBy(event.target.value)}
+              >
+                <option value="expiry_asc">{multiUserCopy.expiryAsc}</option>
+                <option value="expiry_desc">{multiUserCopy.expiryDesc}</option>
+                <option value="joined_asc">{multiUserCopy.joinedAsc}</option>
+                <option value="joined_desc">{multiUserCopy.joinedDesc}</option>
+                <option value="last_access_asc">{multiUserCopy.lastAccessAsc}</option>
+                <option value="last_access_desc">{multiUserCopy.lastAccessDesc}</option>
+              </select>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="membersPerPage">{multiUserCopy.membersPerPage}</Label>
+              <select
+                id="membersPerPage"
+                className="h-8 w-full rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+                value={membersPerPage}
+                onChange={(event) =>
+                  changeMembersPerPage(Number(event.target.value))
+                }
+              >
+                <option value={10}>10</option>
+                <option value={25}>25</option>
+                <option value={50}>50</option>
+              </select>
+            </div>
+            <div className="flex items-end gap-2">
+              <Button type="submit" disabled={loading}>{multiUserCopy.apply}</Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={clearMemberFilters}
+                disabled={loading}
+              >
+                {multiUserCopy.clear}
+              </Button>
+            </div>
           </form>
 
           <ScreenReportActions
@@ -936,9 +1175,9 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                     <EmptyState
                       compact
                       title="No members match these filters"
-                      description="Try clearing the search, status, or access-date filters before creating a new member."
+                      description="Try clearing the member, plan, payment, expiry, or access filters before creating a new member."
                       actionLabel="Clear filters"
-                      onAction={() => { setSearch(''); setStatusFilter(''); setAccessFilter(''); setAccessDate(today()); }}
+                      onAction={clearMemberFilters}
                     />
                   </TableCell>
                 </TableRow>
@@ -1063,6 +1302,66 @@ The secure QR token is embedded in the attached PDF/QR image.`;
               )}
             </TableBody>
           </Table>
+          <div className="flex flex-col gap-3 border-t pt-4 text-sm text-slate-600 sm:flex-row sm:items-center sm:justify-between">
+            <p>
+              {multiUserCopy.showing}{' '}
+              {memberPagination.total === 0
+                ? 0
+                : (memberPagination.page - 1) * memberPagination.pageSize + 1}
+              –
+              {Math.min(
+                memberPagination.page * memberPagination.pageSize,
+                memberPagination.total,
+              )}{' '}
+              {multiUserCopy.of} {memberPagination.total} {multiUserCopy.members}
+            </p>
+            <div className="flex flex-wrap items-center gap-1">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={loading || memberPagination.page <= 1}
+                onClick={() => changeMemberPage(memberPagination.page - 1)}
+              >
+                {multiUserCopy.previous}
+              </Button>
+              {paginationPages.map((page, index) => (
+                <div key={page} className="flex items-center gap-1">
+                  {index > 0 &&
+                    page - paginationPages[index - 1] > 1 && (
+                      <span className="px-1 text-slate-400">…</span>
+                    )}
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={
+                      page === memberPagination.page ? 'default' : 'outline'
+                    }
+                    disabled={loading}
+                    onClick={() => changeMemberPage(page)}
+                    aria-label={`Page ${page}`}
+                    aria-current={
+                      page === memberPagination.page ? 'page' : undefined
+                    }
+                  >
+                    {page}
+                  </Button>
+                </div>
+              ))}
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={
+                  loading ||
+                  memberPagination.page >= memberPagination.totalPages
+                }
+                onClick={() => changeMemberPage(memberPagination.page + 1)}
+              >
+                {multiUserCopy.next}
+              </Button>
+            </div>
+          </div>
         </CardContent>
       </Card>
 
