@@ -41,6 +41,7 @@ import { usePersistentState } from '../hooks/usePersistentState';
 import { useLocalization } from '../contexts/LocalizationContext';
 import {
   subscriptionsV2Api,
+  type PlanVersion,
   type SubscriptionV2,
 } from '../lib/subscriptionsV2Api';
 
@@ -207,6 +208,14 @@ export default function Members() {
         members: 'أعضاء',
         apply: 'تطبيق',
         clear: 'مسح',
+        newSubscriptions: 'اشتراك جديد',
+        searchExistingMember: 'البحث عن عضو موجود',
+        selectExistingMember: 'اختر عضواً موجوداً',
+        consumed: 'المستهلك',
+        remaining: 'المتبقي',
+        reserved: 'المحجوز',
+        setPrimary: 'تعيين كخطة رئيسية',
+        primaryUpdated: 'تم تحديث الخطة الرئيسية',
       }
     : {
         create: 'New multi-user subscription',
@@ -236,9 +245,18 @@ export default function Members() {
         members: 'members',
         apply: 'Apply',
         clear: 'Clear',
+        newSubscriptions: 'New Subscriptions',
+        searchExistingMember: 'Search existing member',
+        selectExistingMember: 'Select an existing member',
+        consumed: 'Consumed',
+        remaining: 'Remaining',
+        reserved: 'Reserved',
+        setPrimary: 'Set as primary',
+        primaryUpdated: 'Primary plan updated',
       };
   const [members, setMembers] = useState<MembershipMember[]>([]);
   const [plans, setPlans] = useState<MembershipPlan[]>([]);
+  const [planVersions, setPlanVersions] = useState<PlanVersion[]>([]);
   const [search, setSearch] = usePersistentState('powergym.members.search', '');
   const [statusFilter, setStatusFilter] = usePersistentState('powergym.members.statusFilter', '');
   const [accessFilter, setAccessFilter] = usePersistentState('powergym.members.accessFilter', '');
@@ -286,6 +304,13 @@ export default function Members() {
   const [detail, setDetail] = useState<MemberDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [renewOpen, setRenewOpen] = useState(false);
+  const [subscriptionIntent, setSubscriptionIntent] = useState<'renew' | 'new'>('renew');
+  const [newSubscriptionMemberSearch, setNewSubscriptionMemberSearch] = useState('');
+  const [newSubscriptionMemberOptions, setNewSubscriptionMemberOptions] =
+    useState<MembershipMember[]>([]);
+  const [newSubscriptionPlanVersionId, setNewSubscriptionPlanVersionId] =
+    useState('');
+  const [newSubscriptionSearching, setNewSubscriptionSearching] = useState(false);
   const [renewMember, setRenewMember] = useState<MembershipMember | null>(null);
   const [renewPlanId, setRenewPlanId] = useState('');
   const [renewStartDate, setRenewStartDate] = useState(today());
@@ -309,7 +334,7 @@ export default function Members() {
   const [qrExpiryDate, setQrExpiryDate] = useState('');
   const [qrPlanName, setQrPlanName] = useState('');
   const [archiveTarget, setArchiveTarget] = useState<MembershipMember | null>(null);
-  const [expandedPlanMemberId, setExpandedPlanMemberId] = useState<string | null>(null);
+  const [expandedPlanKey, setExpandedPlanKey] = useState<string | null>(null);
   const [expandedGroupMemberId, setExpandedGroupMemberId] = useState<string | null>(null);
   const [paymentUpdatingId, setPaymentUpdatingId] = useState<string | null>(null);
   const qrCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -336,10 +361,23 @@ export default function Members() {
     ).sort((a, b) => a - b);
   }, [memberPagination.page, memberPagination.totalPages]);
   const selectedRenewPlan = useMemo(() => plans.find((plan) => plan.id === renewPlanId) || null, [plans, renewPlanId]);
+  const selectedNewPlanVersion = useMemo(
+    () =>
+      planVersions.find(
+        (planVersion) => planVersion.id === newSubscriptionPlanVersionId,
+      ) || null,
+    [newSubscriptionPlanVersionId, planVersions],
+  );
   const renewEndDate = useMemo(
     () => {
       if (renewMode === 'edit') return renewExistingEndDate;
       if (!renewStartDate) return '';
+      if (subscriptionIntent === 'new' && selectedNewPlanVersion) {
+        return addDaysToDate(
+          renewStartDate,
+          selectedNewPlanVersion.durationDays,
+        );
+      }
       if (selectedRenewPlan) {
         return addDaysToDate(renewStartDate, selectedRenewPlan.durationDays);
       }
@@ -360,13 +398,27 @@ export default function Members() {
       renewStartDate,
       renewMultiSubscription,
       selectedRenewPlan,
+      selectedNewPlanVersion,
+      subscriptionIntent,
     ],
   );
 
   const loadPlans = async () => {
     try {
-      const response = await membershipApi.listPlans();
+      const [response, v2Response] = await Promise.all([
+        membershipApi.listPlans(),
+        subscriptionsV2Api
+          .listPlanVersions()
+          .catch(() => ({ planVersions: [] as PlanVersion[] })),
+      ]);
       setPlans(response.plans.filter((plan) => plan.status === 'active'));
+      const activePlanVersions = v2Response.planVersions.filter(
+        (planVersion) => planVersion.status === 'active',
+      );
+      setPlanVersions(activePlanVersions);
+      setNewSubscriptionPlanVersionId(
+        (current) => current || activePlanVersions[0]?.id || '',
+      );
     } catch (err: any) {
       toast.error(err.message || 'Failed to load plans');
     }
@@ -486,6 +538,23 @@ export default function Members() {
     }
   };
 
+  const setPrimaryPlan = async (
+    member: MembershipMember,
+    affiliationId: string,
+  ) => {
+    try {
+      await subscriptionsV2Api.setPrimaryAffiliation(affiliationId);
+      toast.success(multiUserCopy.primaryUpdated);
+      await loadMembers();
+      if (detail?.member.id === member.id) {
+        const response = await membershipApi.getMember(member.id);
+        setDetail(response);
+      }
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to update the primary plan');
+    }
+  };
+
   const openCreate = () => {
     setEditMember(null);
     setMemberForm(emptyMemberForm);
@@ -594,7 +663,54 @@ export default function Members() {
     }
   };
 
+  const selectNewSubscriptionMember = (member: MembershipMember) => {
+    setRenewMember(member);
+    setRenewCurrentPlan(
+      (member.plans || []).map((plan) => plan.planName).join(', ') ||
+        member.currentPlan ||
+        '',
+    );
+    setRenewCurrentExpiry(dateValue(member.currentExpiry));
+  };
+
+  const searchNewSubscriptionMembers = async () => {
+    setNewSubscriptionSearching(true);
+    try {
+      const response = await membershipApi.listMembers({
+        search: newSubscriptionMemberSearch,
+        page: 1,
+        pageSize: 50,
+        sortBy: 'joined_desc',
+      });
+      setNewSubscriptionMemberOptions(response.members);
+    } catch (err: any) {
+      toast.error(err.message || 'Unable to search members');
+    } finally {
+      setNewSubscriptionSearching(false);
+    }
+  };
+
+  const openNewSubscription = () => {
+    setSubscriptionIntent('new');
+    setRenewMode('create');
+    setRenewMember(null);
+    setRenewCurrentPlan('');
+    setRenewCurrentExpiry('');
+    setRenewPaymentStatus('');
+    setRenewPaymentDate('');
+    setRenewStartDate(today());
+    setRenewExistingLegacySubscriptionId(null);
+    setRenewExistingEndDate('');
+    setRenewPaymentLocked(false);
+    setRenewMultiSubscription(null);
+    setNewSubscriptionMemberSearch('');
+    setNewSubscriptionMemberOptions(members);
+    setNewSubscriptionPlanVersionId(planVersions[0]?.id || '');
+    setRenewOpen(true);
+  };
+
   const openRenew = async (member: MembershipMember) => {
+    setSubscriptionIntent('renew');
     setRenewMember(member);
     setRenewPlanId(plans[0]?.id || '');
     setRenewCurrentExpiry('');
@@ -726,7 +842,10 @@ export default function Members() {
 
   const submitRenewal = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!renewMember) return;
+    if (!renewMember) {
+      toast.error('Select an existing member.');
+      return;
+    }
     if (!renewPaymentStatus) {
       toast.error('Select Paid or Payment pending.');
       return;
@@ -749,6 +868,23 @@ export default function Members() {
     }
     setSaving(true);
     try {
+      if (subscriptionIntent === 'new') {
+        if (!selectedNewPlanVersion) {
+          throw new Error('Select an active plan.');
+        }
+        await subscriptionsV2Api.createSubscription({
+          planVersionId: selectedNewPlanVersion.id,
+          holderMemberId: renewMember.id,
+          startDate: renewStartDate,
+          endDate: renewEndDate,
+          paymentStatus: renewPaymentStatus,
+          paymentDate: renewPaymentDate,
+        });
+        toast.success('New subscription created and assigned to the member');
+        setRenewOpen(false);
+        await loadMembers();
+        return;
+      }
       if (renewMode === 'edit') {
         if (renewMultiSubscription) {
           await subscriptionsV2Api.updatePaymentStatus(
@@ -960,6 +1096,9 @@ The secure QR token is embedded in the attached PDF/QR image.`;
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
+          <Button variant="outline" onClick={openNewSubscription}>
+            <CreditCard className="mr-2 h-4 w-4" /> {multiUserCopy.newSubscriptions}
+          </Button>
           <Button variant="outline" asChild>
             <Link to={newMultiUserUrl()}>{multiUserCopy.create}</Link>
           </Button>
@@ -1227,31 +1366,94 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                       <div className="text-xs text-slate-500">{member.phone || 'No phone'}</div>
                     </TableCell>
                     <TableCell>
-                      {member.currentPlan ? (
-                        <button
-                          type="button"
-                          className="text-left font-medium text-slate-900 underline decoration-dotted underline-offset-4 hover:text-indigo-700"
-                          onClick={() => setExpandedPlanMemberId((current) => current === member.id ? null : member.id)}
-                        >
-                          {member.currentPlan}
-                        </button>
-                      ) : (
-                        <div>—</div>
-                      )}
-                      {expandedPlanMemberId === member.id && (
-                        <div className="mt-2 max-w-sm rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-xs leading-relaxed text-sky-950 shadow-sm">
-                          {reducedDescription(member.planDescription) || 'No plan description available.'}
+                      {(member.plans || []).length > 0 ? (
+                        <div className="space-y-2">
+                          {(member.plans || []).map((plan) => {
+                            const planKey = `${member.id}:${plan.id}`;
+                            return (
+                              <div
+                                key={plan.id}
+                                className="rounded-lg border border-slate-200 bg-white p-2"
+                              >
+                                <button
+                                  type="button"
+                                  className="block text-left font-medium text-slate-900 underline decoration-dotted underline-offset-4 hover:text-indigo-700"
+                                  onClick={() =>
+                                    setExpandedPlanKey((current) =>
+                                      current === planKey ? null : planKey,
+                                    )
+                                  }
+                                >
+                                  {plan.planName}
+                                </button>
+                                <div className="mt-1 flex flex-wrap gap-1">
+                                  <Badge variant={plan.isPrimary ? 'default' : 'outline'}>
+                                    {plan.planType === 'individual'
+                                      ? 'Individual'
+                                      : `Multi-user · ${plan.role}`}
+                                    {plan.isPrimary ? ' · Primary' : ''}
+                                  </Badge>
+                                  {!plan.sessionsUnlimited && (
+                                    <>
+                                      <Badge variant="secondary">
+                                        {multiUserCopy.consumed}: {plan.sessionsConsumed ?? 0}
+                                      </Badge>
+                                      <Badge variant="outline">
+                                        {multiUserCopy.remaining}: {plan.sessionsPending ?? 0}
+                                      </Badge>
+                                      {(plan.sessionsReserved ?? 0) > 0 && (
+                                        <Badge variant="outline">
+                                          {multiUserCopy.reserved}: {plan.sessionsReserved}
+                                        </Badge>
+                                      )}
+                                    </>
+                                  )}
+                                  {!plan.isPrimary && plan.affiliationId && (
+                                    <button
+                                      type="button"
+                                      className="text-xs font-medium text-indigo-700 underline underline-offset-2"
+                                      onClick={() =>
+                                        setPrimaryPlan(member, plan.affiliationId!)
+                                      }
+                                    >
+                                      {multiUserCopy.setPrimary}
+                                    </button>
+                                  )}
+                                </div>
+                                {expandedPlanKey === planKey && (
+                                  <div className="mt-2 max-w-sm rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-xs leading-relaxed text-sky-950 shadow-sm">
+                                    {reducedDescription(plan.description) ||
+                                      'No plan description available.'}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
                         </div>
-                      )}
-                      {member.subscriptionType === 'multi_user' ? (
-                        <Badge variant="outline" className="mt-1">
-                          Multi-user · {member.multiUserRole === 'holder' ? 'Holder' : 'Beneficiary'}
-                          {member.multiUserPlanType ? ` · ${member.multiUserPlanType}` : ''}
-                        </Badge>
-                      ) : member.subscriptionType === 'individual' || member.currentPlan ? (
-                        <Badge variant="secondary" className="mt-1">Individual</Badge>
+                      ) : member.currentPlan ? (
+                        <div>
+                          <button
+                            type="button"
+                            className="text-left font-medium text-slate-900 underline decoration-dotted underline-offset-4 hover:text-indigo-700"
+                            onClick={() =>
+                              setExpandedPlanKey((current) =>
+                                current === `${member.id}:current`
+                                  ? null
+                                  : `${member.id}:current`,
+                              )
+                            }
+                          >
+                            {member.currentPlan}
+                          </button>
+                          {expandedPlanKey === `${member.id}:current` && (
+                            <div className="mt-2 max-w-sm rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-xs leading-relaxed text-sky-950 shadow-sm">
+                              {reducedDescription(member.planDescription) ||
+                                'No plan description available.'}
+                            </div>
+                          )}
+                        </div>
                       ) : (
-                        <Badge variant="outline" className="mt-1">No subscription</Badge>
+                        <Badge variant="outline">No subscription</Badge>
                       )}
                       {member.paymentAttentionRequired && (
                         <Badge variant="destructive" className="ms-1 mt-1">
@@ -1458,54 +1660,126 @@ The secure QR token is embedded in the attached PDF/QR image.`;
       </Dialog>
 
       <Dialog open={renewOpen} onOpenChange={setRenewOpen}>
-        <DialogContent className="sm:max-w-2xl">
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>
-              {renewMode === 'edit'
+              {subscriptionIntent === 'new'
+                ? multiUserCopy.newSubscriptions
+                : renewMode === 'edit'
                 ? 'Edit Subscription Payment'
                 : 'Renew Subscription'}
             </DialogTitle>
           </DialogHeader>
           <form onSubmit={submitRenewal} className="min-w-0 space-y-4">
-            <div className="rounded-lg bg-slate-50 p-3 text-sm">
-              <p className="font-medium text-slate-900">{renewMember?.firstName} {renewMember?.lastName}</p>
-              <p className="text-slate-500">Current plan: {renewCurrentPlan || '—'}</p>
-              {renewMode === 'edit' && (
-                <p className="mt-1 text-slate-500">
-                  Editing the payment information of the existing, unexpired subscription or renewal.
+            {subscriptionIntent === 'new' && (
+              <div className="space-y-2 rounded-lg border bg-slate-50 p-3">
+                <Label htmlFor="newSubscriptionMemberSearch">
+                  {multiUserCopy.searchExistingMember}
+                </Label>
+                <div className="flex gap-2">
+                  <Input
+                    id="newSubscriptionMemberSearch"
+                    value={newSubscriptionMemberSearch}
+                    onChange={(event) =>
+                      setNewSubscriptionMemberSearch(event.target.value)
+                    }
+                    placeholder="Name, email, phone or member ID"
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={newSubscriptionSearching}
+                    onClick={() => void searchNewSubscriptionMembers()}
+                  >
+                    {newSubscriptionSearching ? 'Searching...' : 'Search'}
+                  </Button>
+                </div>
+                <select
+                  className="h-9 w-full rounded-lg border border-input bg-white px-2.5 text-sm"
+                  value={renewMember?.id || ''}
+                  onChange={(event) => {
+                    const selected = newSubscriptionMemberOptions.find(
+                      (member) => member.id === event.target.value,
+                    );
+                    if (selected) selectNewSubscriptionMember(selected);
+                  }}
+                  required
+                >
+                  <option value="">{multiUserCopy.selectExistingMember}</option>
+                  {newSubscriptionMemberOptions.map((member) => (
+                    <option key={member.id} value={member.id}>
+                      {member.firstName} {member.lastName} · {member.email || member.phone || member.id}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+            {renewMember && (
+              <div className="rounded-lg bg-slate-50 p-3 text-sm">
+                <p className="font-medium text-slate-900">{renewMember.firstName} {renewMember.lastName}</p>
+                <p className="text-slate-500">
+                  Current plans: {renewCurrentPlan || 'No active plan'}
                 </p>
-              )}
-            </div>
+                {renewMode === 'edit' && (
+                  <p className="mt-1 text-slate-500">
+                    Editing the payment information of the existing, unexpired subscription or renewal.
+                  </p>
+                )}
+              </div>
+            )}
             <div className="min-w-0 space-y-2">
               <Label htmlFor="renewPlan">Plan</Label>
-              <select
-                id="renewPlan"
-                className="h-9 w-full min-w-0 max-w-full rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
-                value={renewPlanId}
-                onChange={(event) => setRenewPlanId(event.target.value)}
-                disabled={Boolean(renewMultiSubscription) || renewMode === 'edit'}
-                required
-              >
-                {renewMultiSubscription ? (
-                  <option value={renewMultiSubscription.planId}>
-                    {renewMultiSubscription.planName}
-                  </option>
-                ) : (
-                  <>
-                    {renewMode === 'edit' &&
-                      renewPlanId &&
-                      !plans.some((plan) => plan.id === renewPlanId) && (
-                        <option value={renewPlanId}>
-                          {renewCurrentPlan || 'Existing plan'}
-                        </option>
-                      )}
-                    {plans.length === 0 && <option value="">No active plans available</option>}
-                    {plans.map((plan) => (
-                      <option key={plan.id} value={plan.id}>{plan.name} - {formatMoney(plan.price, plan.currency)} / {plan.durationDays} days</option>
-                    ))}
-                  </>
-                )}
-              </select>
+              {subscriptionIntent === 'new' ? (
+                <select
+                  id="renewPlan"
+                  className="h-9 w-full min-w-0 max-w-full rounded-lg border border-input bg-transparent px-2.5 text-sm"
+                  value={newSubscriptionPlanVersionId}
+                  onChange={(event) =>
+                    setNewSubscriptionPlanVersionId(event.target.value)
+                  }
+                  required
+                >
+                  {planVersions.length === 0 && (
+                    <option value="">No active plans available</option>
+                  )}
+                  {planVersions.map((planVersion) => (
+                    <option key={planVersion.id} value={planVersion.id}>
+                      {planVersion.name} · {planVersion.planType} ·{' '}
+                      {formatMoney(planVersion.price, planVersion.currency)} /{' '}
+                      {planVersion.durationDays} days
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <select
+                  id="renewPlan"
+                  className="h-9 w-full min-w-0 max-w-full rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+                  value={renewPlanId}
+                  onChange={(event) => setRenewPlanId(event.target.value)}
+                  disabled={Boolean(renewMultiSubscription) || renewMode === 'edit'}
+                  required
+                >
+                  {renewMultiSubscription ? (
+                    <option value={renewMultiSubscription.planId}>
+                      {renewMultiSubscription.planName}
+                    </option>
+                  ) : (
+                    <>
+                      {renewMode === 'edit' &&
+                        renewPlanId &&
+                        !plans.some((plan) => plan.id === renewPlanId) && (
+                          <option value={renewPlanId}>
+                            {renewCurrentPlan || 'Existing plan'}
+                          </option>
+                        )}
+                      {plans.length === 0 && <option value="">No active plans available</option>}
+                      {plans.map((plan) => (
+                        <option key={plan.id} value={plan.id}>{plan.name} - {formatMoney(plan.price, plan.currency)} / {plan.durationDays} days</option>
+                      ))}
+                    </>
+                  )}
+                </select>
+              )}
             </div>
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
               <div className="space-y-2">
@@ -1598,18 +1872,24 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                   renewPaymentLocked ||
                   !renewPaymentStatus ||
                   !renewPaymentDate ||
-                  (renewMode === 'create' &&
-                    !renewMultiSubscription &&
-                    plans.length === 0)
+                  (subscriptionIntent === 'new'
+                    ? !renewMember || !selectedNewPlanVersion
+                    : renewMode === 'create' &&
+                      !renewMultiSubscription &&
+                      plans.length === 0)
                 }
               >
                 {saving
-                  ? renewMode === 'edit'
+                  ? subscriptionIntent === 'new'
+                    ? 'Creating...'
+                    : renewMode === 'edit'
                     ? 'Saving...'
                     : 'Renewing...'
                   : renewPaymentLocked
                     ? 'Payment already paid'
-                    : renewMode === 'edit'
+                    : subscriptionIntent === 'new'
+                      ? 'Create Subscription'
+                      : renewMode === 'edit'
                       ? 'Save Payment'
                       : renewMultiSubscription
                         ? 'Renew Subscription'
