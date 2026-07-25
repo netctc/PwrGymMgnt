@@ -63,19 +63,32 @@ export default function AccessControl() {
   useEffect(() => { void loadAccessPoints(); }, []);
   useEffect(() => { if (section === 'history') loadHistory(); }, [section]);
 
-  const handleValidate = async () => {
+  const handleValidate = async (options: {
+    affiliationId?: string;
+    confirmSessionConsumption?: boolean;
+  } = {}) => {
     if (!memberId.trim()) { toast.error('Enter a member ID'); return; }
     setValidating(true);
-    setLastDecision(null);
+    if (!options.affiliationId && !options.confirmSessionConsumption) {
+      setLastDecision(null);
+    }
     try {
       const decision = await subscriptionsV2Api.authorizeAccess({
         method,
-        memberId: memberId.trim(),
+        ...(method === 'qr'
+          ? { tokenHash: memberId.trim() }
+          : { memberId: memberId.trim() }),
         accessPointId: accessPointId || undefined,
+        affiliationId: options.affiliationId,
+        confirmSessionConsumption: options.confirmSessionConsumption,
       });
       setLastDecision(decision);
       if (decision.authorized) {
         toast.success(`Access granted: ${decision.personName || decision.personId}`);
+      } else if (decision.requiresAffiliationSelection) {
+        toast.info('Select the plan to use for this access');
+      } else if (decision.requiresConsumptionConfirmation) {
+        toast.info('Confirm the session deduction before authorizing access');
       } else {
         toast.error(`Access denied: ${decision.reason}`);
       }
@@ -142,7 +155,7 @@ export default function AccessControl() {
                     {accessPoints.map((ap) => <option key={ap.id} value={ap.id}>{ap.name} ({ap.branch})</option>)}
                   </select>
                 </div>
-                <Button onClick={handleValidate} disabled={validating} className="w-full h-12 bg-green-600 hover:bg-green-700 text-white text-lg">
+                <Button onClick={() => handleValidate()} disabled={validating} className="w-full h-12 bg-green-600 hover:bg-green-700 text-white text-lg">
                   {validating ? 'Validating...' : 'Validate Access'}
                 </Button>
               </div>
@@ -180,6 +193,43 @@ export default function AccessControl() {
                       <p><span className="font-medium">Sessions remaining:</span> {lastDecision.sessionsRemaining}</p>
                     )}
                     {lastDecision.affiliationId && <p><span className="font-medium">Affiliation:</span> {lastDecision.affiliationId}</p>}
+                    {lastDecision.requiresAffiliationSelection && (
+                      <div className="space-y-2 rounded-lg border border-amber-300 bg-amber-50 p-3">
+                        <p className="font-medium text-amber-900">Select the plan for this access</p>
+                        {(lastDecision.affiliationOptions || []).map((option: any) => (
+                          <Button
+                            key={option.affiliationId}
+                            type="button"
+                            variant="outline"
+                            className="w-full justify-between bg-white"
+                            disabled={validating}
+                            onClick={() => handleValidate({ affiliationId: option.affiliationId })}
+                          >
+                            <span>{option.planName}</span>
+                            <span className="text-xs text-slate-500">
+                              {option.sessionsAvailable === null
+                                ? 'Unlimited'
+                                : `${option.sessionsAvailable} sessions`}
+                            </span>
+                          </Button>
+                        ))}
+                      </div>
+                    )}
+                    {lastDecision.requiresConsumptionConfirmation && (
+                      <Button
+                        type="button"
+                        className="w-full bg-green-600 hover:bg-green-700"
+                        disabled={validating}
+                        onClick={() =>
+                          handleValidate({
+                            affiliationId: lastDecision.affiliationId,
+                            confirmSessionConsumption: true,
+                          })
+                        }
+                      >
+                        Confirm session deduction and authorize
+                      </Button>
+                    )}
                     <p className="text-xs text-slate-400 mt-2">Attempt: {lastDecision.attemptId} • Request: {lastDecision.requestId}</p>
                   </div>
                 </div>
