@@ -136,12 +136,12 @@ async function selectAffiliation(
   pool: Pool,
   memberId: string,
   requestedAffiliationId?: string,
-): Promise<{ affiliationId: string; subscriptionId: string; planName: string; cycleId: string | null; sessionsUnlimited: boolean; distributionModel: string } | null> {
+): Promise<{ affiliationId: string; subscriptionId: string; planName: string; cycleId: string | null; sessionsUnlimited: boolean; distributionModel: string; deductionMoment: string } | null> {
   // Priority 1: Explicitly requested affiliation
   if (requestedAffiliationId) {
     const [rows]: any = await pool.query(
       `SELECT a.id, a.subscription_id, pv.name AS plan_name, pv.sessions_unlimited,
-              pv.distribution_model,
+              pv.distribution_model, pv.booking_policy,
               (SELECT id FROM subscription_cycles WHERE subscription_id = a.subscription_id AND status = 'active' ORDER BY cycle_number DESC LIMIT 1) AS cycle_id
        FROM affiliations a
        JOIN plan_versions pv ON pv.id = a.plan_version_id
@@ -149,13 +149,19 @@ async function selectAffiliation(
        LIMIT 1`,
       [requestedAffiliationId, memberId],
     );
-    if (rows.length > 0) return { affiliationId: rows[0].id, subscriptionId: rows[0].subscription_id, planName: rows[0].plan_name, cycleId: rows[0].cycle_id, sessionsUnlimited: Boolean(rows[0].sessions_unlimited), distributionModel: rows[0].distribution_model || "individual" };
+    if (rows.length > 0) {
+      const policy = typeof rows[0].booking_policy === "string"
+        ? JSON.parse(rows[0].booking_policy || "{}")
+        : (rows[0].booking_policy || {});
+      return { affiliationId: rows[0].id, subscriptionId: rows[0].subscription_id, planName: rows[0].plan_name, cycleId: rows[0].cycle_id, sessionsUnlimited: Boolean(rows[0].sessions_unlimited), distributionModel: rows[0].distribution_model || "individual", deductionMoment: policy.deductionMoment || "check_in" };
+    }
   }
 
   // Priority 2-5: Active affiliations ordered by priority
   const [rows]: any = await pool.query(
     `SELECT a.id, a.subscription_id, a.is_primary, a.consumption_priority, a.end_date,
             pv.name AS plan_name, pv.sessions_unlimited, pv.distribution_model,
+            pv.booking_policy,
             (SELECT id FROM subscription_cycles WHERE subscription_id = a.subscription_id AND status = 'active' ORDER BY cycle_number DESC LIMIT 1) AS cycle_id
      FROM affiliations a
      JOIN plan_versions pv ON pv.id = a.plan_version_id
@@ -169,6 +175,9 @@ async function selectAffiliation(
   if (rows.length === 0) return null;
 
   // For limited plans, prefer the one with soonest expiry (use sessions before they expire)
+  const policy = typeof rows[0].booking_policy === "string"
+    ? JSON.parse(rows[0].booking_policy || "{}")
+    : (rows[0].booking_policy || {});
   return {
     affiliationId: rows[0].id,
     subscriptionId: rows[0].subscription_id,
@@ -176,6 +185,7 @@ async function selectAffiliation(
     cycleId: rows[0].cycle_id,
     sessionsUnlimited: Boolean(rows[0].sessions_unlimited),
     distributionModel: rows[0].distribution_model || "individual",
+    deductionMoment: policy.deductionMoment || "check_in",
   };
 }
 
@@ -286,7 +296,12 @@ export async function authorizeAccess(pool: Pool, req: AccessRequest): Promise<A
   let movementId: string | null = null;
   let sessionsRemaining: number | null = null;
 
-  if (ledgerEnabled && !affiliation.sessionsUnlimited && affiliation.cycleId) {
+  if (
+    ledgerEnabled &&
+    !affiliation.sessionsUnlimited &&
+    affiliation.cycleId &&
+    affiliation.deductionMoment === "check_in"
+  ) {
     const connection = await pool.getConnection();
     try {
       await connection.beginTransaction();
