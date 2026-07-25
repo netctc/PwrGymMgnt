@@ -515,6 +515,135 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
 
   // --- Session Operations (consume, reserve, refund, adjust) ---
 
+  app.post("/api/v2/sessions/register-event", requirePermission("membership.access.validate"), async (req: AuthenticatedRequest, res, next) => {
+    try {
+      const pool = requirePool(poolProvider);
+      const affiliationId = normalizeString(req.body.affiliationId);
+      const eventMoment = normalizeString(req.body.eventMoment);
+      const referenceType = normalizeString(req.body.referenceType) || "service";
+      const referenceId = normalizeString(req.body.referenceId);
+      const quantity = Math.max(1, numberOrDefault(req.body.quantity, 1));
+      if (!affiliationId || !eventMoment || !referenceId) {
+        return res.status(400).json({
+          error: "affiliationId, eventMoment and referenceId are required",
+        });
+      }
+      const [affRows]: any = await pool.query(
+        `SELECT a.subscription_id, pv.distribution_model, pv.sessions_unlimited,
+                pv.booking_policy
+           FROM affiliations a
+           JOIN subscriptions s ON s.id = a.subscription_id AND s.status = 'active'
+           JOIN plan_versions pv ON pv.id = a.plan_version_id
+          WHERE a.id = ? AND a.status = 'active' AND a.end_date >= CURDATE()
+          LIMIT 1`,
+        [affiliationId],
+      );
+      if (!affRows.length) return res.status(404).json({ error: "Active affiliation not found" });
+      if (affRows[0].sessions_unlimited) {
+        return res.json({ processed: false, reason: "UNLIMITED_PLAN" });
+      }
+      const policy = typeof affRows[0].booking_policy === "string"
+        ? JSON.parse(affRows[0].booking_policy || "{}")
+        : (affRows[0].booking_policy || {});
+      const deductionMoment = policy.deductionMoment || "booking_confirmation";
+      if (eventMoment !== "no_show" && eventMoment !== deductionMoment) {
+        return res.json({
+          processed: false,
+          reason: "DEDUCTION_DEFERRED",
+          configuredMoment: deductionMoment,
+        });
+      }
+      const [cycleRows]: any = await pool.query(
+        "SELECT id FROM subscription_cycles WHERE subscription_id = ? AND status = 'active' ORDER BY cycle_number DESC LIMIT 1",
+        [affRows[0].subscription_id],
+      );
+      if (!cycleRows.length) return res.status(409).json({ error: "No active cycle found" });
+      const connection = await pool.getConnection();
+      try {
+        await connection.beginTransaction();
+        const { createMovement, getBalanceForUpdate } = await import("./sessionLedger");
+        const context = getSessionBalanceContext(
+          affRows[0].distribution_model,
+          affRows[0].subscription_id,
+          affiliationId,
+        );
+        const balance = await getBalanceForUpdate(
+          connection,
+          context.contextType,
+          context.contextId,
+          cycleRows[0].id,
+        );
+        const [reservationRows]: any = await connection.query(
+          `SELECT id, quantity
+             FROM session_movements
+            WHERE balance_id = ?
+              AND reference_type = ?
+              AND reference_id = ?
+              AND movement_type = 'reservation'
+              AND NOT EXISTS (
+                SELECT 1 FROM session_movements follow_up
+                 WHERE follow_up.related_movement_id = session_movements.id
+                   AND follow_up.movement_type IN ('release', 'consumption')
+              )
+            ORDER BY created_at DESC LIMIT 1`,
+          [balance.id, referenceType, referenceId],
+        );
+        const reservation = reservationRows[0];
+        const shouldConsume = eventMoment !== "no_show" || policy.noShowConsumesSession !== false;
+        let releaseMovement = null;
+        if (reservation) {
+          releaseMovement = await createMovement(connection, {
+            balanceId: balance.id,
+            affiliationId,
+            cycleId: cycleRows[0].id,
+            movementType: "release",
+            quantity: Number(reservation.quantity),
+            referenceType,
+            referenceId,
+            relatedMovementId: reservation.id,
+            reason: shouldConsume
+              ? "Reservation converted to final consumption"
+              : "No-show policy returned the reserved session",
+            performedBy: req.user?.email || req.user?.uid || "system",
+            idempotencyKey: `event_release_${reservation.id}`,
+          });
+        }
+        let movement = null;
+        if (shouldConsume) {
+          movement = await createMovement(connection, {
+            balanceId: balance.id,
+            affiliationId,
+            cycleId: cycleRows[0].id,
+            movementType: "consumption",
+            quantity,
+            referenceType,
+            referenceId,
+            relatedMovementId: reservation?.id || null,
+            reason: normalizeString(req.body.reason) || `Session consumed at ${eventMoment}`,
+            performedBy: req.user?.email || req.user?.uid || "system",
+            idempotencyKey:
+              req.headers["idempotency-key"] as string ||
+              normalizeString(req.body.idempotencyKey) ||
+              `session_event_${eventMoment}_${referenceType}_${referenceId}`,
+          });
+        }
+        await connection.commit();
+        res.status(201).json({
+          processed: true,
+          configuredMoment: deductionMoment,
+          source: normalizeString(req.body.source) || "system",
+          releaseMovementId: releaseMovement?.id || null,
+          movement,
+        });
+      } catch (error) {
+        await connection.rollback();
+        throw error;
+      } finally {
+        connection.release();
+      }
+    } catch (error) { next(error); }
+  });
+
   app.post("/api/v2/sessions/consume", requirePermission("membership.access.validate"), async (req: AuthenticatedRequest, res, next) => {
     try {
       const pool = requirePool(poolProvider);
