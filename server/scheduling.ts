@@ -646,7 +646,8 @@ export function registerSchedulingRoutes(app: Express, poolProvider: PoolProvide
         if (ledgerEnabled) {
           // Find active affiliation for this member
           const [affRows]: any = await connection.query(
-            `SELECT a.id, a.subscription_id, pv.sessions_unlimited
+            `SELECT a.id, a.subscription_id, pv.sessions_unlimited,
+                    pv.distribution_model, pv.booking_policy
              FROM affiliations a
              JOIN plan_versions pv ON pv.id = a.plan_version_id
              JOIN subscriptions s ON s.id = a.subscription_id AND s.status = 'active'
@@ -655,13 +656,37 @@ export function registerSchedulingRoutes(app: Express, poolProvider: PoolProvide
             [memberId],
           );
           if (affRows.length > 0 && !affRows[0].sessions_unlimited) {
+            const bookingPolicy = typeof affRows[0].booking_policy === "string"
+              ? JSON.parse(affRows[0].booking_policy || "{}")
+              : (affRows[0].booking_policy || {});
+            const deductionMoment = bookingPolicy.deductionMoment || "booking_confirmation";
+            if (!["reservation", "booking_confirmation"].includes(deductionMoment)) {
+              await connection.commit();
+              const [rows]: any = await pool.query("SELECT * FROM class_bookings WHERE id = ?", [bookingId]);
+              return res.status(201).json({
+                booking: mapClassBooking(rows[0]),
+                movementId: null,
+                sessionsRemaining: null,
+                deductionDeferredUntil: deductionMoment,
+              });
+            }
             const [cycleRows]: any = await connection.query(
               "SELECT id FROM subscription_cycles WHERE subscription_id = ? AND status = 'active' ORDER BY cycle_number DESC LIMIT 1",
               [affRows[0].subscription_id],
             );
             if (cycleRows.length > 0) {
-              const { getBalanceForUpdate, createMovement } = await import("./sessionLedger");
-              const balance = await getBalanceForUpdate(connection, "affiliation", affRows[0].id, cycleRows[0].id);
+              const { getBalanceForUpdate, createMovement, getSessionBalanceContext } = await import("./sessionLedger");
+              const context = getSessionBalanceContext(
+                affRows[0].distribution_model,
+                affRows[0].subscription_id,
+                affRows[0].id,
+              );
+              const balance = await getBalanceForUpdate(
+                connection,
+                context.contextType,
+                context.contextId,
+                cycleRows[0].id,
+              );
               if (balance.available > 0) {
                 const movement = await createMovement(connection, {
                   balanceId: balance.id,
@@ -701,6 +726,30 @@ export function registerSchedulingRoutes(app: Express, poolProvider: PoolProvide
   app.delete("/api/scheduling/bookings/:id", requireScheduler, async (req, res, next) => {
     try {
       const pool = await getReadyPool();
+      const [policyRows]: any = await pool.query(
+        `SELECT cb.member_id, cs.start_time, pv.booking_policy
+           FROM class_bookings cb
+           JOIN class_sessions cs ON cs.id = cb.class_id
+           LEFT JOIN affiliations a
+             ON a.member_id = cb.member_id
+            AND a.status = 'active'
+            AND a.end_date >= CURDATE()
+           LEFT JOIN plan_versions pv ON pv.id = a.plan_version_id
+          WHERE cb.id = ?
+          ORDER BY a.is_primary DESC, a.consumption_priority ASC
+          LIMIT 1`,
+        [req.params.id],
+      );
+      const cancellationPolicy = policyRows.length
+        ? (typeof policyRows[0].booking_policy === "string"
+            ? JSON.parse(policyRows[0].booking_policy || "{}")
+            : (policyRows[0].booking_policy || {}))
+        : {};
+      const minutesUntilStart = policyRows.length
+        ? Math.floor((new Date(policyRows[0].start_time).getTime() - Date.now()) / 60_000)
+        : Number.MAX_SAFE_INTEGER;
+      const lateCancellation =
+        minutesUntilStart < Number(cancellationPolicy.cancellationWindowMinutes ?? 120);
 
       // Refund session if ledger is active and a reservation was made
       try {
@@ -727,10 +776,45 @@ export function registerSchedulingRoutes(app: Express, poolProvider: PoolProvide
                 referenceType: "class_booking_cancel",
                 referenceId: req.params.id,
                 relatedMovementId: movRows[0].id,
-                reason: "Booking cancelled — session released",
+                reason: lateCancellation
+                  ? "Late booking cancellation — reservation released before penalty evaluation"
+                  : "Booking cancelled within policy — session released",
                 performedBy: (req as any).user?.email || "system",
                 idempotencyKey: `booking_release_${req.params.id}`,
               });
+              if (lateCancellation) {
+                const [lateRows]: any = await connection.query(
+                  `SELECT COUNT(*) AS total
+                     FROM class_bookings
+                    WHERE member_id = ?
+                      AND status = 'cancelled'
+                      AND JSON_EXTRACT(data, '$.lateCancellation') = true`,
+                  [policyRows[0]?.member_id],
+                );
+                const threshold = Math.max(
+                  1,
+                  Number(cancellationPolicy.lateCancellationThreshold ?? 2),
+                );
+                const penalty = Math.max(
+                  0,
+                  Number(cancellationPolicy.lateCancellationPenalty ?? 1),
+                );
+                if ((Number(lateRows[0]?.total || 0) + 1) % threshold === 0 && penalty > 0) {
+                  await createMovement(connection, {
+                    balanceId: movRows[0].balance_id,
+                    affiliationId: movRows[0].affiliation_id,
+                    cycleId: movRows[0].cycle_id,
+                    movementType: "adjustment_negative",
+                    quantity: penalty,
+                    referenceType: "late_cancellation_penalty",
+                    referenceId: req.params.id,
+                    relatedMovementId: movRows[0].id,
+                    reason: `Late cancellation penalty (${threshold} late cancellations)`,
+                    performedBy: (req as any).user?.email || "system",
+                    idempotencyKey: `booking_late_penalty_${req.params.id}`,
+                  });
+                }
+              }
               await connection.commit();
             } catch {
               await connection.rollback();
@@ -743,8 +827,17 @@ export function registerSchedulingRoutes(app: Express, poolProvider: PoolProvide
         // Ledger errors should not block cancellation
       }
 
-      await pool.query("UPDATE class_bookings SET status = 'cancelled', cancelled_at = NOW() WHERE id = ?", [req.params.id]);
-      res.json({ success: true, status: "cancelled" });
+      await pool.query(
+        `UPDATE class_bookings
+            SET status = 'cancelled',
+                cancelled_at = NOW(),
+                data = JSON_SET(COALESCE(data, JSON_OBJECT()),
+                  '$.lateCancellation', ?,
+                  '$.minutesUntilStart', ?)
+          WHERE id = ?`,
+        [lateCancellation, minutesUntilStart, req.params.id],
+      );
+      res.json({ success: true, status: "cancelled", lateCancellation });
     } catch (error) {
       next(error);
     }
