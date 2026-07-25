@@ -25,6 +25,9 @@ export type MembershipMember = {
   multiUserSubscriptionId?: string | null;
   multiUserSubscriptionStatus?: string | null;
   multiUserSubscriptionEndDate?: string | null;
+  legacySubscriptionId?: string | null;
+  paymentInvoiceId?: string | null;
+  paymentDueDate?: string | null;
   holderActionLocked?: boolean;
   planDescription?: string | null;
   multiUserMembers?: Array<{
@@ -190,11 +193,26 @@ export const membershipApi = {
       price?: number;
       currency?: string;
       createInvoice?: boolean;
+      paymentStatus: 'paid' | 'pending';
+      paymentDate: string;
     },
   ) =>
     apiRequest<{ subscription: MembershipSubscription; invoice: MembershipInvoice | null }>(
       `/api/membership/members/${encodeURIComponent(memberId)}/subscriptions`,
       { method: 'POST', body: subscription },
+    ),
+
+  updateSubscriptionPaymentStatus: (
+    subscriptionId: string,
+    payload: { paymentStatus: 'paid' | 'pending'; paymentDate?: string },
+  ) =>
+    apiRequest<{
+      paymentStatus: string;
+      paymentStatusLocked: boolean;
+      invoice: MembershipInvoice;
+    }>(
+      `/api/membership/subscriptions/${encodeURIComponent(subscriptionId)}/payment-status`,
+      { method: 'PATCH', body: payload },
     ),
 
   generateAccessToken: (memberId: string) =>
