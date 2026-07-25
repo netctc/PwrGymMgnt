@@ -230,6 +230,21 @@ export const subscriptionsV2Api = {
   listSessionMovements: (params: { balanceId?: string; affiliationId?: string }) =>
     apiRequest<{ movements: SessionMovement[] }>(`/api/v2/session-movements${toQuery(params)}`),
 
+  registerSessionEvent: (payload: {
+    affiliationId: string;
+    eventMoment: 'reservation' | 'booking_confirmation' | 'check_in' | 'service_start' | 'attendance_confirmation' | 'service_completion' | 'no_show';
+    source: string;
+    referenceType: string;
+    referenceId: string;
+    quantity?: number;
+    reason?: string;
+    idempotencyKey?: string;
+  }) =>
+    apiRequest<{ processed: boolean; configuredMoment?: string; movement?: SessionMovement | null }>(
+      '/api/v2/sessions/register-event',
+      { method: 'POST', body: JSON.stringify(payload) },
+    ),
+
   // Feature Flags
   listFeatureFlags: () =>
     apiRequest<{ flags: FeatureFlag[] }>('/api/v2/feature-flags'),
