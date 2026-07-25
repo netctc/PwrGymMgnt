@@ -190,6 +190,7 @@ test("limited multi-user plans expose distribution, cycles, immutable movements 
   assert.match(subscriptions, /invoiceNumber/);
   assert.match(subscriptions, /subscription_v2_renewal_invoice/);
   assert.match(subscriptions, /paymentDate/);
+  assert.match(subscriptions, /DUPLICATE_ACTIVE_PLAN/);
   assert.match(subscriptions, /estimated payment date cannot be in the past/i);
   assert.match(payments, /OUTSTANDING_SUBSCRIPTION_PAYMENT/);
   assert.match(lifecycle, /current subscription payment must be settled/i);
@@ -204,6 +205,13 @@ test("limited multi-user plans expose distribution, cycles, immutable movements 
   assert.match(membersPage, /expandedPlanKey/);
   assert.match(membersPage, /New Subscriptions/);
   assert.match(membersPage, /member\.plans/);
+  assert.match(membersPage, /openNewSubscription\(newMember\)/);
+  assert.match(membersPage, /newSubscriptionRequiresMemberSelection/);
+  assert.match(membersPage, /planManagementApi\.listPlans/);
+  assert.match(membersPage, /plan\.planType === 'individual'/);
+  assert.match(membersPage, /activePlanIds\.has\(plan\.id\)/);
+  assert.match(membersPage, /activePlanVersionIds\.has\(plan\.planVersionId\)/);
+  assert.match(membership, /s\.plan_id/);
   assert.match(membersPage, /sessionsConsumed/);
   assert.match(membersPage, /sessionsPending/);
   assert.match(membersPage, /multiUserMembers/);
