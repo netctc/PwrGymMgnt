@@ -422,6 +422,71 @@ const SCREEN_REPORTS: ScreenReportDefinition[] = [
     likeFilters: { q: ["ps.member_name", "ps.trainer_name", "ps.notes", "ps.level", "ps.branch"] },
   },
   {
+    id: "consumed-sessions",
+    sectionId: "plans-subscriptions",
+    label: "Consumed Sessions",
+    screen: "Subscriptions / Reports",
+    description: "Immutable session-consumption ledger by member, period, plan and trainer, ready to print or download as PDF.",
+    roles: ["super_admin", "admin", "manager", "reception", "cashier", "accounting", "trainer"],
+    title: "Consumed Sessions Report",
+    subtitle: "Consumed sessions filtered by movement date, member, plan and search text",
+    tableTitle: "Consumed Sessions",
+    columns: ["Movement", "Member", "Member ID", "Plan", "Trainer", "Quantity", "Session Date & Time", "Source", "Reference"],
+    baseSql: `SELECT
+       sm.id AS movement_id,
+       CONCAT_WS(' ', m.first_name, m.last_name) AS member_name,
+       m.id AS member_id,
+       COALESCE(NULLIF(pv.name, ''), s.plan_id, 'Unknown plan') AS plan_name,
+       COALESCE(
+         NULLIF(ps.trainer_name, ''),
+         NULLIF(cs.trainer_name, ''),
+         NULLIF(JSON_UNQUOTE(JSON_EXTRACT(sm.data, '$.trainerName')), ''),
+         'Not recorded'
+       ) AS trainer_name,
+       ABS(sm.quantity) AS quantity,
+       COALESCE(ps.start_time, cs.start_time, sm.created_at) AS session_datetime,
+       CASE
+         WHEN ps.id IS NOT NULL THEN 'Private PT'
+         WHEN cs.id IS NOT NULL THEN 'Group class'
+         WHEN sm.reference_type = 'access_attempt' THEN 'Access control'
+         ELSE COALESCE(NULLIF(sm.reference_type, ''), 'Manual')
+       END AS source,
+       COALESCE(NULLIF(sm.reference_id, ''), sm.reason, '') AS reference
+     FROM session_movements sm
+     JOIN affiliations a
+       ON a.id = sm.affiliation_id
+      AND sm.direction = '-'
+      AND sm.movement_type IN ('consumption', 'adjustment_negative')
+     JOIN members m ON m.id = a.member_id
+     JOIN subscriptions s ON s.id = a.subscription_id
+     JOIN plan_versions pv ON pv.id = a.plan_version_id
+     LEFT JOIN private_sessions ps
+       ON sm.reference_id = ps.id
+      AND sm.reference_type IN ('private_session', 'private_pt', 'private_class')
+     LEFT JOIN class_bookings cb
+       ON sm.reference_id = cb.id
+      AND sm.reference_type IN ('class_booking', 'booking')
+     LEFT JOIN class_sessions cs ON cs.id = cb.class_id`,
+    orderBy: "ORDER BY sm.created_at DESC, m.last_name ASC, m.first_name ASC",
+    dateColumn: "sm.created_at",
+    filters: [
+      ...COMMON_DATE_FILTERS,
+      { id: "member", label: "Member", type: "text", placeholder: "Member name" },
+      { id: "plan", label: "Plan", type: "text", placeholder: "Plan name" },
+      { id: "trainer", label: "Trainer", type: "text", placeholder: "Trainer name" },
+      { id: "memberId", label: "Member ID", type: "text", placeholder: "Exact member ID" },
+      { id: "planId", label: "Plan ID", type: "text", placeholder: "Exact plan ID" },
+      { id: "q", label: "Reference", type: "text", placeholder: "Reference, reason or movement ID" },
+    ],
+    exactFilters: { memberId: "m.id", planId: "s.plan_id" },
+    likeFilters: {
+      member: ["m.first_name", "m.last_name"],
+      plan: ["pv.name"],
+      trainer: ["ps.trainer_name", "cs.trainer_name", "JSON_UNQUOTE(JSON_EXTRACT(sm.data, '$.trainerName'))"],
+      q: ["sm.id", "sm.reference_id", "sm.reason"],
+    },
+  },
+  {
     id: "support-tickets",
     sectionId: "support",
     label: "Support Tickets",
