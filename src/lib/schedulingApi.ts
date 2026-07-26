@@ -110,7 +110,12 @@ function toQuery(params: Record<string, string | number | undefined | null>) {
 
 export const schedulingApi = {
   getResources: () =>
-    apiRequest<{ members: SchedulingPerson[]; trainers: SchedulingPerson[]; rooms: string[] }>('/api/scheduling/resources'),
+    apiRequest<{
+      members: SchedulingPerson[];
+      limitedMembers: SchedulingPerson[];
+      trainers: SchedulingPerson[];
+      rooms: string[];
+    }>('/api/scheduling/resources'),
 
   listClasses: (params: { from?: string; to?: string; trainerId?: string; branch?: string; type?: string; status?: string } = {}) =>
     apiRequest<{ classes: ClassSession[] }>(`/api/scheduling/classes${toQuery(params)}`),
