@@ -521,7 +521,7 @@ function mapInvoice(row: any) {
 }
 
 export async function loadCurrentEcardSubscription(pool: Pool, memberId: string) {
-  // Canonical source: member_subscriptions (legacy `subscriptions` migrated to this table in 023)
+  // Legacy source used by existing individual memberships.
   const [rows]: any = await pool.query(
     `SELECT id, member_id, plan_id, plan_name, status, start_date, end_date, price, currency, created_at, updated_at, data,
             'member_subscriptions' AS source_table
@@ -535,7 +535,31 @@ export async function loadCurrentEcardSubscription(pool: Pool, memberId: string)
       LIMIT 1`,
     [memberId],
   );
-  return rows[0] || null;
+  if (rows[0]) return rows[0];
+
+  // V2 source used by individual and multi-user affiliations. This fallback is
+  // essential for active holders/beneficiaries that no longer have a row in
+  // member_subscriptions.
+  const [v2Rows]: any = await pool.query(
+    `SELECT s.id, a.member_id, s.plan_id, pv.name AS plan_name,
+            s.status, s.start_date, s.end_date, s.price_paid AS price,
+            s.currency, s.created_at, s.updated_at, s.data,
+            'subscriptions' AS source_table
+       FROM affiliations a
+       JOIN subscriptions s ON s.id = a.subscription_id
+       JOIN plan_versions pv ON pv.id = s.plan_version_id
+      WHERE a.member_id = ?
+        AND a.status = 'active'
+        AND a.start_date <= CURDATE()
+        AND a.end_date >= CURDATE()
+        AND s.status = 'active'
+        AND s.start_date <= CURDATE()
+        AND s.end_date >= CURDATE()
+      ORDER BY s.end_date DESC, s.updated_at DESC
+      LIMIT 1`,
+    [memberId],
+  );
+  return v2Rows[0] || null;
 }
 
 
