@@ -44,6 +44,7 @@ export default function PrivateClasses() {
   const { profile } = useAuth();
   const [classes, setClasses] = useState<PrivateClassSession[]>([]);
   const [members, setMembers] = useState<SchedulingPerson[]>([]);
+  const [limitedMembers, setLimitedMembers] = useState<SchedulingPerson[]>([]);
   const [trainers, setTrainers] = useState<SchedulingPerson[]>([]);
   const [rooms, setRooms] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
@@ -70,6 +71,7 @@ export default function PrivateClasses() {
   const fetchResources = async () => {
     const response = await schedulingApi.getResources();
     setMembers(response.members);
+    setLimitedMembers(response.limitedMembers || []);
     setTrainers(response.trainers);
     setRooms(response.rooms);
     if (!room && response.rooms[0]) setRoom(response.rooms[0]);
@@ -118,7 +120,7 @@ export default function PrivateClasses() {
       return;
     }
 
-    const member = members.find((item) => item.id === memberId);
+    const member = limitedMembers.find((item) => item.id === memberId);
     const trainer = trainers.find((item) => item.id === trainerId);
     try {
       setLastConflict(null);
@@ -250,7 +252,7 @@ export default function PrivateClasses() {
                   <Label>Member</Label>
                   <select className="h-10 w-full rounded-md border border-slate-200 px-3 text-sm" value={memberId} onChange={(event) => setMemberId(event.target.value)} required>
                     <option value="">Select member</option>
-                    {members.map((member) => <option key={member.id} value={member.id}>{fullName(member)}</option>)}
+                    {limitedMembers.map((member) => <option key={member.id} value={member.id}>{fullName(member)}</option>)}
                   </select>
                 </div>
 
