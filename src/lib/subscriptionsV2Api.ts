@@ -267,6 +267,8 @@ export const subscriptionsV2Api = {
   authorizeAccess: (payload: {
     method: string;
     memberId?: string;
+    accessToken?: string;
+    /** @deprecated Send the raw QR/card bearer value in accessToken. */
     tokenHash?: string;
     accessPointId?: string;
     affiliationId?: string;
