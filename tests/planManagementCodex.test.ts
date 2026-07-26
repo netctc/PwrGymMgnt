@@ -286,6 +286,9 @@ test("limited multi-user plans expose distribution, cycles, immutable movements 
   assert.match(qrScannerPage, /Deduct session/);
   assert.match(qrScannerPage, /Recover session/);
   assert.match(scheduling, /limitedMembers/);
+  assert.match(scheduling, /AND EXISTS \(/);
+  assert.match(scheduling, /LOWER\(TRIM\(m\.status\)\) = 'active'/);
+  assert.match(scheduling, /LOWER\(TRIM\(a\.status\)\) = 'active'/);
   assert.match(scheduling, /LIMITED_SESSION_PLAN_REQUIRED/);
   assert.match(scheduling, /deductionDeferredUntil: "check_in"/);
   assert.match(privateClassesPage, /limitedMembers\.map/);
@@ -305,4 +308,6 @@ test("limited multi-user plans expose distribution, cycles, immutable movements 
   assert.match(ledger, /DUPLICATE_ACTIVITY/);
   assert.match(listMaintenance, /intervalSeconds/);
   assert.match(reports, /import \{ autoTable \} from "jspdf-autotable"/);
+  assert.match(reports, /id: "consumed-sessions"/);
+  assert.match(reports, /Consumed Sessions Report/);
 });
