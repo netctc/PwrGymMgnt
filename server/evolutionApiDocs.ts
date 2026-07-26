@@ -77,7 +77,7 @@ const EVOLUTION_OPENAPI_SPEC = {
     schemas: {
       PlanVersionCreate: { type: "object", properties: { planId: { type: "string" }, name: { type: "string" }, planType: { type: "string", enum: ["individual", "family", "group", "corporate"] }, price: { type: "number" }, durationDays: { type: "integer" }, maxMembers: { type: "integer" }, sessionsUnlimited: { type: "boolean" }, sessionsPerCycle: { type: "integer" }, cycleFrequency: { type: "string" }, distributionModel: { type: "string", enum: ["shared", "individual", "custom"] } }, required: ["planId", "name"] },
       SubscriptionCreate: { type: "object", properties: { planVersionId: { type: "string" }, holderMemberId: { type: "string" }, startDate: { type: "string", format: "date" } }, required: ["planVersionId", "holderMemberId"] },
-      AccessRequest: { type: "object", properties: { method: { type: "string", enum: ["qr", "facial", "manual"] }, memberId: { type: "string" }, tokenHash: { type: "string" }, accessPointId: { type: "string" }, affiliationId: { type: "string" } }, required: ["method"] },
+      AccessRequest: { type: "object", properties: { method: { type: "string", enum: ["qr", "card", "facial", "manual"] }, memberId: { type: "string" }, accessToken: { type: "string", description: "Raw bearer token read from the QR e-card or access card. It is hashed by the server before lookup." }, accessPointId: { type: "string" }, affiliationId: { type: "string" }, sessionAction: { type: "string", enum: ["consume", "recover"] }, recoveryReason: { type: "string" } }, required: ["method"] },
     },
   },
   tags: [
