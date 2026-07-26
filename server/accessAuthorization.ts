@@ -14,7 +14,6 @@ import crypto from "crypto";
 import type { Express, Request, Response, NextFunction } from "express";
 import type { Pool, PoolConnection } from "mysql2/promise";
 import { requirePermission } from "./rbac";
-import { isFeatureEnabled } from "./featureFlags";
 import {
   createMovement,
   getBalanceForUpdate,
@@ -39,7 +38,7 @@ function requirePool(poolProvider: PoolProvider) {
 // --- Types ---
 
 export type AccessRequest = {
-  method: "qr" | "facial" | "manual";
+  method: "qr" | "card" | "facial" | "manual";
   accessPointId?: string;
   branch?: string;
   zone?: string;
@@ -59,6 +58,8 @@ export type AccessRequest = {
   reservationAffiliationId?: string; // Affiliation stored immutably on a reservation
   serviceType?: string;
   confirmSessionConsumption?: boolean;
+  sessionAction?: "consume" | "recover";
+  recoveryReason?: string;
   idempotencyKey?: string;
   requestId?: string;
 };
@@ -79,6 +80,8 @@ export type AccessDecision = {
   sessionsRemaining: number | null;
   requiresAffiliationSelection?: boolean;
   requiresConsumptionConfirmation?: boolean;
+  requiresSessionAction?: boolean;
+  sessionRecovered?: boolean;
   affiliationOptions?: AffiliationOption[];
 };
 
@@ -87,6 +90,7 @@ type AffiliationOption = {
   subscriptionId: string;
   planName: string;
   sessionsAvailable: number | null;
+  sessionsUnlimited: boolean;
   isPrimary: boolean;
   consumptionPriority: number;
 };
@@ -110,7 +114,7 @@ async function resolveIdentity(
   pool: Pool,
   req: AccessRequest,
 ): Promise<{ personType: "member" | "employee" | null; personId: string | null; personName: string | null }> {
-  if (req.method === "qr" && req.tokenHash) {
+  if (["qr", "card"].includes(req.method) && req.tokenHash) {
     // Resolve via access_tokens
     const [rows]: any = await pool.query(
       `SELECT at.member_id, m.first_name, m.last_name
@@ -163,6 +167,7 @@ async function selectAffiliation(
   requestedAffiliationId?: string,
   reservationAffiliationId?: string,
   serviceType?: string,
+  sessionAction?: "consume" | "recover",
 ): Promise<AffiliationSelection> {
   const [rows]: any = await pool.query(
     `SELECT a.id, a.subscription_id, a.is_primary, a.consumption_priority, a.end_date,
@@ -240,7 +245,7 @@ async function selectAffiliation(
         [context.contextType, context.contextId, row.cycle_id],
       );
       sessionsAvailable = Number(balanceRows[0]?.available || 0);
-      if (sessionsAvailable <= 0) {
+      if (sessionsAvailable <= 0 && sessionAction === "consume") {
         balanceRejected = true;
         continue;
       }
@@ -264,6 +269,7 @@ async function selectAffiliation(
     subscriptionId: candidate.subscriptionId,
     planName: candidate.planName,
     sessionsAvailable: candidate.sessionsAvailable,
+    sessionsUnlimited: candidate.sessionsUnlimited,
     isPrimary: candidate.isPrimary,
     consumptionPriority: candidate.consumptionPriority,
   }));
@@ -354,6 +360,95 @@ async function checkAndClaimCooldown(
   return Number(updateResult.affectedRows || 0) === 0;
 }
 
+async function recoverLastAccessSession(
+  pool: Pool,
+  affiliation: AffiliationCandidate,
+  req: AccessRequest,
+  attemptId: string,
+) {
+  const recoveryReason = String(req.recoveryReason || "").trim();
+  if (!recoveryReason) {
+    throw Object.assign(
+      new Error("A recovery reason is required"),
+      { status: 400, code: "RECOVERY_REASON_REQUIRED" },
+    );
+  }
+  if (!affiliation.cycleId || affiliation.sessionsUnlimited) {
+    throw Object.assign(
+      new Error("The selected affiliation does not use limited sessions"),
+      { status: 409, code: "LIMITED_SESSION_PLAN_REQUIRED" },
+    );
+  }
+
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    const [movementRows]: any = await connection.query(
+      `SELECT movement.*,
+              EXISTS (
+                SELECT 1
+                  FROM session_movements reversal
+                 WHERE reversal.related_movement_id = movement.id
+                   AND reversal.movement_type IN ('refund', 'compensation')
+              ) AS already_recovered
+         FROM session_movements movement
+        WHERE movement.affiliation_id = ?
+          AND movement.cycle_id = ?
+          AND movement.movement_type = 'consumption'
+          AND movement.reference_type = 'access_attempt'
+        ORDER BY movement.created_at DESC, movement.id DESC
+        LIMIT 1
+        FOR UPDATE`,
+      [affiliation.affiliationId, affiliation.cycleId],
+    );
+    if (!movementRows.length || Boolean(movementRows[0].already_recovered)) {
+      throw Object.assign(
+        new Error("No recoverable access session was found for this plan"),
+        { status: 409, code: "NO_RECOVERABLE_SESSION" },
+      );
+    }
+
+    const original = movementRows[0];
+    const movement = await createMovement(connection, {
+      balanceId: original.balance_id,
+      affiliationId: affiliation.affiliationId,
+      cycleId: affiliation.cycleId,
+      movementType: "refund",
+      quantity: Number(original.quantity || 1),
+      referenceType: "access_session_recovery",
+      referenceId: attemptId,
+      relatedMovementId: original.id,
+      reason: recoveryReason,
+      performedBy: req.operatorEmail || "system",
+      idempotencyKey: req.idempotencyKey
+        ? `recover_${req.idempotencyKey}`
+        : `recover_${original.id}`,
+    });
+    await connection.query(
+      `INSERT INTO outbox_events (id, event_type, payload, status)
+       VALUES (?, 'access_session_recovered', ?, 'pending')`,
+      [
+        createId("evt"),
+        JSON.stringify({
+          affiliationId: affiliation.affiliationId,
+          subscriptionId: affiliation.subscriptionId,
+          originalMovementId: original.id,
+          recoveryMovementId: movement.id,
+          reason: recoveryReason,
+          performedBy: req.operatorEmail || "system",
+        }),
+      ],
+    );
+    await connection.commit();
+    return movement;
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+}
+
 /**
  * Core authorization function. Used by all access methods.
  */
@@ -397,8 +492,8 @@ export async function authorizeAccess(pool: Pool, req: AccessRequest): Promise<A
     return decision;
   }
 
-  // Step 3: Check if session ledger is enabled
-  const ledgerEnabled = await isFeatureEnabled(pool, "ENABLE_SESSION_LEDGER");
+  // Session consumption at access is a core workflow and is always ledger-backed.
+  const ledgerEnabled = true;
 
   // Step 4: Select affiliation
   const selection = await selectAffiliation(
@@ -407,7 +502,29 @@ export async function authorizeAccess(pool: Pool, req: AccessRequest): Promise<A
     req.affiliationId,
     req.reservationAffiliationId,
     req.serviceType,
+    req.sessionAction,
   );
+  const limitedOptions = selection.options.filter(
+    (option) => !option.sessionsUnlimited,
+  );
+  if (
+    limitedOptions.length > 0 &&
+    !req.sessionAction &&
+    !req.affiliationId
+  ) {
+    const decision = buildDenied(
+      attemptId,
+      requestId,
+      "SESSION_ACTION_REQUIRED",
+      identity.personType,
+      identity.personId,
+      identity.personName,
+    );
+    decision.requiresSessionAction = true;
+    decision.affiliationOptions = limitedOptions;
+    await recordAttempt(pool, attemptId, req, decision);
+    return decision;
+  }
   const affiliation = selection.selected;
   if (!affiliation) {
     if (selection.reason) {
@@ -459,6 +576,40 @@ export async function authorizeAccess(pool: Pool, req: AccessRequest): Promise<A
     return decision;
   }
 
+  if (req.sessionAction === "recover") {
+    const movement = await recoverLastAccessSession(
+      pool,
+      affiliation,
+      req,
+      attemptId,
+    );
+    const decision = buildDenied(
+      attemptId,
+      requestId,
+      "SESSION_RECOVERED",
+      identity.personType,
+      identity.personId,
+      identity.personName,
+    );
+    decision.affiliationId = affiliation.affiliationId;
+    decision.subscriptionId = affiliation.subscriptionId;
+    decision.planName = affiliation.planName;
+    decision.movementId = movement.id;
+    decision.sessionsRemaining = movement.balanceAfter;
+    decision.sessionRecovered = true;
+    await recordAttempt(pool, attemptId, req, decision);
+    if (req.idempotencyKey) {
+      await storeIdempotencyKey(
+        pool,
+        req.idempotencyKey,
+        "access_session_recover",
+        200,
+        decision,
+      );
+    }
+    return decision;
+  }
+
   // Step 5: Consume session if ledger active and plan is limited
   let movementId: string | null = null;
   let sessionsRemaining: number | null = null;
@@ -466,8 +617,7 @@ export async function authorizeAccess(pool: Pool, req: AccessRequest): Promise<A
   if (
     ledgerEnabled &&
     !affiliation.sessionsUnlimited &&
-    affiliation.cycleId &&
-    affiliation.deductionMoment === "check_in"
+    affiliation.cycleId
   ) {
     if (!req.confirmSessionConsumption) {
       const decision = buildDenied(
@@ -563,8 +713,7 @@ export async function authorizeAccess(pool: Pool, req: AccessRequest): Promise<A
 
   if (
     !ledgerEnabled ||
-    affiliation.sessionsUnlimited ||
-    affiliation.deductionMoment !== "check_in"
+    affiliation.sessionsUnlimited
   ) {
     const cooldownActive = await checkAndClaimCooldown(
       pool,
@@ -640,14 +789,26 @@ async function recordAttempt(pool: Pool, attemptId: string, req: AccessRequest, 
         decision.personType,
         decision.personId,
         req.method,
-        decision.authorized ? "authorized" : "denied",
-        decision.authorized ? null : decision.reason,
+        decision.sessionRecovered
+          ? "session_recovered"
+          : decision.authorized
+            ? "authorized"
+            : "denied",
+        decision.authorized || decision.sessionRecovered
+          ? null
+          : decision.reason,
         decision.affiliationId,
         decision.movementId,
         req.confidenceScore || null,
         req.idempotencyKey || null,
         decision.requestId,
-        JSON.stringify({ branch: req.branch, zone: req.zone, direction: req.direction }),
+        JSON.stringify({
+          branch: req.branch,
+          zone: req.zone,
+          direction: req.direction,
+          sessionAction: req.sessionAction,
+          recoveryReason: req.recoveryReason,
+        }),
       ],
     );
   } catch {
@@ -726,10 +887,6 @@ export function registerAccessAuthorizationRoutes(app: Express, poolProvider: Po
   app.post("/api/access/authorize", requirePermission("membership.access.validate"), async (req: AuthenticatedRequest, res, next) => {
     try {
       const pool = await getPool();
-      const enabled = await isFeatureEnabled(pool, "ENABLE_UNIFIED_ACCESS");
-      if (!enabled) {
-        return res.status(404).json({ error: "Unified access is not enabled" });
-      }
 
       const accessReq: AccessRequest = {
         method: req.body.method || "manual",
@@ -749,6 +906,15 @@ export function registerAccessAuthorizationRoutes(app: Express, poolProvider: Po
         serviceType: req.body.serviceType || null,
         confirmSessionConsumption:
           req.body.confirmSessionConsumption === true,
+        sessionAction:
+          req.body.sessionAction === "consume" ||
+          req.body.sessionAction === "recover"
+            ? req.body.sessionAction
+            : undefined,
+        recoveryReason:
+          typeof req.body.recoveryReason === "string"
+            ? req.body.recoveryReason.trim()
+            : undefined,
         idempotencyKey: req.headers["idempotency-key"] as string || req.body.idempotencyKey || null,
         requestId: (req as any).requestId || createId("req"),
       };
@@ -757,7 +923,9 @@ export function registerAccessAuthorizationRoutes(app: Express, poolProvider: Po
       const status =
         decision.authorized ||
         decision.requiresAffiliationSelection ||
-        decision.requiresConsumptionConfirmation
+        decision.requiresConsumptionConfirmation ||
+        decision.requiresSessionAction ||
+        decision.sessionRecovered
           ? 200
           : 403;
       res.status(status).json(decision);
