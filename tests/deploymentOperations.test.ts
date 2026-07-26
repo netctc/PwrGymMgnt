@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import {
   buildMysqldumpArgs,
   buildSmokeChecks,
@@ -73,6 +75,13 @@ test('backup utilities produce safe filenames and mysqldump arguments', () => {
   assert.deepEqual(args.slice(0, 5), ['--single-transaction', '--quick', '--routines', '--triggers', '--events']);
   assert.equal(args.includes('powergym'), true);
   assert.equal(args.includes('pg'), true);
+});
+
+test('runtime backups stream mysqldump output without shell redirection', () => {
+  const server = fs.readFileSync(path.join(process.cwd(), 'server.ts'), 'utf8');
+  assert.match(server, /spawn\(mysqldumpPath, dumpArgs/);
+  assert.match(server, /pipeline\(child\.stdout, output\)/);
+  assert.doesNotMatch(server, /mysqldump[^`\n]*>\s*\$\{shellQuote/);
 });
 
 test('smoke check helpers normalize base URL and summarize required failures', () => {
