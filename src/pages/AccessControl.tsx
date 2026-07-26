@@ -10,6 +10,7 @@ import { DoorOpen, History, MapPin, Shield, UserCheck, Scan, Plus } from 'lucide
 import { formatDateTime } from '../lib/formatDate';
 import { subscriptionsV2Api, type AccessAttempt } from '../lib/subscriptionsV2Api';
 import { useAuth } from '../contexts/AuthContext';
+import { useLocalization } from '../contexts/LocalizationContext';
 
 type SectionId = 'validate' | 'history' | 'points';
 
@@ -21,6 +22,31 @@ const sections: Array<{ id: SectionId; label: string; icon: ReactNode }> = [
 
 export default function AccessControl() {
   const { profile } = useAuth();
+  const { locale } = useLocalization();
+  const sessionCopy =
+    locale === 'ar'
+      ? {
+          selectAction: 'اختر خطة الجلسات المحدودة والإجراء المطلوب',
+          selectPlan: 'اختر خطة الجلسات المحدودة',
+          recoveryReason: 'سبب استرجاع الجلسة',
+          recoveryPlaceholder: 'مطلوب فقط عند استرجاع جلسة',
+          deduct: 'خصم جلسة',
+          recover: 'استرجاع جلسة',
+          sessions: 'جلسات',
+          recovered: 'تم استرجاع الجلسة',
+          newBalance: 'الرصيد الجديد',
+        }
+      : {
+          selectAction: 'Select a limited-session plan and an action',
+          selectPlan: 'Select the limited-session plan',
+          recoveryReason: 'Recovery reason',
+          recoveryPlaceholder: 'Required only when recovering a session',
+          deduct: 'Deduct session',
+          recover: 'Recover session',
+          sessions: 'sessions',
+          recovered: 'Session recovered',
+          newBalance: 'New balance',
+        };
   const [searchParams, setSearchParams] = useSearchParams();
   const section = (searchParams.get('tab') as SectionId) || 'validate';
   const setSection = (s: SectionId) => setSearchParams(s === 'validate' ? {} : { tab: s });
@@ -31,6 +57,7 @@ export default function AccessControl() {
   const [accessPointId, setAccessPointId] = useState('');
   const [validating, setValidating] = useState(false);
   const [lastDecision, setLastDecision] = useState<any>(null);
+  const [recoveryReason, setRecoveryReason] = useState('');
 
   // History state
   const [attempts, setAttempts] = useState<AccessAttempt[]>([]);
@@ -66,6 +93,7 @@ export default function AccessControl() {
   const handleValidate = async (options: {
     affiliationId?: string;
     confirmSessionConsumption?: boolean;
+    sessionAction?: 'consume' | 'recover';
   } = {}) => {
     if (!memberId.trim()) { toast.error('Enter a member ID'); return; }
     setValidating(true);
@@ -81,10 +109,21 @@ export default function AccessControl() {
         accessPointId: accessPointId || undefined,
         affiliationId: options.affiliationId,
         confirmSessionConsumption: options.confirmSessionConsumption,
+        sessionAction: options.sessionAction,
+        recoveryReason:
+          options.sessionAction === 'recover'
+            ? recoveryReason.trim()
+            : undefined,
       });
       setLastDecision(decision);
       if (decision.authorized) {
         toast.success(`Access granted: ${decision.personName || decision.personId}`);
+      } else if (decision.sessionRecovered) {
+        toast.success(
+          `${sessionCopy.recovered}. ${sessionCopy.newBalance}: ${decision.sessionsRemaining}`,
+        );
+      } else if (decision.requiresSessionAction) {
+        toast.info(sessionCopy.selectAction);
       } else if (decision.requiresAffiliationSelection) {
         toast.info('Select the plan to use for this access');
       } else if (decision.requiresConsumptionConfirmation) {
@@ -155,7 +194,14 @@ export default function AccessControl() {
                     {accessPoints.map((ap) => <option key={ap.id} value={ap.id}>{ap.name} ({ap.branch})</option>)}
                   </select>
                 </div>
-                <Button onClick={() => handleValidate()} disabled={validating} className="w-full h-12 bg-green-600 hover:bg-green-700 text-white text-lg">
+                <Button
+                  onClick={() => {
+                    setRecoveryReason('');
+                    void handleValidate();
+                  }}
+                  disabled={validating}
+                  className="w-full h-12 bg-green-600 hover:bg-green-700 text-white text-lg"
+                >
                   {validating ? 'Validating...' : 'Validate Access'}
                 </Button>
               </div>
@@ -173,14 +219,20 @@ export default function AccessControl() {
                   <p>Submit a validation to see the result</p>
                 </div>
               ) : (
-                <div className={`rounded-xl p-6 ${lastDecision.authorized ? 'bg-green-50 border-2 border-green-200' : 'bg-red-50 border-2 border-red-200'}`}>
+                <div className={`rounded-xl p-6 ${lastDecision.authorized ? 'bg-green-50 border-2 border-green-200' : lastDecision.sessionRecovered ? 'bg-sky-50 border-2 border-sky-200' : lastDecision.requiresSessionAction ? 'bg-amber-50 border-2 border-amber-200' : 'bg-red-50 border-2 border-red-200'}`}>
                   <div className="flex items-center gap-3 mb-4">
                     <div className={`w-12 h-12 rounded-full flex items-center justify-center ${lastDecision.authorized ? 'bg-green-200' : 'bg-red-200'}`}>
-                      {lastDecision.authorized ? <DoorOpen className="h-6 w-6 text-green-700" /> : <Shield className="h-6 w-6 text-red-700" />}
+                      {lastDecision.authorized ? <DoorOpen className="h-6 w-6 text-green-700" /> : <Shield className={`h-6 w-6 ${lastDecision.sessionRecovered ? 'text-sky-700' : 'text-red-700'}`} />}
                     </div>
                     <div>
                       <p className={`text-lg font-bold ${lastDecision.authorized ? 'text-green-800' : 'text-red-800'}`}>
-                        {lastDecision.authorized ? 'ACCESS GRANTED' : 'ACCESS DENIED'}
+                        {lastDecision.authorized
+                          ? 'ACCESS GRANTED'
+                          : lastDecision.sessionRecovered
+                            ? 'SESSION RECOVERED'
+                            : lastDecision.requiresSessionAction
+                              ? 'SELECT SESSION ACTION'
+                              : 'ACCESS DENIED'}
                       </p>
                       <p className="text-sm text-slate-600">{lastDecision.reason}</p>
                     </div>
@@ -193,6 +245,71 @@ export default function AccessControl() {
                       <p><span className="font-medium">Sessions remaining:</span> {lastDecision.sessionsRemaining}</p>
                     )}
                     {lastDecision.affiliationId && <p><span className="font-medium">Affiliation:</span> {lastDecision.affiliationId}</p>}
+                    {lastDecision.requiresSessionAction && (
+                      <div className="space-y-3 rounded-lg border border-amber-300 bg-amber-50 p-3">
+                        <p className="font-medium text-amber-900">
+                          {sessionCopy.selectPlan}
+                        </p>
+                        <div className="space-y-1">
+                          <Label htmlFor="sessionRecoveryReason">
+                            {sessionCopy.recoveryReason}
+                          </Label>
+                          <Input
+                            id="sessionRecoveryReason"
+                            value={recoveryReason}
+                            onChange={(event) =>
+                              setRecoveryReason(event.target.value)
+                            }
+                            placeholder={sessionCopy.recoveryPlaceholder}
+                          />
+                        </div>
+                        {(lastDecision.affiliationOptions || []).map((option: any) => (
+                          <div
+                            key={option.affiliationId}
+                            className="space-y-2 rounded-lg border bg-white p-3"
+                          >
+                            <div className="flex items-center justify-between">
+                              <span className="font-medium">{option.planName}</span>
+                              <Badge variant="outline">
+                                {option.sessionsAvailable} {sessionCopy.sessions}
+                              </Badge>
+                            </div>
+                            <div className="grid grid-cols-2 gap-2">
+                              <Button
+                                type="button"
+                                className="bg-green-600 hover:bg-green-700"
+                                disabled={
+                                  validating ||
+                                  Number(option.sessionsAvailable || 0) <= 0
+                                }
+                                onClick={() =>
+                                  handleValidate({
+                                    affiliationId: option.affiliationId,
+                                    sessionAction: 'consume',
+                                    confirmSessionConsumption: true,
+                                  })
+                                }
+                              >
+                                {sessionCopy.deduct}
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                disabled={validating || !recoveryReason.trim()}
+                                onClick={() =>
+                                  handleValidate({
+                                    affiliationId: option.affiliationId,
+                                    sessionAction: 'recover',
+                                  })
+                                }
+                              >
+                                {sessionCopy.recover}
+                              </Button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                     {lastDecision.requiresAffiliationSelection && (
                       <div className="space-y-2 rounded-lg border border-amber-300 bg-amber-50 p-3">
                         <p className="font-medium text-amber-900">Select the plan for this access</p>
@@ -270,7 +387,17 @@ export default function AccessControl() {
                         <td className="px-4 py-3">{att.personId || '—'} <span className="text-xs text-slate-400">({att.personType})</span></td>
                         <td className="px-4 py-3 text-center"><Badge variant="outline">{att.method}</Badge></td>
                         <td className="px-4 py-3 text-center">
-                          <Badge variant={att.decision === 'authorized' ? 'default' : 'destructive'}>{att.decision}</Badge>
+                          <Badge
+                            variant={
+                              att.decision === 'authorized'
+                                ? 'default'
+                                : att.decision === 'session_recovered'
+                                  ? 'secondary'
+                                  : 'destructive'
+                            }
+                          >
+                            {att.decision}
+                          </Badge>
                         </td>
                         <td className="px-4 py-3 text-slate-600">{att.denialReason || '—'}</td>
                         <td className="px-4 py-3 text-slate-500 text-xs">{att.accessPointId || '—'}</td>
