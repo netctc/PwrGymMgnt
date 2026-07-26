@@ -31,6 +31,7 @@ export default function Layout() {
   const navItems: Array<{ labelKey: TranslationKey; path: string; icon: ReactNode; permission: ClientPermission }> = [
     { labelKey: 'nav.dashboard', path: '/', icon: <LayoutDashboard className="w-4 h-4" />, permission: 'dashboard.read' },
     { labelKey: 'nav.members', path: '/members', icon: <Users className="w-4 h-4" />, permission: 'membership.read' },
+    { labelKey: 'nav.subscriptions', path: '/subscriptions', icon: <CreditCard className="w-4 h-4" />, permission: 'membership.read' },
     { labelKey: 'nav.plans', path: '/plans', icon: <CreditCard className="w-4 h-4" />, permission: 'membership.read' },
     { labelKey: 'nav.classes', path: '/classes', icon: <Calendar className="w-4 h-4" />, permission: 'scheduling.read' },
     { labelKey: 'nav.privatePt', path: '/private-classes', icon: <Dumbbell className="w-4 h-4" />, permission: 'scheduling.read' },
@@ -44,7 +45,6 @@ export default function Layout() {
     { labelKey: 'nav.warehouseReports', path: '/warehouse?tab=reports', icon: <FileText className="w-4 h-4" />, permission: 'warehouse.reports' },
     { labelKey: 'nav.reports', path: '/reports', icon: <FileText className="w-4 h-4" />, permission: 'reports.read' },
     { labelKey: 'nav.qrAccess', path: '/scanner', icon: <ScanLine className="w-4 h-4" />, permission: 'membership.access.validate' },
-    { labelKey: 'nav.subscriptions' as any, path: '/subscriptions', icon: <CreditCard className="w-4 h-4" />, permission: 'membership.read' },
     { labelKey: 'nav.evolution' as any, path: '/evolution', icon: <CreditCard className="w-4 h-4" />, permission: 'dashboard.read' },
     { labelKey: 'nav.accessControl' as any, path: '/access-control', icon: <ScanLine className="w-4 h-4" />, permission: 'membership.access.validate' },
     { labelKey: 'nav.biometrics' as any, path: '/biometrics', icon: <ScanLine className="w-4 h-4" />, permission: 'membership.read' },
