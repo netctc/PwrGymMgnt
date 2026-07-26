@@ -12,11 +12,30 @@ const {
 } = __reportsForTests;
 
 test('screen report catalog contains the expected operational reports', () => {
-  assert.equal(SCREEN_REPORTS.length, 14);
+  assert.equal(SCREEN_REPORTS.length, 15);
   const reportIds = new Set(SCREEN_REPORTS.map((report) => report.id));
   assert.equal(reportIds.has('members-directory'), true);
   assert.equal(reportIds.has('invoices-collection'), true);
+  assert.equal(reportIds.has('consumed-sessions'), true);
   assert.equal(reportIds.has('security-audit'), true);
+});
+
+test('consumed sessions report supports member, plan and period filters', () => {
+  const definition = findScreenReport('consumed-sessions');
+  assert.ok(definition);
+  assert.match(definition!.baseSql, /session_movements sm/);
+  assert.match(definition!.baseSql, /private_sessions ps/);
+  assert.match(definition!.baseSql, /class_sessions cs/);
+
+  const filters = parseScreenReportFilters({
+    from: '2026-07-01',
+    to: '2026-07-31',
+    memberId: 'mem_001',
+    planId: 'plan_pt_10',
+  } as any);
+  const result = addScreenReportWhere(definition!, filters);
+  assert.match(result.whereSql, /DATE\(sm\.created_at\) BETWEEN \? AND \?/);
+  assert.deepEqual(result.params, ['2026-07-01', '2026-07-31', 'mem_001', 'plan_pt_10']);
 });
 
 test('screen report access is role-specific', () => {
