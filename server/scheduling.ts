@@ -373,22 +373,25 @@ export function registerSchedulingRoutes(app: Express, poolProvider: PoolProvide
         "SELECT id, first_name, last_name, email, status FROM members WHERE status <> 'archived' ORDER BY first_name ASC, last_name ASC LIMIT 500",
       );
       const [limitedMemberRows]: any = await pool.query(
-        `SELECT DISTINCT m.id, m.first_name, m.last_name, m.email, m.status
+        `SELECT m.id, m.first_name, m.last_name, m.email, m.status
            FROM members m
-           JOIN affiliations a
-             ON a.member_id = m.id
-            AND a.status = 'active'
-            AND a.start_date <= CURDATE()
-            AND a.end_date >= CURDATE()
-           JOIN subscriptions s
-             ON s.id = a.subscription_id
-            AND s.status = 'active'
-            AND s.start_date <= CURDATE()
-            AND s.end_date >= CURDATE()
-           JOIN plan_versions pv
-             ON pv.id = a.plan_version_id
-            AND pv.sessions_unlimited = 0
-          WHERE m.status = 'active'
+          WHERE LOWER(TRIM(m.status)) = 'active'
+            AND EXISTS (
+              SELECT 1
+                FROM affiliations a
+                JOIN subscriptions s
+                  ON s.id = a.subscription_id
+                 AND LOWER(TRIM(s.status)) = 'active'
+                 AND s.start_date <= CURDATE()
+                 AND s.end_date >= CURDATE()
+                JOIN plan_versions pv
+                  ON pv.id = a.plan_version_id
+                 AND pv.sessions_unlimited = 0
+               WHERE a.member_id = m.id
+                 AND LOWER(TRIM(a.status)) = 'active'
+                 AND a.start_date <= CURDATE()
+                 AND a.end_date >= CURDATE()
+            )
           ORDER BY m.first_name ASC, m.last_name ASC
           LIMIT 500`,
       );
@@ -872,14 +875,14 @@ export function registerSchedulingRoutes(app: Express, poolProvider: PoolProvide
            FROM affiliations a
            JOIN subscriptions s
              ON s.id = a.subscription_id
-            AND s.status = 'active'
+            AND LOWER(TRIM(s.status)) = 'active'
             AND s.start_date <= CURDATE()
             AND s.end_date >= CURDATE()
            JOIN plan_versions pv
              ON pv.id = a.plan_version_id
             AND pv.sessions_unlimited = 0
           WHERE a.member_id = ?
-            AND a.status = 'active'
+            AND LOWER(TRIM(a.status)) = 'active'
             AND a.start_date <= CURDATE()
             AND a.end_date >= CURDATE()
           LIMIT 1`,
