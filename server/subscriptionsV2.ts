@@ -133,7 +133,12 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
     try {
       const pool = requirePool(poolProvider);
       const memberId = normalizeString(req.query.memberId);
-      const status = normalizeString(req.query.status);
+      const status = normalizeString(req.query.status) || "active";
+      const memberStatus = normalizeString(req.query.memberStatus);
+      const paymentStatus = normalizeString(req.query.paymentStatus);
+      const planId = normalizeString(req.query.planId);
+      const sessions = normalizeString(req.query.sessions);
+      const search = normalizeString(req.query.search).toLowerCase();
       const where: string[] = [];
       const params: any[] = [];
       if (memberId) {
@@ -149,18 +154,197 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
         )`);
         params.push(memberId, memberId);
       }
-      if (status && status !== "all") { where.push("s.status = ?"); params.push(status); }
+      if (status !== "all") { where.push("s.status = ?"); params.push(status); }
+      if (memberStatus && memberStatus !== "all") {
+        where.push("LOWER(TRIM(holder.status)) = ?");
+        params.push(memberStatus.toLowerCase());
+      }
+      if (paymentStatus && paymentStatus !== "all") {
+        where.push("s.payment_status = ?");
+        params.push(paymentStatus);
+      }
+      if (planId && planId !== "all") {
+        where.push("s.plan_id = ?");
+        params.push(planId);
+      }
+      if (sessions === "limited") where.push("pv.sessions_unlimited = 0");
+      if (sessions === "unlimited") where.push("pv.sessions_unlimited = 1");
+      if (search) {
+        where.push(`(
+          LOWER(CONCAT(COALESCE(holder.first_name, ''), ' ', COALESCE(holder.last_name, ''))) LIKE ?
+          OR LOWER(COALESCE(holder.email, '')) LIKE ?
+          OR LOWER(COALESCE(pv.name, '')) LIKE ?
+          OR LOWER(s.id) LIKE ?
+        )`);
+        const pattern = `%${search}%`;
+        params.push(pattern, pattern, pattern, pattern);
+      }
       const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
       const [rows]: any = await pool.query(
-        `SELECT s.*, pv.name AS plan_name, pv.plan_type, pv.sessions_unlimited, pv.sessions_per_cycle, pv.distribution_model,
-                holder.first_name AS holder_first_name, holder.last_name AS holder_last_name
+        `SELECT s.*, pv.name AS plan_name, pv.plan_type, pv.sessions_unlimited,
+                pv.sessions_per_cycle, pv.distribution_model, pv.cycle_frequency,
+                holder.first_name AS holder_first_name,
+                holder.last_name AS holder_last_name,
+                holder.email AS holder_email,
+                holder.status AS holder_status,
+                (
+                  SELECT a_holder.id
+                    FROM affiliations a_holder
+                   WHERE a_holder.subscription_id = s.id
+                     AND a_holder.member_id = s.holder_member_id
+                   ORDER BY (a_holder.role = 'holder') DESC, a_holder.created_at
+                   LIMIT 1
+                ) AS holder_affiliation_id,
+                (
+                  SELECT COUNT(*)
+                    FROM subscription_members sm_count
+                   WHERE sm_count.subscription_id = s.id
+                     AND sm_count.status IN ('active', 'suspended')
+                ) AS active_members,
+                (
+                  SELECT COALESCE(SUM(sb_summary.included), 0)
+                    FROM subscription_cycles sc_summary
+                    JOIN session_balances sb_summary ON sb_summary.cycle_id = sc_summary.id
+                   WHERE sc_summary.subscription_id = s.id
+                     AND sc_summary.status = 'active'
+                ) AS sessions_contracted,
+                (
+                  SELECT COALESCE(SUM(sb_summary.consumed), 0)
+                    FROM subscription_cycles sc_summary
+                    JOIN session_balances sb_summary ON sb_summary.cycle_id = sc_summary.id
+                   WHERE sc_summary.subscription_id = s.id
+                     AND sc_summary.status = 'active'
+                ) AS sessions_consumed,
+                (
+                  SELECT COALESCE(SUM(sb_summary.available), 0)
+                    FROM subscription_cycles sc_summary
+                    JOIN session_balances sb_summary ON sb_summary.cycle_id = sc_summary.id
+                   WHERE sc_summary.subscription_id = s.id
+                     AND sc_summary.status = 'active'
+                ) AS sessions_remaining
          FROM subscriptions s
          LEFT JOIN plan_versions pv ON pv.id = s.plan_version_id
          LEFT JOIN members holder ON holder.id = s.holder_member_id
-         ${clause} ORDER BY s.created_at DESC LIMIT 200`,
+         ${clause} ORDER BY s.created_at DESC LIMIT 500`,
         params,
       );
-      res.json({ subscriptions: rows.map(mapSubscription) });
+
+      const [legacyRows]: any = await pool.query(
+        `SELECT ms.*, member.first_name AS holder_first_name,
+                member.last_name AS holder_last_name,
+                member.email AS holder_email,
+                member.status AS holder_status,
+                COALESCE(
+                  JSON_UNQUOTE(JSON_EXTRACT(ms.data, '$.paymentStatus')),
+                  (
+                    SELECT CASE WHEN i.status = 'paid' THEN 'paid' ELSE 'pending' END
+                      FROM invoices i
+                     WHERE i.subscription_id = ms.id
+                     ORDER BY i.created_at DESC
+                     LIMIT 1
+                  ),
+                  'pending'
+                ) AS resolved_payment_status
+           FROM member_subscriptions ms
+           JOIN members member ON member.id = ms.member_id
+          WHERE NOT EXISTS (
+                  SELECT 1
+                    FROM subscriptions migrated
+                   WHERE migrated.legacy_subscription_id = ms.id
+                )
+          ORDER BY ms.created_at DESC
+          LIMIT 500`,
+      );
+      const normalizedSearch = search.toLowerCase();
+      const legacySubscriptions = legacyRows
+        .map((row: any) => ({
+          id: row.id,
+          planId: row.plan_id || null,
+          planVersionId: null,
+          planName: row.plan_name || "",
+          planType: "individual",
+          holderMemberId: row.member_id,
+          holderFirstName: row.holder_first_name || "",
+          holderLastName: row.holder_last_name || "",
+          holderName: `${row.holder_first_name || ""} ${row.holder_last_name || ""}`.trim(),
+          holderEmail: row.holder_email || "",
+          holderStatus: row.holder_status || "",
+          holderAffiliationId: null,
+          status: row.status,
+          startDate: row.start_date ? String(row.start_date).slice(0, 10) : "",
+          endDate: row.end_date ? String(row.end_date).slice(0, 10) : "",
+          autoRenew: false,
+          pricePaid: Number(row.price || 0),
+          currency: row.currency || "USD",
+          paymentStatus: row.resolved_payment_status || "pending",
+          expectedPaymentDate: null,
+          maxMembers: 1,
+          activeMembers: 1,
+          sessionsUnlimited: true,
+          sessionsPerCycle: null,
+          cycleFrequency: "subscription",
+          distributionModel: "individual",
+          sessionsContracted: null,
+          sessionsConsumed: null,
+          sessionsRemaining: null,
+          version: 1,
+          legacySubscriptionId: row.id,
+          source: "legacy",
+        }))
+        .filter((subscription: any) => {
+          if (memberId && subscription.holderMemberId !== memberId) return false;
+          if (
+            status !== "all" &&
+            String(subscription.status).toLowerCase() !== status.toLowerCase()
+          ) return false;
+          if (
+            memberStatus &&
+            memberStatus !== "all" &&
+            String(subscription.holderStatus).toLowerCase() !== memberStatus.toLowerCase()
+          ) return false;
+          if (
+            paymentStatus &&
+            paymentStatus !== "all" &&
+            subscription.paymentStatus !== paymentStatus
+          ) return false;
+          if (planId && planId !== "all" && subscription.planId !== planId) return false;
+          if (sessions === "limited") return false;
+          if (
+            normalizedSearch &&
+            ![
+              subscription.id,
+              subscription.planName,
+              subscription.holderName,
+              subscription.holderEmail,
+            ].some((value) => String(value || "").toLowerCase().includes(normalizedSearch))
+          ) return false;
+          return true;
+        });
+      const subscriptions = [
+        ...rows.map(mapSubscription),
+        ...legacySubscriptions,
+      ].sort((left: any, right: any) =>
+        String(right.startDate || "").localeCompare(String(left.startDate || "")),
+      );
+      const [planRows]: any = await pool.query(
+        `SELECT DISTINCT id, name
+           FROM (
+             SELECT s.plan_id AS id, pv.name
+               FROM subscriptions s
+               JOIN plan_versions pv ON pv.id = s.plan_version_id
+             UNION
+             SELECT ms.plan_id AS id, ms.plan_name AS name
+               FROM member_subscriptions ms
+           ) available_plans
+          WHERE id IS NOT NULL
+          ORDER BY name`,
+      );
+      res.json({
+        subscriptions,
+        filterOptions: {
+          plans: planRows.map((row: any) => ({ id: row.id, name: row.name })),
+        },
+      });
     } catch (error) { next(error); }
   });
 
@@ -610,9 +794,14 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
     try {
       const pool = requirePool(poolProvider);
       const [rows]: any = await pool.query(
-        `SELECT sm.*, m.first_name, m.last_name, m.email
+        `SELECT sm.*, m.first_name, m.last_name, m.email,
+                a.id AS affiliation_id
          FROM subscription_members sm
          LEFT JOIN members m ON m.id = sm.member_id
+         LEFT JOIN affiliations a
+           ON a.subscription_id = sm.subscription_id
+          AND a.member_id = sm.member_id
+          AND a.status IN ('active', 'suspended')
          WHERE sm.subscription_id = ?
          ORDER BY sm.role = 'holder' DESC, sm.joined_at ASC`,
         [req.params.id],
@@ -620,6 +809,7 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
       res.json({
         members: rows.map((r: any) => ({
           id: r.id, subscriptionId: r.subscription_id, memberId: r.member_id,
+          affiliationId: r.affiliation_id || null,
           role: r.role, status: r.status,
           joinedAt: r.joined_at ? new Date(r.joined_at).toISOString() : null,
           leftAt: r.left_at ? new Date(r.left_at).toISOString() : null,
@@ -1198,22 +1388,34 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
   app.post("/api/v2/sessions/adjust", requirePermission("membership.write"), async (req: AuthenticatedRequest, res, next) => {
     try {
       const pool = requirePool(poolProvider);
-      if (!await requireFeature(pool, "ENABLE_SESSION_LEDGER", res)) return;
 
       const affiliationId = normalizeString(req.body.affiliationId);
       const direction = normalizeString(req.body.direction); // 'positive' or 'negative'
       const reason = normalizeString(req.body.reason);
+      const quantity = numberOrDefault(req.body.quantity, 1);
       if (!affiliationId || !direction || !reason) return res.status(400).json({ error: "affiliationId, direction, and reason are required" });
       if (!["positive", "negative"].includes(direction)) return res.status(400).json({ error: "direction must be 'positive' or 'negative'" });
+      if (!Number.isInteger(quantity) || quantity < 1) {
+        return res.status(400).json({ error: "quantity must be a positive integer" });
+      }
 
       const [affRows]: any = await pool.query(
-        `SELECT a.subscription_id, pv.distribution_model
+        `SELECT a.subscription_id, pv.distribution_model, pv.sessions_unlimited
            FROM affiliations a
+           JOIN subscriptions s ON s.id = a.subscription_id
            JOIN plan_versions pv ON pv.id = a.plan_version_id
-          WHERE a.id = ? LIMIT 1`,
+          WHERE a.id = ?
+            AND a.status = 'active'
+            AND a.end_date >= CURDATE()
+            AND s.status = 'active'
+            AND s.end_date >= CURDATE()
+          LIMIT 1`,
         [affiliationId],
       );
-      if (affRows.length === 0) return res.status(404).json({ error: "Affiliation not found" });
+      if (affRows.length === 0) return res.status(404).json({ error: "Active affiliation not found" });
+      if (Boolean(affRows[0].sessions_unlimited)) {
+        return res.status(409).json({ error: "Unlimited plans do not have a session balance" });
+      }
 
       const [cycleRows]: any = await pool.query(
         "SELECT id FROM subscription_cycles WHERE subscription_id = ? AND status = 'active' ORDER BY cycle_number DESC LIMIT 1",
@@ -1233,7 +1435,7 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
           affiliationId,
           cycleId: cycleRows[0].id,
           movementType,
-          quantity: numberOrDefault(req.body.quantity, 1),
+          quantity,
           referenceType: normalizeString(req.body.referenceType) || "manual_adjustment",
           referenceId: normalizeString(req.body.referenceId) || null,
           relatedMovementId: normalizeString(req.body.relatedMovementId) || null,
@@ -1322,6 +1524,138 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
         connection.release();
       }
     } catch (error) { next(error); }
+  });
+
+  app.post("/api/v2/sessions/return-latest", requirePermission("membership.write"), async (req: AuthenticatedRequest, res, next) => {
+    let connection: any = null;
+    try {
+      const pool = requirePool(poolProvider);
+      const affiliationId = normalizeString(req.body.affiliationId);
+      const reason = normalizeString(req.body.reason);
+      const requestedIdempotencyKey =
+        req.headers["idempotency-key"] as string ||
+        normalizeString(req.body.idempotencyKey);
+      if (!affiliationId || !reason) {
+        return res.status(400).json({ error: "affiliationId and reason are required" });
+      }
+
+      connection = await pool.getConnection();
+      await connection.beginTransaction();
+      if (requestedIdempotencyKey) {
+        const [existingRows]: any = await connection.query(
+          `SELECT id, related_movement_id, balance_after, movement_type
+             FROM session_movements
+            WHERE idempotency_key = ?
+            LIMIT 1`,
+          [requestedIdempotencyKey],
+        );
+        if (existingRows.length) {
+          await connection.commit();
+          return res.json({
+            movement: {
+              id: existingRows[0].id,
+              relatedMovementId: existingRows[0].related_movement_id,
+              balanceAfter: Number(existingRows[0].balance_after),
+              type: existingRows[0].movement_type,
+            },
+            idempotentReplay: true,
+          });
+        }
+      }
+      const [affRows]: any = await connection.query(
+        `SELECT a.subscription_id, pv.distribution_model, pv.sessions_unlimited,
+                sc.id AS cycle_id
+           FROM affiliations a
+           JOIN subscriptions s ON s.id = a.subscription_id
+           JOIN plan_versions pv ON pv.id = a.plan_version_id
+           JOIN subscription_cycles sc
+             ON sc.subscription_id = s.id
+            AND sc.status = 'active'
+          WHERE a.id = ?
+            AND a.status = 'active'
+            AND a.end_date >= CURDATE()
+            AND s.status = 'active'
+            AND s.end_date >= CURDATE()
+          ORDER BY sc.cycle_number DESC
+          LIMIT 1
+          FOR UPDATE`,
+        [affiliationId],
+      );
+      if (!affRows.length) {
+        await connection.rollback();
+        return res.status(404).json({ error: "Active limited-session affiliation or cycle not found" });
+      }
+      if (Boolean(affRows[0].sessions_unlimited)) {
+        await connection.rollback();
+        return res.status(409).json({ error: "Unlimited plans do not have sessions to return" });
+      }
+
+      const [movementRows]: any = await connection.query(
+        `SELECT original.id, original.quantity
+           FROM session_movements original
+          WHERE original.affiliation_id = ?
+            AND original.cycle_id = ?
+            AND original.movement_type IN ('consumption', 'adjustment_negative')
+            AND NOT EXISTS (
+              SELECT 1
+                FROM session_movements reversal
+               WHERE reversal.related_movement_id = original.id
+                 AND reversal.movement_type IN ('refund', 'compensation')
+            )
+          ORDER BY original.created_at DESC, original.id DESC
+          LIMIT 1
+          FOR UPDATE`,
+        [affiliationId, affRows[0].cycle_id],
+      );
+      if (!movementRows.length) {
+        await connection.rollback();
+        return res.status(409).json({
+          error: "No deducted session is available to return",
+          code: "NO_RETURNABLE_SESSION",
+        });
+      }
+
+      const { getBalanceForUpdate, createMovement } = await import("./sessionLedger");
+      const context = getSessionBalanceContext(
+        affRows[0].distribution_model,
+        affRows[0].subscription_id,
+        affiliationId,
+      );
+      const balance = await getBalanceForUpdate(
+        connection,
+        context.contextType,
+        context.contextId,
+        affRows[0].cycle_id,
+      );
+      const original = movementRows[0];
+      const movement = await createMovement(connection, {
+        balanceId: balance.id,
+        affiliationId,
+        cycleId: affRows[0].cycle_id,
+        movementType: "refund",
+        quantity: Number(original.quantity || 1),
+        referenceType: "subscription_directory_return",
+        referenceId: createId("return"),
+        relatedMovementId: original.id,
+        reason,
+        performedBy: req.user?.email || req.user?.uid || "system",
+        idempotencyKey: requestedIdempotencyKey || `return_${original.id}`,
+      });
+      await connection.commit();
+      res.status(201).json({
+        movement: {
+          id: movement.id,
+          relatedMovementId: original.id,
+          balanceAfter: movement.balanceAfter,
+          type: movement.movementType,
+        },
+      });
+    } catch (error) {
+      if (connection) await connection.rollback();
+      next(error);
+    } finally {
+      if (connection) connection.release();
+    }
   });
 
   // --- Reconciliation & Worker Status ---
@@ -1413,6 +1747,9 @@ function mapSubscription(row: any) {
     holderFirstName,
     holderLastName,
     holderName: `${holderFirstName} ${holderLastName}`.trim(),
+    holderEmail: row.holder_email || "",
+    holderStatus: row.holder_status || "",
+    holderAffiliationId: row.holder_affiliation_id || null,
     status: row.status,
     startDate: row.start_date ? String(row.start_date).slice(0, 10) : "",
     endDate: row.end_date ? String(row.end_date).slice(0, 10) : "",
@@ -1423,11 +1760,26 @@ function mapSubscription(row: any) {
     expectedPaymentDate:
       subscriptionData.expectedPaymentDate || null,
     maxMembers: Number(row.max_members || 1),
+    activeMembers: Number(row.active_members || 1),
     sessionsUnlimited: row.sessions_unlimited !== undefined ? Boolean(row.sessions_unlimited) : true,
     sessionsPerCycle: row.sessions_per_cycle ? Number(row.sessions_per_cycle) : null,
+    cycleFrequency: row.cycle_frequency || "subscription",
     distributionModel: row.distribution_model || "individual",
+    sessionsContracted:
+      row.sessions_contracted === undefined || row.sessions_contracted === null
+        ? null
+        : Number(row.sessions_contracted),
+    sessionsConsumed:
+      row.sessions_consumed === undefined || row.sessions_consumed === null
+        ? null
+        : Number(row.sessions_consumed),
+    sessionsRemaining:
+      row.sessions_remaining === undefined || row.sessions_remaining === null
+        ? null
+        : Number(row.sessions_remaining),
     version: Number(row.version || 1),
     legacySubscriptionId: row.legacy_subscription_id || null,
+    source: "v2",
   };
 }
 
