@@ -9,6 +9,8 @@ const {
   parseScreenReportFilters,
   addScreenReportWhere,
   screenReportFilename,
+  isTechnicalIdentifierLabel,
+  withoutTechnicalIdentifiers,
 } = __reportsForTests;
 
 test('screen report catalog contains the expected operational reports', () => {
@@ -114,4 +116,17 @@ test('numeric report filters only accept bounded numeric values', () => {
 
 test('screen report filenames are PDF attachments with stable prefix', () => {
   assert.match(screenReportFilename('members-directory'), /^powergym-members-directory-\d{4}-\d{2}-\d{2}\.pdf$/);
+});
+
+test('report tables omit technical identifiers while keeping business numbers', () => {
+  assert.equal(isTechnicalIdentifierLabel('ID'), true);
+  assert.equal(isTechnicalIdentifierLabel('Member ID'), true);
+  assert.equal(isTechnicalIdentifierLabel('Request ID'), true);
+  assert.equal(isTechnicalIdentifierLabel('Movement'), true);
+  assert.equal(isTechnicalIdentifierLabel('Invoice'), false);
+  assert.equal(isTechnicalIdentifierLabel('Employee Code'), false);
+  assert.deepEqual(
+    withoutTechnicalIdentifiers(['ID', 'Member', 'Member ID', 'Invoice', 'Status']),
+    ['Member', 'Invoice', 'Status'],
+  );
 });
