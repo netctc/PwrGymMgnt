@@ -476,7 +476,7 @@ const SCREEN_REPORTS: ScreenReportDefinition[] = [
       { id: "trainer", label: "Trainer", type: "text", placeholder: "Trainer name" },
       { id: "memberId", label: "Member ID", type: "text", placeholder: "Exact member ID" },
       { id: "planId", label: "Plan ID", type: "text", placeholder: "Exact plan ID" },
-      { id: "q", label: "Reference", type: "text", placeholder: "Reference, reason or movement ID" },
+      { id: "q", label: "Search", type: "text", placeholder: "Reason or source" },
     ],
     exactFilters: { memberId: "m.id", planId: "s.plan_id" },
     likeFilters: {
@@ -658,8 +658,21 @@ function limitRows(rows: ReportRow[], maxRows = 60) {
   return rows.slice(0, maxRows);
 }
 
+function isTechnicalIdentifierLabel(label: string) {
+  const normalized = label.trim().toLowerCase();
+  return (
+    normalized === "id" ||
+    normalized.endsWith(" id") ||
+    ["movement", "reference", "run", "series", "recipient"].includes(normalized)
+  );
+}
+
+function withoutTechnicalIdentifiers(columns: string[]) {
+  return columns.filter((column) => !isTechnicalIdentifierLabel(column));
+}
+
 function buildTable(title: string, columns: string[], rows: ReportRow[], maxRows = 60): ReportTable {
-  return { title, columns, rows: limitRows(rows, maxRows), maxRows };
+  return { title, columns: withoutTechnicalIdentifiers(columns), rows: limitRows(rows, maxRows), maxRows };
 }
 
 async function buildMembersReport(pool: Pool): Promise<ReportData> {
@@ -1537,6 +1550,7 @@ function appliedFilterSummary(definition: ScreenReportDefinition, filters: Parse
 
   for (const filter of definition.filters) {
     if (filter.id === "from" || filter.id === "to") continue;
+    if (isTechnicalIdentifierLabel(filter.label)) continue;
     const value = sanitizeTextFilter(filters.values[filter.id]);
     if (!value) continue;
     const optionLabel = filter.options?.find((option) => option.value === value)?.label;
@@ -1594,6 +1608,8 @@ export const __reportsForTests = {
   appliedFilterSummary,
   screenReportFilename,
   buildScreenReport,
+  isTechnicalIdentifierLabel,
+  withoutTechnicalIdentifiers,
 };
 
 async function buildReportData(pool: Pool, sectionId: string, fromDate: string, toDate: string): Promise<ReportData> {
@@ -1743,7 +1759,14 @@ export function registerReportsRoutes(app: Express, poolProvider: PoolProvider) 
     const role = req.user?.role || "";
     const reports = SCREEN_REPORTS
       .filter((report) => canAccessScreenReport(report, role))
-      .map(({ id, sectionId, label, description, screen, filters }) => ({ id, sectionId, label, description, screen, filters }));
+      .map(({ id, sectionId, label, description, screen, filters }) => ({
+        id,
+        sectionId,
+        label,
+        description,
+        screen,
+        filters: filters.filter((filter) => !isTechnicalIdentifierLabel(filter.label)),
+      }));
     res.json({ reports });
   });
 
