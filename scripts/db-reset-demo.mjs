@@ -1276,6 +1276,7 @@ async function main() {
       database: dbConfig.database ? `${dbConfig.database}@${dbConfig.host}:${dbConfig.port}` : 'not configured',
       destructiveChangesApplied: false,
       preservesExistingAdminAndSuperAdminPasswords: true,
+      message: 'Preview only: no rows were deleted or inserted. Run npm run db:demo to back up and perform the reset.',
       counts,
     };
     console.log(args.json ? JSON.stringify(output, null, 2) : output);
