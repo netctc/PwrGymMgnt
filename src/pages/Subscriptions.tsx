@@ -1,484 +1,460 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
-import { Card, CardContent } from '../components/ui/card';
+import {
+  CreditCard,
+  Layers,
+  MinusCircle,
+  RefreshCw,
+  RotateCcw,
+  Search,
+  Users,
+} from 'lucide-react';
+import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
-import { Badge } from '../components/ui/badge';
-import { CreditCard, Users, Layers, Activity, ToggleLeft, ToggleRight, Shield } from 'lucide-react';
 import { formatDate } from '../lib/formatDate';
-import DateInput from '../components/DateInput';
-import { subscriptionsV2Api, type PlanVersion, type SubscriptionV2, type Affiliation, type SessionBalance, type SessionSummary, type FeatureFlag } from '../lib/subscriptionsV2Api';
-import { useAuth } from '../contexts/AuthContext';
-import { hasClientPermission } from '../lib/permissions';
+import {
+  subscriptionsV2Api,
+  type SubscriptionV2,
+} from '../lib/subscriptionsV2Api';
+import { useLocalization } from '../contexts/LocalizationContext';
 
-type SectionId = 'plans' | 'subscriptions' | 'affiliations' | 'flags';
+type DirectoryView = 'individual_unlimited' | 'individual_limited' | 'multi_user';
+type SessionAction = 'deduct' | 'return';
 
-const sections: Array<{ id: SectionId; label: string; icon: ReactNode }> = [
-  { id: 'plans', label: 'Plan Versions', icon: <Layers className="h-4 w-4" /> },
-  { id: 'subscriptions', label: 'Subscriptions', icon: <CreditCard className="h-4 w-4" /> },
-  { id: 'affiliations', label: 'Affiliations', icon: <Users className="h-4 w-4" /> },
-  { id: 'flags', label: 'Feature Flags', icon: <Shield className="h-4 w-4" /> },
-];
+type SubscriptionMemberOption = {
+  memberId: string;
+  affiliationId: string;
+  name: string;
+  role: string;
+};
+
+type SessionActionState = {
+  subscription: SubscriptionV2;
+  action: SessionAction;
+  members: SubscriptionMemberOption[];
+};
+
+const selectClassName =
+  'h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-800 outline-none focus:border-indigo-400';
+
+function statusBadge(status: string) {
+  const normalized = String(status || '').toLowerCase();
+  if (normalized === 'active' || normalized === 'paid') return 'default';
+  if (['pending', 'partial', 'overdue'].includes(normalized)) return 'destructive';
+  return 'secondary';
+}
 
 export default function Subscriptions() {
-  const { profile } = useAuth();
-  const [searchParams, setSearchParams] = useSearchParams();
-  const section = (searchParams.get('tab') as SectionId) || 'plans';
-  const setSection = (s: SectionId) => setSearchParams(s === 'plans' ? {} : { tab: s });
+  const navigate = useNavigate();
+  const { locale } = useLocalization();
+  const copy =
+    locale === 'ar'
+      ? {
+          title: 'الاشتراكات',
+          subtitle: 'عرض وإدارة جميع اشتراكات الأعضاء في النظام.',
+          unlimited: 'اشتراكات فردية غير محدودة',
+          limited: 'اشتراكات فردية محدودة الجلسات',
+          multi: 'اشتراكات متعددة المستخدمين',
+          search: 'البحث بالعضو أو الخطة أو رقم الاشتراك',
+          memberStatus: 'حالة العضو',
+          subscriptionStatus: 'حالة الاشتراك',
+          paymentStatus: 'حالة الدفع',
+          plan: 'الخطة',
+          sessionType: 'نوع الجلسات',
+          all: 'الكل',
+          active: 'نشط',
+          suspended: 'معلق',
+          archived: 'مؤرشف',
+          cancelled: 'ملغي',
+          expired: 'منتهي',
+          paid: 'مدفوع',
+          pending: 'دفع معلق',
+          limitedSessions: 'جلسات محدودة',
+          unlimitedSessions: 'جلسات غير محدودة',
+          refresh: 'تحديث',
+          member: 'العضو',
+          holder: 'صاحب الاشتراك',
+          dates: 'الفترة',
+          contracted: 'المتعاقد عليها',
+          consumed: 'المستهلكة',
+          remaining: 'المتبقية',
+          members: 'الأعضاء',
+          sessions: 'الجلسات',
+          actions: 'الإجراءات',
+          deduct: 'خصم جلسة',
+          return: 'إرجاع جلسة',
+          noRows: 'لا توجد اشتراكات مطابقة للفلاتر المحددة.',
+          reason: 'السبب',
+          reasonPlaceholder: 'أدخل سبب التعديل للتدقيق',
+          quantity: 'الكمية',
+          targetMember: 'العضو المستفيد',
+          confirmDeduct: 'تأكيد خصم الجلسات',
+          confirmReturn: 'إرجاع آخر جلسة مخصومة',
+          close: 'إلغاء',
+          newSubscription: 'اشتراك جديد',
+          newMulti: 'اشتراك متعدد المستخدمين',
+          currentCycle: 'الدورة الحالية',
+          legacy: 'قديم',
+        }
+      : {
+          title: 'Subscriptions',
+          subtitle: 'View and manage every member subscription in the system.',
+          unlimited: 'Individual unlimited',
+          limited: 'Individual limited sessions',
+          multi: 'Multi-user subscriptions',
+          search: 'Search member, plan or subscription ID',
+          memberStatus: 'Member status',
+          subscriptionStatus: 'Subscription status',
+          paymentStatus: 'Payment status',
+          plan: 'Plan',
+          sessionType: 'Session type',
+          all: 'All',
+          active: 'Active',
+          suspended: 'Suspended',
+          archived: 'Archived',
+          cancelled: 'Cancelled',
+          expired: 'Expired',
+          paid: 'Paid',
+          pending: 'Payment pending',
+          limitedSessions: 'Limited sessions',
+          unlimitedSessions: 'Unlimited sessions',
+          refresh: 'Refresh',
+          member: 'Member',
+          holder: 'Holder',
+          dates: 'Validity',
+          contracted: 'Contracted',
+          consumed: 'Consumed',
+          remaining: 'Remaining',
+          members: 'Members',
+          sessions: 'Sessions',
+          actions: 'Actions',
+          deduct: 'Deduct session',
+          return: 'Return session',
+          noRows: 'No subscriptions match the selected filters.',
+          reason: 'Reason',
+          reasonPlaceholder: 'Enter an audit reason for this adjustment',
+          quantity: 'Quantity',
+          targetMember: 'Affiliated member',
+          confirmDeduct: 'Confirm session deduction',
+          confirmReturn: 'Return latest deducted session',
+          close: 'Cancel',
+          newSubscription: 'New Subscription',
+          newMulti: 'New multi-user subscription',
+          currentCycle: 'Current cycle',
+          legacy: 'Legacy',
+        };
 
-  const [loading, setLoading] = useState(false);
-  const [planVersions, setPlanVersions] = useState<PlanVersion[]>([]);
+  const [view, setView] = useState<DirectoryView>('individual_unlimited');
   const [subscriptions, setSubscriptions] = useState<SubscriptionV2[]>([]);
-  const [affiliations, setAffiliations] = useState<Affiliation[]>([]);
-  const [flags, setFlags] = useState<FeatureFlag[]>([]);
-  const [error, setError] = useState('');
-  const [memberSearch, setMemberSearch] = useState('');
+  const [planOptions, setPlanOptions] = useState<Array<{ id: string; name: string }>>([]);
+  const [loading, setLoading] = useState(false);
+  const [search, setSearch] = useState('');
+  const [memberStatus, setMemberStatus] = useState('all');
+  const [subscriptionStatus, setSubscriptionStatus] = useState('active');
+  const [paymentStatus, setPaymentStatus] = useState('all');
+  const [planId, setPlanId] = useState('all');
+  const [sessionType, setSessionType] = useState('all');
+  const [actionState, setActionState] = useState<SessionActionState | null>(null);
+  const [actionAffiliationId, setActionAffiliationId] = useState('');
+  const [actionReason, setActionReason] = useState('');
+  const [actionQuantity, setActionQuantity] = useState('1');
+  const [savingAction, setSavingAction] = useState(false);
 
-  // Plan creation form
-  const [showPlanForm, setShowPlanForm] = useState(false);
-  const [planForm, setPlanForm] = useState({ planId: '', name: '', planType: 'individual', price: '0', currency: 'USD', durationDays: '30', maxMembers: '1', sessionsUnlimited: true, sessionsPerCycle: '20', cycleFrequency: 'monthly', distributionModel: 'individual', carryoverEnabled: false });
-
-  // Subscription creation form
-  const [showSubForm, setShowSubForm] = useState(false);
-  const [subForm, setSubForm] = useState({ planVersionId: '', holderMemberId: '', startDate: '', paymentStatus: 'pending' });
-
-  // Subscription detail / members management
-  const [selectedSub, setSelectedSub] = useState<SubscriptionV2 | null>(null);
-  const [subMembers, setSubMembers] = useState<Array<{ id: string; memberId: string; role: string; status: string; firstName: string; lastName: string; email: string }>>([]);
-  const [newMemberId, setNewMemberId] = useState('');
-
-  // Session balances
-  const [balances, setBalances] = useState<SessionBalance[]>([]);
-  const [sessionSummary, setSessionSummary] = useState<SessionSummary | null>(null);
-
-  const loadData = async () => {
+  const loadSubscriptions = async () => {
     setLoading(true);
-    setError('');
     try {
-      const [pvRes, flagsRes] = await Promise.all([
-        subscriptionsV2Api.listPlanVersions().catch(() => ({ planVersions: [] })),
-        subscriptionsV2Api.listFeatureFlags().catch(() => ({ flags: [] })),
-      ]);
-      setPlanVersions(pvRes.planVersions);
-      setFlags(flagsRes.flags);
-    } catch (err: any) {
-      setError(err.message || 'Failed to load data');
+      const response = await subscriptionsV2Api.listSubscriptions({
+        status: subscriptionStatus,
+        memberStatus,
+        paymentStatus,
+        planId,
+        sessions: sessionType,
+        search: search.trim() || undefined,
+      });
+      setSubscriptions(response.subscriptions);
+      setPlanOptions(response.filterOptions?.plans || []);
+    } catch (error: any) {
+      setSubscriptions([]);
+      toast.error(error.message || 'Failed to load subscriptions');
     } finally {
       setLoading(false);
     }
   };
 
-  const loadSubscriptions = async () => {
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      void loadSubscriptions();
+    }, 250);
+    return () => window.clearTimeout(timeout);
+  }, [search, memberStatus, subscriptionStatus, paymentStatus, planId, sessionType]);
+
+  const categorized = useMemo(
+    () => ({
+      individual_unlimited: subscriptions.filter(
+        (subscription) =>
+          subscription.planType === 'individual' && subscription.sessionsUnlimited,
+      ),
+      individual_limited: subscriptions.filter(
+        (subscription) =>
+          subscription.planType === 'individual' && !subscription.sessionsUnlimited,
+      ),
+      multi_user: subscriptions.filter(
+        (subscription) => subscription.planType !== 'individual',
+      ),
+    }),
+    [subscriptions],
+  );
+  const visibleSubscriptions = categorized[view];
+
+  const openSessionAction = async (
+    subscription: SubscriptionV2,
+    action: SessionAction,
+  ) => {
+    if (subscription.source === 'legacy' || subscription.sessionsUnlimited) return;
     try {
-      const res = await subscriptionsV2Api.listSubscriptions({ memberId: memberSearch || undefined });
-      setSubscriptions(res.subscriptions);
-    } catch { setSubscriptions([]); }
+      const response = await subscriptionsV2Api.listSubscriptionMembers(subscription.id);
+      const members = response.members
+        .filter((member) => member.affiliationId && member.status === 'active')
+        .map((member) => ({
+          memberId: member.memberId,
+          affiliationId: member.affiliationId!,
+          name:
+            `${member.firstName || ''} ${member.lastName || ''}`.trim() ||
+            member.email ||
+            member.memberId,
+          role: member.role,
+        }));
+      if (!members.length && subscription.holderAffiliationId) {
+        members.push({
+          memberId: subscription.holderMemberId,
+          affiliationId: subscription.holderAffiliationId,
+          name: subscription.holderName || subscription.holderMemberId,
+          role: 'holder',
+        });
+      }
+      if (!members.length) {
+        toast.error('No active affiliation was found for this subscription');
+        return;
+      }
+      setActionState({ subscription, action, members });
+      setActionAffiliationId(members[0].affiliationId);
+      setActionReason('');
+      setActionQuantity('1');
+    } catch (error: any) {
+      toast.error(error.message || 'Failed to load subscription members');
+    }
   };
 
-  const loadAffiliations = async () => {
-    if (!memberSearch) { setAffiliations([]); return; }
+  const submitSessionAction = async () => {
+    if (!actionState || !actionAffiliationId || !actionReason.trim()) {
+      toast.error(copy.reason);
+      return;
+    }
+    setSavingAction(true);
     try {
-      const res = await subscriptionsV2Api.listAffiliations(memberSearch);
-      setAffiliations(res.affiliations);
-    } catch { setAffiliations([]); }
-  };
-
-  useEffect(() => { void loadData(); }, []);
-  useEffect(() => { if (section === 'subscriptions') loadSubscriptions(); }, [section, memberSearch]);
-  useEffect(() => { if (section === 'affiliations') loadAffiliations(); }, [section, memberSearch]);
-
-  const toggleFlag = async (key: string, current: boolean) => {
-    try {
-      await subscriptionsV2Api.toggleFeatureFlag(key, !current);
-      toast.success(`Flag ${key} ${!current ? 'enabled' : 'disabled'}`);
-      await loadData();
-    } catch (err: any) { toast.error(err.message); }
-  };
-
-  const handleCreatePlan = async () => {
-    try {
-      if (!planForm.planId || !planForm.name) { toast.error('Plan ID and name required'); return; }
-      await subscriptionsV2Api.createPlanVersion({
-        planId: planForm.planId,
-        name: planForm.name,
-        planType: planForm.planType as any,
-        price: Number(planForm.price),
-        currency: planForm.currency,
-        durationDays: Number(planForm.durationDays),
-        maxMembers: Number(planForm.maxMembers),
-        sessionsUnlimited: planForm.sessionsUnlimited,
-        sessionsPerCycle: planForm.sessionsUnlimited ? undefined : Number(planForm.sessionsPerCycle),
-        cycleFrequency: planForm.cycleFrequency,
-        distributionModel: planForm.distributionModel as any,
-        carryoverEnabled: planForm.carryoverEnabled,
-      });
-      toast.success('Plan version created');
-      setShowPlanForm(false);
-      await loadData();
-    } catch (err: any) { toast.error(err.message); }
-  };
-
-  const handleCreateSubscription = async () => {
-    try {
-      if (!subForm.planVersionId || !subForm.holderMemberId) { toast.error('Select plan and member'); return; }
-      await subscriptionsV2Api.createSubscription({
-        planVersionId: subForm.planVersionId,
-        holderMemberId: subForm.holderMemberId,
-        startDate: subForm.startDate || undefined,
-        paymentStatus: subForm.paymentStatus,
-      });
-      toast.success('Subscription created');
-      setShowSubForm(false);
+      const idempotencyKey = `subscription_directory_${actionState.action}_${crypto.randomUUID()}`;
+      const response =
+        actionState.action === 'deduct'
+          ? await subscriptionsV2Api.adjustSessions({
+              affiliationId: actionAffiliationId,
+              direction: 'negative',
+              quantity: Math.max(1, Number(actionQuantity) || 1),
+              reason: actionReason.trim(),
+              idempotencyKey,
+            })
+          : await subscriptionsV2Api.returnLatestSession({
+              affiliationId: actionAffiliationId,
+              reason: actionReason.trim(),
+              idempotencyKey,
+            });
+      toast.success(`${copy.remaining}: ${response.movement.balanceAfter}`);
+      setActionState(null);
       await loadSubscriptions();
-    } catch (err: any) { toast.error(err.message); }
+    } catch (error: any) {
+      toast.error(error.message || 'Session adjustment failed');
+    } finally {
+      setSavingAction(false);
+    }
   };
 
-  const openSubDetail = async (sub: SubscriptionV2) => {
-    setSelectedSub(sub);
-    try {
-      const res = await subscriptionsV2Api.listSubscriptionMembers(sub.id);
-      setSubMembers(res.members);
-    } catch { setSubMembers([]); }
-    try {
-      const res = await subscriptionsV2Api.listSessionBalances({ subscriptionId: sub.id });
-      setBalances(res.balances);
-    } catch { setBalances([]); }
-    try {
-      const res = await subscriptionsV2Api.getSessionSummary(sub.id);
-      setSessionSummary(res.summary);
-    } catch { setSessionSummary(null); }
-  };
-
-  const handleAddMember = async () => {
-    if (!selectedSub || !newMemberId.trim()) return;
-    try {
-      await subscriptionsV2Api.addSubscriptionMember(selectedSub.id, { memberId: newMemberId.trim() });
-      toast.success('Member added');
-      setNewMemberId('');
-      await openSubDetail(selectedSub);
-    } catch (err: any) { toast.error(err.message); }
-  };
-
-  const handleRemoveMember = async (memberId: string) => {
-    if (!selectedSub) return;
-    try {
-      await subscriptionsV2Api.removeSubscriptionMember(selectedSub.id, memberId);
-      toast.success('Member removed');
-      await openSubDetail(selectedSub);
-    } catch (err: any) { toast.error(err.message); }
-  };
+  const renderCommonCells = (subscription: SubscriptionV2) => (
+    <>
+      <td className="px-4 py-3">
+        <p className="font-medium text-slate-900">
+          {subscription.holderName || subscription.holderMemberId}
+        </p>
+        <p className="text-xs text-slate-500">{subscription.holderEmail}</p>
+        <Badge variant="outline" className="mt-1">
+          {subscription.holderStatus || '—'}
+        </Badge>
+      </td>
+      <td className="px-4 py-3">
+        <p className="font-medium text-slate-800">{subscription.planName}</p>
+        <p className="text-xs text-slate-500">{subscription.id}</p>
+        {subscription.source === 'legacy' && (
+          <Badge variant="outline" className="mt-1">{copy.legacy}</Badge>
+        )}
+      </td>
+      <td className="whitespace-nowrap px-4 py-3 text-sm text-slate-600">
+        <p>{formatDate(subscription.startDate)}</p>
+        <p>{formatDate(subscription.endDate)}</p>
+      </td>
+      <td className="px-4 py-3">
+        <Badge variant={statusBadge(subscription.paymentStatus) as any}>
+          {subscription.paymentStatus}
+        </Badge>
+      </td>
+      <td className="px-4 py-3">
+        <Badge variant={statusBadge(subscription.status) as any}>
+          {subscription.status}
+        </Badge>
+      </td>
+    </>
+  );
 
   return (
-    <div className="p-2 space-y-4">
-      {/* Navigation tabs */}
-      <div className="flex items-center gap-2 bg-white rounded-xl p-2 shadow-sm border border-slate-100">
-        {sections.map((s) => (
-          <button key={s.id} onClick={() => setSection(s.id)} className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${section === s.id ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:bg-slate-100'}`}>
-            {s.icon} {s.label}
+    <div className="space-y-5 p-2">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight text-slate-900">{copy.title}</h1>
+          <p className="mt-1 text-sm text-slate-500">{copy.subtitle}</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="outline" onClick={() => navigate('/members?newSubscription=1')}>
+            {copy.newSubscription}
+          </Button>
+          <Button onClick={() => navigate('/subscriptions/new-hybrid')}>
+            {copy.newMulti}
+          </Button>
+        </div>
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-3">
+        <Card>
+          <CardContent className="flex items-center justify-between p-4">
+            <div><p className="text-sm text-slate-500">{copy.unlimited}</p><p className="text-2xl font-bold">{categorized.individual_unlimited.length}</p></div>
+            <CreditCard className="h-8 w-8 text-indigo-500" />
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="flex items-center justify-between p-4">
+            <div><p className="text-sm text-slate-500">{copy.limited}</p><p className="text-2xl font-bold">{categorized.individual_limited.length}</p></div>
+            <Layers className="h-8 w-8 text-amber-500" />
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="flex items-center justify-between p-4">
+            <div><p className="text-sm text-slate-500">{copy.multi}</p><p className="text-2xl font-bold">{categorized.multi_user.length}</p></div>
+            <Users className="h-8 w-8 text-emerald-500" />
+          </CardContent>
+        </Card>
+      </div>
+
+      <Card>
+        <CardContent className="space-y-4 p-4">
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
+            <div className="relative md:col-span-2 xl:col-span-1">
+              <Label htmlFor="subscription-search">{copy.search}</Label>
+              <Search className="absolute bottom-2.5 left-3 h-4 w-4 text-slate-400" />
+              <Input id="subscription-search" value={search} onChange={(event) => setSearch(event.target.value)} className="pl-9" />
+            </div>
+            <div><Label>{copy.memberStatus}</Label><select className={selectClassName} value={memberStatus} onChange={(event) => setMemberStatus(event.target.value)}><option value="all">{copy.all}</option><option value="active">{copy.active}</option><option value="suspended">{copy.suspended}</option><option value="archived">{copy.archived}</option></select></div>
+            <div><Label>{copy.subscriptionStatus}</Label><select className={selectClassName} value={subscriptionStatus} onChange={(event) => setSubscriptionStatus(event.target.value)}><option value="active">{copy.active}</option><option value="all">{copy.all}</option><option value="suspended">{copy.suspended}</option><option value="frozen">Frozen</option><option value="cancelled">{copy.cancelled}</option><option value="expired">{copy.expired}</option></select></div>
+            <div><Label>{copy.paymentStatus}</Label><select className={selectClassName} value={paymentStatus} onChange={(event) => setPaymentStatus(event.target.value)}><option value="all">{copy.all}</option><option value="paid">{copy.paid}</option><option value="pending">{copy.pending}</option><option value="partial">Partial</option><option value="overdue">Overdue</option></select></div>
+            <div><Label>{copy.plan}</Label><select className={selectClassName} value={planId} onChange={(event) => setPlanId(event.target.value)}><option value="all">{copy.all}</option>{planOptions.map((plan) => <option key={plan.id} value={plan.id}>{plan.name}</option>)}</select></div>
+            <div><Label>{copy.sessionType}</Label><div className="flex gap-2"><select className={selectClassName} value={sessionType} onChange={(event) => setSessionType(event.target.value)}><option value="all">{copy.all}</option><option value="limited">{copy.limitedSessions}</option><option value="unlimited">{copy.unlimitedSessions}</option></select><Button variant="outline" size="icon" onClick={() => void loadSubscriptions()} title={copy.refresh}><RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} /></Button></div></div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <div className="flex flex-wrap gap-2 rounded-xl border bg-white p-2">
+        {([
+          ['individual_unlimited', copy.unlimited],
+          ['individual_limited', copy.limited],
+          ['multi_user', copy.multi],
+        ] as Array<[DirectoryView, string]>).map(([id, label]) => (
+          <button
+            key={id}
+            type="button"
+            onClick={() => setView(id)}
+            className={`rounded-lg px-4 py-2 text-sm font-medium ${view === id ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
+          >
+            {label} ({categorized[id].length})
           </button>
         ))}
       </div>
 
-      {error && <div className="bg-red-50 border border-red-200 text-red-700 rounded-xl p-4 text-sm">{error}</div>}
-
-      {/* Plan Versions */}
-      {section === 'plans' && (
-        <Card className="rounded-2xl shadow-sm">
-          <CardContent className="p-6">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-xl font-bold text-slate-900">Plan Versions</h2>
-              <Button size="sm" onClick={() => setShowPlanForm(!showPlanForm)}>{showPlanForm ? 'Cancel' : '+ Create Plan Version'}</Button>
-            </div>
-
-            {showPlanForm && (
-              <div className="mb-6 p-4 border rounded-xl bg-slate-50 space-y-4">
-                <p className="font-semibold text-sm text-slate-700">New Plan Version</p>
-                <div className="grid gap-3 md:grid-cols-3">
-                  <div><Label>Plan ID (from existing plans)</Label><Input value={planForm.planId} onChange={(e) => setPlanForm({ ...planForm, planId: e.target.value })} placeholder="plan_..." /></div>
-                  <div><Label>Name</Label><Input value={planForm.name} onChange={(e) => setPlanForm({ ...planForm, name: e.target.value })} placeholder="Premium Monthly" /></div>
-                  <div><Label>Type</Label><select className="h-10 w-full rounded-md border px-3 text-sm" value={planForm.planType} onChange={(e) => setPlanForm({ ...planForm, planType: e.target.value })}><option value="individual">Individual</option><option value="family">Family</option><option value="group">Group</option><option value="corporate">Corporate</option></select></div>
-                  <div><Label>Price</Label><Input type="number" value={planForm.price} onChange={(e) => setPlanForm({ ...planForm, price: e.target.value })} /></div>
-                  <div><Label>Duration (days)</Label><Input type="number" value={planForm.durationDays} onChange={(e) => setPlanForm({ ...planForm, durationDays: e.target.value })} /></div>
-                  <div><Label>Max Members</Label><Input type="number" value={planForm.maxMembers} onChange={(e) => setPlanForm({ ...planForm, maxMembers: e.target.value })} /></div>
-                  <div><Label>Sessions</Label><select className="h-10 w-full rounded-md border px-3 text-sm" value={planForm.sessionsUnlimited ? 'unlimited' : 'limited'} onChange={(e) => setPlanForm({ ...planForm, sessionsUnlimited: e.target.value === 'unlimited' })}><option value="unlimited">Unlimited</option><option value="limited">Limited</option></select></div>
-                  {!planForm.sessionsUnlimited && <div><Label>Sessions/Cycle</Label><Input type="number" value={planForm.sessionsPerCycle} onChange={(e) => setPlanForm({ ...planForm, sessionsPerCycle: e.target.value })} /></div>}
-                  <div><Label>Cycle Frequency</Label><select className="h-10 w-full rounded-md border px-3 text-sm" value={planForm.cycleFrequency} onChange={(e) => setPlanForm({ ...planForm, cycleFrequency: e.target.value })}><option value="monthly">Monthly</option><option value="weekly">Weekly</option><option value="quarterly">Quarterly</option></select></div>
-                  <div><Label>Distribution</Label><select className="h-10 w-full rounded-md border px-3 text-sm" value={planForm.distributionModel} onChange={(e) => setPlanForm({ ...planForm, distributionModel: e.target.value })}><option value="individual">Individual</option><option value="shared">Shared Pool</option><option value="custom">Custom</option></select></div>
-                </div>
-                <Button onClick={handleCreatePlan} className="bg-indigo-600 hover:bg-indigo-700 text-white">Create Plan Version</Button>
-              </div>
-            )}
-
-            <p className="text-sm text-slate-500 mb-4">Immutable snapshots of plan conditions. Each subscription references a specific version.</p>
-            {loading ? <p className="text-slate-500">Loading...</p> : planVersions.length === 0 ? (
-              <p className="text-slate-400 text-sm">No plan versions found. Enable the ENABLE_NEW_SUBSCRIPTION_MODEL flag and create a plan version.</p>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead className="bg-slate-50 border-b">
-                    <tr>
-                      <th className="text-left px-4 py-3 font-semibold">Plan</th>
-                      <th className="text-left px-4 py-3 font-semibold">Type</th>
-                      <th className="text-center px-4 py-3 font-semibold">Version</th>
-                      <th className="text-right px-4 py-3 font-semibold">Price</th>
-                      <th className="text-center px-4 py-3 font-semibold">Members</th>
-                      <th className="text-center px-4 py-3 font-semibold">Sessions</th>
-                      <th className="text-center px-4 py-3 font-semibold">Distribution</th>
-                      <th className="text-center px-4 py-3 font-semibold">Status</th>
+      <Card>
+        <CardHeader><CardTitle>{view === 'individual_unlimited' ? copy.unlimited : view === 'individual_limited' ? copy.limited : copy.multi}</CardTitle></CardHeader>
+        <CardContent className="p-0">
+          {loading ? (
+            <div className="p-10 text-center text-sm text-slate-500">Loading...</div>
+          ) : visibleSubscriptions.length === 0 ? (
+            <div className="p-10 text-center text-sm text-slate-500">{copy.noRows}</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[980px] text-left text-sm">
+                <thead className="border-y bg-slate-50 text-slate-600">
+                  <tr>
+                    <th className="px-4 py-3">{view === 'multi_user' ? copy.holder : copy.member}</th>
+                    <th className="px-4 py-3">{copy.plan}</th>
+                    <th className="px-4 py-3">{copy.dates}</th>
+                    <th className="px-4 py-3">{copy.paymentStatus}</th>
+                    <th className="px-4 py-3">{copy.subscriptionStatus}</th>
+                    {view === 'individual_limited' && <><th className="px-4 py-3 text-center">{copy.contracted}</th><th className="px-4 py-3 text-center">{copy.consumed}</th><th className="px-4 py-3 text-center">{copy.remaining}</th><th className="px-4 py-3 text-right">{copy.actions}</th></>}
+                    {view === 'multi_user' && <><th className="px-4 py-3 text-center">{copy.members}</th><th className="px-4 py-3 text-center">{copy.sessions}</th><th className="px-4 py-3 text-right">{copy.actions}</th></>}
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {visibleSubscriptions.map((subscription) => (
+                    <tr key={`${subscription.source}-${subscription.id}`} className="hover:bg-slate-50">
+                      {renderCommonCells(subscription)}
+                      {view === 'individual_limited' && (
+                        <>
+                          <td className="px-4 py-3 text-center font-semibold">{subscription.sessionsContracted ?? subscription.sessionsPerCycle ?? 0}</td>
+                          <td className="px-4 py-3 text-center font-semibold text-rose-600">{subscription.sessionsConsumed ?? 0}</td>
+                          <td className="px-4 py-3 text-center font-semibold text-emerald-600">{subscription.sessionsRemaining ?? 0}</td>
+                          <td className="px-4 py-3"><div className="flex justify-end gap-2"><Button size="sm" variant="outline" onClick={() => void openSessionAction(subscription, 'deduct')}><MinusCircle className="mr-1 h-4 w-4" />{copy.deduct}</Button><Button size="sm" variant="outline" onClick={() => void openSessionAction(subscription, 'return')}><RotateCcw className="mr-1 h-4 w-4" />{copy.return}</Button></div></td>
+                        </>
+                      )}
+                      {view === 'multi_user' && (
+                        <>
+                          <td className="px-4 py-3 text-center">{subscription.activeMembers || 1}/{subscription.maxMembers}</td>
+                          <td className="px-4 py-3 text-center">{subscription.sessionsUnlimited ? '∞' : `${subscription.sessionsConsumed || 0} / ${subscription.sessionsRemaining || 0}`}</td>
+                          <td className="px-4 py-3"><div className="flex justify-end gap-2">{!subscription.sessionsUnlimited && <><Button size="sm" variant="outline" onClick={() => void openSessionAction(subscription, 'deduct')}>{copy.deduct}</Button><Button size="sm" variant="outline" onClick={() => void openSessionAction(subscription, 'return')}>{copy.return}</Button></>}</div></td>
+                        </>
+                      )}
                     </tr>
-                  </thead>
-                  <tbody className="divide-y">
-                    {planVersions.map((pv) => (
-                      <tr key={pv.id} className="hover:bg-slate-50">
-                        <td className="px-4 py-3 font-medium">{pv.name}</td>
-                        <td className="px-4 py-3"><Badge variant="outline">{pv.planType}</Badge></td>
-                        <td className="px-4 py-3 text-center">v{pv.versionNumber}</td>
-                        <td className="px-4 py-3 text-right">{pv.price} {pv.currency}</td>
-                        <td className="px-4 py-3 text-center">{pv.maxMembers}</td>
-                        <td className="px-4 py-3 text-center">{pv.sessionsUnlimited ? '∞' : pv.sessionsPerCycle}</td>
-                        <td className="px-4 py-3 text-center">{pv.distributionModel}</td>
-                        <td className="px-4 py-3 text-center"><Badge variant={pv.status === 'active' ? 'default' : 'secondary'}>{pv.status}</Badge></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Subscriptions */}
-      {section === 'subscriptions' && (
-        <Card className="rounded-2xl shadow-sm">
-          <CardContent className="p-6">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-xl font-bold text-slate-900">Subscriptions V2</h2>
-              <Button size="sm" onClick={() => setShowSubForm(!showSubForm)}>{showSubForm ? 'Cancel' : '+ New Subscription'}</Button>
+                  ))}
+                </tbody>
+              </table>
             </div>
+          )}
+        </CardContent>
+      </Card>
 
-            {showSubForm && (
-              <div className="mb-6 p-4 border rounded-xl bg-slate-50 space-y-3">
-                <p className="font-semibold text-sm text-slate-700">Create New Subscription</p>
-                <div className="grid gap-3 md:grid-cols-3">
-                  <div><Label>Plan Version</Label><select className="h-10 w-full rounded-md border px-3 text-sm" value={subForm.planVersionId} onChange={(e) => setSubForm({ ...subForm, planVersionId: e.target.value })}><option value="">Select plan version</option>{planVersions.map((pv) => <option key={pv.id} value={pv.id}>{pv.name} (v{pv.versionNumber}) — {pv.planType}</option>)}</select></div>
-                  <div><Label>Holder Member ID</Label><Input value={subForm.holderMemberId} onChange={(e) => setSubForm({ ...subForm, holderMemberId: e.target.value })} placeholder="mem_..." /></div>
-                  <div><Label>Start Date</Label><DateInput value={subForm.startDate} onChange={(v) => setSubForm({ ...subForm, startDate: v })} /></div>
-                  <div><Label>Payment status</Label><select className="h-10 w-full rounded-md border px-3 text-sm" value={subForm.paymentStatus} onChange={(e) => setSubForm({ ...subForm, paymentStatus: e.target.value })}><option value="pending">Pending</option><option value="partial">Partially paid</option><option value="paid">Paid</option><option value="waived">Waived</option></select></div>
-                </div>
-                <Button onClick={handleCreateSubscription} className="bg-indigo-600 hover:bg-indigo-700 text-white">Create Subscription</Button>
-              </div>
-            )}
-
-            <div className="flex items-end gap-3 mb-6">
-              <div className="flex-1"><Label>Member ID</Label><Input value={memberSearch} onChange={(e) => setMemberSearch(e.target.value)} placeholder="Filter by member ID" /></div>
-              <Button onClick={loadSubscriptions}>Search</Button>
+      {actionState && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4" onClick={() => setActionState(null)}>
+          <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl" onClick={(event) => event.stopPropagation()}>
+            <h2 className="text-xl font-bold text-slate-900">{actionState.action === 'deduct' ? copy.deduct : copy.return}</h2>
+            <p className="mt-1 text-sm text-slate-500">{actionState.subscription.holderName} · {actionState.subscription.planName}</p>
+            <div className="mt-5 space-y-4">
+              <div><Label>{copy.targetMember}</Label><select className={selectClassName} value={actionAffiliationId} onChange={(event) => setActionAffiliationId(event.target.value)}>{actionState.members.map((member) => <option key={member.affiliationId} value={member.affiliationId}>{member.name} — {member.role}</option>)}</select></div>
+              {actionState.action === 'deduct' && <div><Label>{copy.quantity}</Label><Input type="number" min="1" value={actionQuantity} onChange={(event) => setActionQuantity(event.target.value)} /></div>}
+              <div><Label>{copy.reason}</Label><Input value={actionReason} onChange={(event) => setActionReason(event.target.value)} placeholder={copy.reasonPlaceholder} /></div>
             </div>
-            {subscriptions.length === 0 ? (
-              <p className="text-slate-400 text-sm">No subscriptions found.</p>
-            ) : (
-              <div className="space-y-3">
-                {subscriptions.map((sub) => (
-                  <div key={sub.id} className={`border rounded-xl p-4 cursor-pointer transition-colors ${['pending', 'partial', 'overdue'].includes(sub.paymentStatus) ? 'border-red-300 bg-red-50 hover:border-red-400' : 'hover:border-indigo-300'}`} onClick={() => openSubDetail(sub)}>
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <p className="font-semibold text-slate-900">{sub.planName}</p>
-                        <p className="text-xs text-slate-500">{sub.planType} • {formatDate(sub.startDate)} – {formatDate(sub.endDate)}</p>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <Badge variant={sub.status === 'active' ? 'default' : 'secondary'}>{sub.status}</Badge>
-                        <Badge variant={['pending', 'partial', 'overdue'].includes(sub.paymentStatus) ? 'destructive' : 'outline'}>{sub.paymentStatus}</Badge>
-                        <span className="text-sm text-slate-600">{sub.pricePaid} {sub.currency}</span>
-                      </div>
-                    </div>
-                    <div className="mt-2 text-xs text-slate-500 flex gap-4">
-                      <span>Max members: {sub.maxMembers}</span>
-                      <span>Sessions: {sub.sessionsUnlimited ? '∞' : `${sub.sessionsPerCycle}/cycle`}</span>
-                      <span>Distribution: {sub.distributionModel}</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Subscription Detail Modal */}
-      {selectedSub && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setSelectedSub(null)}>
-          <div className="bg-white rounded-2xl p-6 w-full max-w-2xl shadow-xl max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
-            <h3 className="text-lg font-bold text-slate-900 mb-1">{selectedSub.planName}</h3>
-            <p className="text-sm text-slate-500 mb-4">{selectedSub.planType} • {formatDate(selectedSub.startDate)} – {formatDate(selectedSub.endDate)} • {selectedSub.status}</p>
-
-            <div className={`mb-5 rounded-lg border p-3 ${['pending', 'partial', 'overdue'].includes(selectedSub.paymentStatus) ? 'border-red-300 bg-red-50' : ''}`}>
-              <div className="flex flex-wrap items-end gap-3">
-                <div className="min-w-44 flex-1">
-                  <Label>Payment status</Label>
-                  <select className="h-9 w-full rounded-md border bg-white px-3 text-sm" value={selectedSub.paymentStatus} onChange={async (event) => {
-                    try {
-                      const result = await subscriptionsV2Api.updatePaymentStatus(selectedSub.id, event.target.value);
-                      setSelectedSub({ ...selectedSub, paymentStatus: result.paymentStatus });
-                      toast.success('Payment status updated');
-                      await loadSubscriptions();
-                    } catch (e: any) { toast.error(e.message); }
-                  }}>
-                    <option value="pending">Pending</option><option value="partial">Partially paid</option><option value="paid">Paid</option><option value="overdue">Overdue</option><option value="waived">Waived</option><option value="refunded">Refunded</option>
-                  </select>
-                </div>
-                {['pending', 'partial', 'overdue'].includes(selectedSub.paymentStatus) && <p className="text-sm font-medium text-red-700">Outstanding payment blocks a new subscription or renewal.</p>}
-              </div>
+            <div className="mt-6 flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setActionState(null)}>{copy.close}</Button>
+              <Button onClick={() => void submitSessionAction()} disabled={savingAction || !actionReason.trim()}>
+                {actionState.action === 'deduct' ? copy.confirmDeduct : copy.confirmReturn}
+              </Button>
             </div>
-
-            {/* Members */}
-            <div className="mb-6">
-              <div className="flex items-center justify-between mb-3">
-                <h4 className="font-semibold text-slate-800">Members ({subMembers.length}/{selectedSub.maxMembers})</h4>
-              </div>
-              <div className="space-y-2 mb-3">
-                {subMembers.map((m) => (
-                  <div key={m.id} className="flex items-center justify-between p-3 border rounded-lg">
-                    <div>
-                      <p className="font-medium text-sm">{m.firstName} {m.lastName} <span className="text-xs text-slate-400">({m.email})</span></p>
-                      <p className="text-xs text-slate-500">Role: {m.role} • Status: {m.status}</p>
-                    </div>
-                    {m.role !== 'holder' && m.status === 'active' && (
-                      <Button size="sm" variant="ghost" className="text-red-500" onClick={() => handleRemoveMember(m.memberId)}>Remove</Button>
-                    )}
-                  </div>
-                ))}
-              </div>
-              {selectedSub.maxMembers > 1 && subMembers.length < selectedSub.maxMembers && (
-                <div className="flex gap-2">
-                  <Input value={newMemberId} onChange={(e) => setNewMemberId(e.target.value)} placeholder="Member ID to add" className="flex-1" />
-                  <Button size="sm" onClick={handleAddMember}>Add Member</Button>
-                </div>
-              )}
-            </div>
-
-            {/* Session Balances */}
-            {!selectedSub.sessionsUnlimited && balances.length > 0 && (
-              <div className="mb-4">
-                <h4 className="font-semibold text-slate-800 mb-3">Session Balances</h4>
-                {balances.map((bal) => (
-                  <div key={bal.id} className="p-3 border rounded-lg mb-2">
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-sm font-medium">{bal.contextType}: {bal.contextId.slice(0, 12)}...</span>
-                      <span className="text-lg font-bold text-indigo-600">{bal.available} available</span>
-                    </div>
-                    <div className="grid grid-cols-4 gap-2 text-xs text-slate-500">
-                      <span>Included: {bal.included}</span>
-                      <span>Consumed: {bal.consumed}</span>
-                      <span>Reserved: {bal.reserved}</span>
-                      <span>Refunds: {bal.refunds}</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-            {!selectedSub.sessionsUnlimited && sessionSummary && (
-              <div className="mb-5 rounded-lg border p-4">
-                <div className="mb-3 flex items-center justify-between"><h4 className="font-semibold text-slate-800">Real-time session summary</h4><span className="text-sm text-slate-500">Next reset: {formatDate(sessionSummary.nextResetDate)}</span></div>
-                <div className="grid grid-cols-2 gap-3 text-sm md:grid-cols-4">
-                  <span>Included: <strong>{sessionSummary.included}</strong></span>
-                  <span>Assigned: <strong>{sessionSummary.assigned}</strong></span>
-                  <span>Reserved: <strong>{sessionSummary.reserved}</strong></span>
-                  <span>Consumed: <strong>{sessionSummary.consumed}</strong></span>
-                  <span>Returned: <strong>{sessionSummary.cancelledOrReturned}</strong></span>
-                  <span>Additional: <strong>{sessionSummary.additional}</strong></span>
-                  <span>Accumulated: <strong>{sessionSummary.accumulated}</strong></span>
-                  <span className="text-indigo-700">Remaining: <strong>{sessionSummary.remaining}</strong></span>
-                </div>
-              </div>
-            )}
-
-            {/* Lifecycle Actions */}
-            <div className="border-t pt-4 mt-4">
-              <h4 className="font-semibold text-slate-800 mb-3">Actions</h4>
-              <div className="flex flex-wrap gap-2">
-                {selectedSub.status === 'active' && (
-                  <>
-                    <Button size="sm" variant="outline" onClick={async () => { try { await subscriptionsV2Api.freezeSubscription(selectedSub.id, 'Manual freeze'); toast.success('Subscription frozen'); await loadSubscriptions(); setSelectedSub(null); } catch (e: any) { toast.error(e.message); } }}>Freeze</Button>
-                    <Button size="sm" variant="outline" onClick={async () => { try { await subscriptionsV2Api.suspendSubscription(selectedSub.id, 'Manual suspend'); toast.success('Subscription suspended'); await loadSubscriptions(); setSelectedSub(null); } catch (e: any) { toast.error(e.message); } }}>Suspend</Button>
-                    <Button size="sm" variant="destructive" onClick={async () => { try { await subscriptionsV2Api.cancelSubscription(selectedSub.id, 'Manual cancel'); toast.success('Subscription cancelled'); await loadSubscriptions(); setSelectedSub(null); } catch (e: any) { toast.error(e.message); } }}>Cancel</Button>
-                  </>
-                )}
-                {(selectedSub.status === 'frozen' || selectedSub.status === 'suspended') && (
-                  <Button size="sm" className="bg-green-600 hover:bg-green-700 text-white" onClick={async () => { try { await subscriptionsV2Api.reactivateSubscription(selectedSub.id); toast.success('Subscription reactivated'); await loadSubscriptions(); setSelectedSub(null); } catch (e: any) { toast.error(e.message); } }}>Reactivate</Button>
-                )}
-                {selectedSub.status === 'expired' && (
-                  <Button size="sm" className="bg-green-600 hover:bg-green-700 text-white" onClick={async () => { try { await subscriptionsV2Api.renewSubscription(selectedSub.id); toast.success('Subscription renewed'); await loadSubscriptions(); setSelectedSub(null); } catch (e: any) { toast.error(e.message); } }}>Renew</Button>
-                )}
-              </div>
-            </div>
-
-            <Button variant="outline" className="w-full mt-2" onClick={() => setSelectedSub(null)}>Close</Button>
           </div>
         </div>
-      )}
-
-      {/* Affiliations */}
-      {section === 'affiliations' && (
-        <Card className="rounded-2xl shadow-sm">
-          <CardContent className="p-6">
-            <h2 className="text-xl font-bold text-slate-900 mb-4">Member Affiliations</h2>
-            <div className="flex items-end gap-3 mb-6">
-              <div className="flex-1"><Label>Member ID</Label><Input value={memberSearch} onChange={(e) => setMemberSearch(e.target.value)} placeholder="Enter member ID to view affiliations" /></div>
-              <Button onClick={loadAffiliations}>Search</Button>
-            </div>
-            {!memberSearch ? (
-              <p className="text-slate-400 text-sm">Enter a member ID to view their affiliations.</p>
-            ) : affiliations.length === 0 ? (
-              <p className="text-slate-400 text-sm">No affiliations found for this member.</p>
-            ) : (
-              <div className="space-y-3">
-                {affiliations.map((aff) => (
-                  <div key={aff.id} className="border rounded-xl p-4">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <p className="font-semibold text-slate-900">{aff.planName} {aff.isPrimary && <Badge variant="default" className="ml-2">Primary</Badge>}</p>
-                        <p className="text-xs text-slate-500">{aff.planType} • Role: {aff.role} • {formatDate(aff.startDate)} – {formatDate(aff.endDate)}</p>
-                      </div>
-                      <Badge variant={aff.status === 'active' ? 'default' : aff.status === 'expired' ? 'destructive' : 'secondary'}>{aff.status}</Badge>
-                    </div>
-                    <div className="mt-2 text-xs text-slate-500 flex gap-4">
-                      <span>Sessions: {aff.sessionsUnlimited ? '∞ unlimited' : 'Limited (see balance)'}</span>
-                      <span>Subscription: {aff.subscriptionStatus}</span>
-                      <span>Priority: {aff.consumptionPriority}</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Feature Flags */}
-      {section === 'flags' && (
-        <Card className="rounded-2xl shadow-sm">
-          <CardContent className="p-6">
-            <h2 className="text-xl font-bold text-slate-900 mb-4">Feature Flags</h2>
-            <p className="text-sm text-slate-500 mb-6">Control activation of new features. Changes take effect within 30 seconds.</p>
-            <div className="space-y-3">
-              {flags.map((flag) => (
-                <div key={flag.id} className="flex items-center justify-between border rounded-xl p-4">
-                  <div>
-                    <p className="font-mono text-sm font-semibold text-slate-900">{flag.key}</p>
-                    <p className="text-xs text-slate-500">{flag.description}</p>
-                  </div>
-                  <button onClick={() => toggleFlag(flag.key, flag.enabled)} className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium ${flag.enabled ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-500'}`}>
-                    {flag.enabled ? <ToggleRight className="h-5 w-5" /> : <ToggleLeft className="h-5 w-5" />}
-                    {flag.enabled ? 'Enabled' : 'Disabled'}
-                  </button>
-                </div>
-              ))}
-              {flags.length === 0 && <p className="text-slate-400 text-sm">No feature flags found. Run migrations first.</p>}
-            </div>
-          </CardContent>
-        </Card>
       )}
     </div>
   );
