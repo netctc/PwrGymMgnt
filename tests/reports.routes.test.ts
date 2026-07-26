@@ -35,6 +35,16 @@ test('screen catalog returns only reports visible to the current role', async ()
   });
 });
 
+test('screen catalog does not expose technical identifier filters', async () => {
+  await withReportsServer('admin', async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/reports/screen-catalog`);
+    assert.equal(response.status, 200);
+    const body = await response.json() as { reports: Array<{ filters: Array<{ label: string }> }> };
+    const labels = body.reports.flatMap((report) => report.filters.map((filter) => filter.label));
+    assert.equal(labels.some((label) => label === 'ID' || label.endsWith(' ID')), false);
+  });
+});
+
 test('screen PDF route rejects roles without access before touching the database', async () => {
   await withReportsServer('client', async (baseUrl) => {
     const response = await fetch(`${baseUrl}/api/reports/screen/security-audit.pdf?from=2026-01-01&to=2026-01-31`);
