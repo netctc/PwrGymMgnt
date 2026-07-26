@@ -273,6 +273,8 @@ export const subscriptionsV2Api = {
     reservationAffiliationId?: string;
     serviceType?: string;
     confirmSessionConsumption?: boolean;
+    sessionAction?: 'consume' | 'recover';
+    recoveryReason?: string;
     idempotencyKey?: string;
   }) =>
     apiRequest<any>('/api/access/authorize', { method: 'POST', body: JSON.stringify(payload) }),
