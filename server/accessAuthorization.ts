@@ -44,6 +44,9 @@ export type AccessRequest = {
   zone?: string;
   direction?: "entry" | "exit";
   // QR-specific
+  accessToken?: string;
+  // Backward-compatible request field. It contains the raw bearer token and is
+  // hashed by the server before it is compared with access_tokens.token_hash.
   tokenHash?: string;
   memberId?: string;
   // Facial-specific
@@ -114,15 +117,20 @@ async function resolveIdentity(
   pool: Pool,
   req: AccessRequest,
 ): Promise<{ personType: "member" | "employee" | null; personId: string | null; personName: string | null }> {
-  if (["qr", "card"].includes(req.method) && req.tokenHash) {
+  const rawAccessToken = req.accessToken || req.tokenHash;
+  if (["qr", "card"].includes(req.method) && rawAccessToken) {
     // Resolve via access_tokens
     const [rows]: any = await pool.query(
       `SELECT at.member_id, m.first_name, m.last_name
        FROM access_tokens at
        JOIN members m ON m.id = at.member_id
-       WHERE at.token_hash = ? AND at.status = 'active' AND (at.expires_at IS NULL OR at.expires_at > NOW())
+       WHERE at.token_hash = ?
+         AND at.status = 'active'
+         AND at.revoked_at IS NULL
+         AND (at.expires_at IS NULL OR at.expires_at >= NOW())
+         AND LOWER(TRIM(m.status)) = 'active'
        LIMIT 1`,
-      [req.tokenHash],
+      [crypto.createHash("sha256").update(rawAccessToken).digest("hex")],
     );
     if (rows.length === 0) return { personType: null, personId: null, personName: null };
     return {
@@ -894,6 +902,7 @@ export function registerAccessAuthorizationRoutes(app: Express, poolProvider: Po
         branch: req.body.branch || null,
         zone: req.body.zone || null,
         direction: req.body.direction || "entry",
+        accessToken: req.body.accessToken || req.body.token || null,
         tokenHash: req.body.tokenHash || null,
         memberId: req.body.memberId || null,
         biometricProfileId: req.body.biometricProfileId || null,
