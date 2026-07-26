@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { QRCodeCanvas } from 'qrcode.react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
@@ -182,6 +182,7 @@ function badgeVariant(status?: string) {
 
 export default function Members() {
   const { locale } = useLocalization();
+  const [pageSearchParams, setPageSearchParams] = useSearchParams();
   const multiUserCopy = locale === 'ar'
     ? {
         create: 'اشتراك جديد متعدد المستخدمين',
@@ -755,6 +756,14 @@ export default function Members() {
     setRenewOpen(true);
   };
 
+  useEffect(() => {
+    if (pageSearchParams.get('newSubscription') !== '1' || renewOpen) return;
+    openNewSubscription();
+    const next = new URLSearchParams(pageSearchParams);
+    next.delete('newSubscription');
+    setPageSearchParams(next, { replace: true });
+  }, [pageSearchParams, renewOpen]);
+
   const openRenew = async (member: MembershipMember) => {
     setSubscriptionIntent('renew');
     setRenewMember(member);
@@ -997,8 +1006,13 @@ export default function Members() {
     setQrMember(member);
     setAccessToken('');
     setQrTokenId('');
-    setQrExpiryDate('');
-    setQrPlanName('');
+    const knownPlan = (member.plans || [])
+      .filter((plan) => plan.status === 'active' && plan.endDate)
+      .sort((left, right) => String(right.endDate).localeCompare(String(left.endDate)))[0];
+    setQrExpiryDate(
+      String(knownPlan?.endDate || member.currentExpiry || member.multiUserSubscriptionEndDate || '').slice(0, 10),
+    );
+    setQrPlanName(knownPlan?.planName || member.currentPlan || '');
     setQrOpen(true);
 
     try {
@@ -1006,8 +1020,16 @@ export default function Members() {
       const latest = response.subscriptions
         .filter((subscription) => subscription.status === 'active' && subscription.endDate)
         .sort((a, b) => String(b.endDate).localeCompare(String(a.endDate)))[0];
-      setQrExpiryDate(latest?.endDate ? String(latest.endDate).slice(0, 10) : '');
-      setQrPlanName(latest?.planName || member.currentPlan || '');
+      const latestV2 = (response.member.plans || [])
+        .filter((plan) => plan.status === 'active' && plan.endDate)
+        .sort((left, right) => String(right.endDate).localeCompare(String(left.endDate)))[0];
+      const expiry =
+        latestV2?.endDate ||
+        latest?.endDate ||
+        response.member.currentExpiry ||
+        response.member.multiUserSubscriptionEndDate;
+      setQrExpiryDate(expiry ? String(expiry).slice(0, 10) : '');
+      setQrPlanName(latestV2?.planName || latest?.planName || member.currentPlan || '');
     } catch (err: any) {
       toast.error(err.message || 'Failed to load QR expiry date');
     }
@@ -1965,7 +1987,11 @@ The secure QR token is embedded in the attached PDF/QR image.`;
               <DateInput id="qrExpiryDate" value={qrExpiryDate} onChange={() => {}} readOnly disabled />
               <p className="text-xs text-slate-500">Expiry Date is locked and derived from the member's active subscription.</p>
             </div>
-            <Button onClick={generateToken} disabled={saving || !qrMember || !qrExpiryDate} className="w-full">
+            <Button
+              onClick={generateToken}
+              disabled={saving || !qrMember || String(qrMember.status).toLowerCase() !== 'active'}
+              className="w-full"
+            >
               <IdCard className="mr-2 h-4 w-4" /> {saving ? 'Generating...' : 'Generate E-card Token'}
             </Button>
             {accessToken && (
