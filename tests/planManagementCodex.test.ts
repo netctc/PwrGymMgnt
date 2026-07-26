@@ -179,6 +179,7 @@ test("limited multi-user plans expose distribution, cycles, immutable movements 
   const listMaintenance = read("src/pages/ListMaintenance.tsx");
   const accessPage = read("src/pages/AccessControl.tsx");
   const qrScannerPage = read("src/pages/QRScanner.tsx");
+  const layout = read("src/components/Layout.tsx");
   const privateClassesPage = read("src/pages/PrivateClasses.tsx");
   const schedulingApi = read("src/lib/schedulingApi.ts");
   const reports = read("server/reports.ts");
@@ -215,7 +216,9 @@ test("limited multi-user plans expose distribution, cycles, immutable movements 
   assert.match(scheduling, /deductionDeferredUntil/);
   assert.match(plansPage, /lateCancellationThreshold/);
   assert.match(plansPage, /allowExtraSessions/);
-  assert.match(subscriptionsPage, /Real-time session summary/);
+  assert.match(subscriptionsPage, /sessionsContracted/);
+  assert.match(subscriptionsPage, /sessionsConsumed/);
+  assert.match(subscriptionsPage, /sessionsRemaining/);
   assert.match(membersPage, /paymentAttentionRequired/);
   assert.match(membersPage, /expandedPlanKey/);
   assert.match(membersPage, /New Subscriptions/);
@@ -287,6 +290,18 @@ test("limited multi-user plans expose distribution, cycles, immutable movements 
   assert.match(scheduling, /deductionDeferredUntil: "check_in"/);
   assert.match(privateClassesPage, /limitedMembers\.map/);
   assert.match(schedulingApi, /limitedMembers: SchedulingPerson\[\]/);
+  assert.match(subscriptions, /memberStatus/);
+  assert.match(subscriptions, /paymentStatus/);
+  assert.match(subscriptions, /sessions_contracted/);
+  assert.match(subscriptions, /return-latest/);
+  assert.match(subscriptions, /NO_RETURNABLE_SESSION/);
+  assert.match(subscriptionsPage, /individual_unlimited/);
+  assert.match(subscriptionsPage, /individual_limited/);
+  assert.match(subscriptionsPage, /multi_user/);
+  assert.match(subscriptionsPage, /adjustSessions/);
+  assert.match(subscriptionsPage, /returnLatestSession/);
+  assert.match(membersPage, /String\(qrMember\.status\)\.toLowerCase\(\) !== 'active'/);
+  assert.match(layout, /'nav\.subscriptions', path: '\/subscriptions'/);
   assert.match(ledger, /DUPLICATE_ACTIVITY/);
   assert.match(listMaintenance, /intervalSeconds/);
   assert.match(reports, /import \{ autoTable \} from "jspdf-autotable"/);
