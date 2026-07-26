@@ -104,7 +104,7 @@ export default function AccessControl() {
       const decision = await subscriptionsV2Api.authorizeAccess({
         method,
         ...(method === 'qr'
-          ? { tokenHash: memberId.trim() }
+          ? { accessToken: memberId.trim() }
           : { memberId: memberId.trim() }),
         accessPointId: accessPointId || undefined,
         affiliationId: options.affiliationId,
