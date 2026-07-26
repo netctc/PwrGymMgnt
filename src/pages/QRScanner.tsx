@@ -3,10 +3,12 @@ import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Input } from '../components/ui/input';
+import { Label } from '../components/ui/label';
 import { membershipApi, type MembershipMember, type MembershipSubscription } from '../lib/membershipApi';
 import { subscriptionsV2Api } from '../lib/subscriptionsV2Api';
 import { AlertTriangle, Camera, CameraOff, CheckCircle, Clock, Keyboard, ScanLine, ShieldCheck, XCircle } from 'lucide-react';
 import { toast } from 'sonner';
+import { useLocalization } from '../contexts/LocalizationContext';
 
 type ScanRecord = {
   id: string;
@@ -21,6 +23,23 @@ type ScanData = {
   subscription?: MembershipSubscription;
   name: string;
   details: string;
+  outcome?: 'access' | 'recovery';
+};
+
+type AffiliationOption = {
+  affiliationId: string;
+  subscriptionId: string;
+  planName: string;
+  sessionsAvailable: number | null;
+  sessionsUnlimited: boolean;
+  isPrimary: boolean;
+  consumptionPriority: number;
+};
+
+type PendingAccess = {
+  accessToken: string;
+  personName: string;
+  options: AffiliationOption[];
 };
 
 type BrowserBarcodeDetector = {
@@ -76,6 +95,29 @@ function extractAccessToken(rawValue: string) {
 }
 
 export default function QRScanner() {
+  const { locale } = useLocalization();
+  const sessionCopy =
+    locale === 'ar'
+      ? {
+          selectAction: 'تم التعرف على العضو. اختر الخطة والإجراء',
+          recoveryReason: 'سبب استرجاع الجلسة',
+          recoveryPlaceholder: 'اشرح سبب استرجاع آخر جلسة مخصومة',
+          deduct: 'خصم جلسة',
+          recover: 'استرجاع جلسة',
+          sessions: 'جلسات متاحة',
+          recovered: 'تم استرجاع الجلسة',
+          newBalance: 'الرصيد الجديد',
+        }
+      : {
+          selectAction: 'Member recognized. Select the plan and action',
+          recoveryReason: 'Recovery reason',
+          recoveryPlaceholder: 'Explain why the last deducted session must be recovered',
+          deduct: 'Deduct session',
+          recover: 'Recover session',
+          sessions: 'sessions available',
+          recovered: 'Session recovered',
+          newBalance: 'New balance',
+        };
   const [scanning, setScanning] = useState(false);
   const [result, setResult] = useState<'success' | 'error' | null>(null);
   const [scanHistory, setScanHistory] = useState<ScanRecord[]>([]);
@@ -84,6 +126,8 @@ export default function QRScanner() {
   const [lastError, setLastError] = useState<string | null>(null);
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
+  const [pendingAccess, setPendingAccess] = useState<PendingAccess | null>(null);
+  const [recoveryReason, setRecoveryReason] = useState('');
   const [barcodeSupported] = useState(() => Boolean(readBarcodeDetector()));
   const inputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -110,35 +154,66 @@ export default function QRScanner() {
 
   useEffect(() => stopCamera, []);
 
+  const scheduleResultReset = () => {
+    resetTimerRef.current = window.setTimeout(() => {
+      setResult(null);
+      setScanData(null);
+      inputRef.current?.focus();
+    }, 4000);
+  };
+
+  const completeDecision = (decision: any, outcome: 'access' | 'recovery' = 'access') => {
+    const name = decision.personName || 'Member';
+    const details =
+      outcome === 'recovery'
+        ? `${sessionCopy.recovered}. ${sessionCopy.newBalance}: ${decision.sessionsRemaining}`
+        : decision.planName
+          ? `${decision.planName}${decision.sessionsRemaining !== null ? ` • ${decision.sessionsRemaining} sessions left` : ''}`
+          : decision.reason;
+    setResult('success');
+    setScanData({ name, details, outcome });
+    setScanHistory((current) => [
+      { id: crypto.randomUUID(), timestamp: new Date(), result: 'success', name, details },
+      ...current,
+    ].slice(0, 10));
+    toast.success(outcome === 'recovery' ? details : `Access granted for ${name}`);
+  };
+
   const processScan = async (rawToken: string) => {
     const cleanedToken = extractAccessToken(rawToken);
     if (!cleanedToken) return;
 
     if (resetTimerRef.current !== null) window.clearTimeout(resetTimerRef.current);
+    let keepActionOpen = false;
     setScanning(true);
     setLastError(null);
     setScannedToken('');
+    setPendingAccess(null);
+    setRecoveryReason('');
     inputRef.current?.blur();
 
     try {
-      // Try unified access motor first (when ENABLE_UNIFIED_ACCESS flag is active)
+      // Try the unified access motor first.
       let unifiedSuccess = false;
       try {
-        const decision = await subscriptionsV2Api.authorizeAccess({ method: 'qr', tokenHash: cleanedToken });
+        const decision = await subscriptionsV2Api.authorizeAccess({ method: 'qr', accessToken: cleanedToken });
         if (decision && (decision.authorized !== undefined)) {
           unifiedSuccess = true;
-          if (decision.authorized) {
-            const name = decision.personName || 'Member';
-            const details = decision.planName
-              ? `${decision.planName}${decision.sessionsRemaining !== null ? ` • ${decision.sessionsRemaining} sessions left` : ''}`
-              : decision.reason;
-            setResult('success');
-            setScanData({ name, details });
-            setScanHistory((current) => [
-              { id: crypto.randomUUID(), timestamp: new Date(), result: 'success', name, details },
-              ...current,
-            ].slice(0, 10));
-            toast.success(`Access granted for ${name}`);
+          if (decision.requiresSessionAction && decision.affiliationOptions?.length) {
+            keepActionOpen = true;
+            setResult(null);
+            setScanData({
+              name: decision.personName || 'Member',
+              details: sessionCopy.selectAction,
+            });
+            setPendingAccess({
+              accessToken: cleanedToken,
+              personName: decision.personName || 'Member',
+              options: decision.affiliationOptions,
+            });
+            toast.info(sessionCopy.selectAction);
+          } else if (decision.authorized) {
+            completeDecision(decision);
           } else {
             throw new Error(decision.reason || 'Access denied');
           }
@@ -178,11 +253,48 @@ export default function QRScanner() {
       toast.error(message);
     } finally {
       setScanning(false);
-      resetTimerRef.current = window.setTimeout(() => {
-        setResult(null);
-        setScanData(null);
-        inputRef.current?.focus();
-      }, 4000);
+      if (!keepActionOpen) scheduleResultReset();
+    }
+  };
+
+  const handleSessionAction = async (
+    affiliationId: string,
+    action: 'consume' | 'recover',
+  ) => {
+    if (!pendingAccess) return;
+    if (action === 'recover' && !recoveryReason.trim()) {
+      toast.error(sessionCopy.recoveryReason);
+      return;
+    }
+    if (resetTimerRef.current !== null) window.clearTimeout(resetTimerRef.current);
+    setScanning(true);
+    setLastError(null);
+    try {
+      const decision = await subscriptionsV2Api.authorizeAccess({
+        method: 'qr',
+        accessToken: pendingAccess.accessToken,
+        affiliationId,
+        sessionAction: action,
+        confirmSessionConsumption: action === 'consume',
+        recoveryReason: action === 'recover' ? recoveryReason.trim() : undefined,
+        idempotencyKey: `qr_${action}_${crypto.randomUUID()}`,
+      });
+      if (decision.authorized) {
+        completeDecision(decision);
+      } else if (decision.sessionRecovered) {
+        completeDecision(decision, 'recovery');
+      } else {
+        throw new Error(decision.reason || 'Access denied');
+      }
+      setPendingAccess(null);
+      setRecoveryReason('');
+      scheduleResultReset();
+    } catch (err: any) {
+      const message = err.message || 'Access denied';
+      setLastError(message);
+      toast.error(message);
+    } finally {
+      setScanning(false);
     }
   };
 
@@ -297,7 +409,7 @@ export default function QRScanner() {
                 <CameraOff className="mr-2 h-4 w-4" /> Stop Camera
               </Button>
             ) : (
-              <Button type="button" onClick={startCamera} disabled={scanning}>
+              <Button type="button" onClick={startCamera} disabled={scanning || Boolean(pendingAccess)}>
                 <Camera className="mr-2 h-4 w-4" /> Start Webcam Scan
               </Button>
             )}
@@ -324,8 +436,8 @@ export default function QRScanner() {
           </CardTitle>
           <CardDescription>Use webcam, USB QR reader, or paste the token generated from the Members screen.</CardDescription>
         </CardHeader>
-        <CardContent className="flex min-h-[300px] items-center justify-center p-12 text-center">
-          {!result && !scanning && (
+        <CardContent className="flex min-h-[300px] items-center justify-center p-6 text-center">
+          {!result && !scanning && !pendingAccess && (
             <div className="flex flex-col items-center text-slate-400">
               <ScanLine className="mb-6 h-24 w-24 stroke-[1]" />
               <p className="max-w-sm text-sm">
@@ -334,10 +446,66 @@ export default function QRScanner() {
             </div>
           )}
 
+          {pendingAccess && !scanning && (
+            <div className="w-full max-w-xl space-y-4 text-left">
+              <div className="text-center">
+                <ShieldCheck className="mx-auto mb-2 h-12 w-12 text-indigo-500" />
+                <h3 className="text-xl font-bold text-slate-900">{pendingAccess.personName}</h3>
+                <p className="mt-1 text-sm text-slate-600">{sessionCopy.selectAction}</p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="qr-recovery-reason">{sessionCopy.recoveryReason}</Label>
+                <Input
+                  id="qr-recovery-reason"
+                  value={recoveryReason}
+                  onChange={(event) => setRecoveryReason(event.target.value)}
+                  placeholder={sessionCopy.recoveryPlaceholder}
+                />
+              </div>
+              <div className="space-y-3">
+                {pendingAccess.options.map((option) => (
+                  <div
+                    key={option.affiliationId}
+                    className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm"
+                  >
+                    <div className="mb-3 flex items-center justify-between gap-3">
+                      <div>
+                        <p className="font-semibold text-slate-900">{option.planName}</p>
+                        <p className="text-sm text-slate-500">
+                          {option.sessionsAvailable ?? 0} {sessionCopy.sessions}
+                        </p>
+                      </div>
+                      {option.isPrimary && <Badge variant="secondary">Primary</Badge>}
+                    </div>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <Button
+                        type="button"
+                        onClick={() => handleSessionAction(option.affiliationId, 'consume')}
+                        disabled={(option.sessionsAvailable ?? 0) <= 0}
+                      >
+                        {sessionCopy.deduct}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => handleSessionAction(option.affiliationId, 'recover')}
+                        disabled={!recoveryReason.trim()}
+                      >
+                        {sessionCopy.recover}
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {result === 'success' && !scanning && scanData && (
             <div className="flex animate-in flex-col items-center text-emerald-500 duration-300 fade-in zoom-in">
               <CheckCircle className="mb-4 h-24 w-24" />
-              <h3 className="text-2xl font-bold text-emerald-600">Access Granted</h3>
+              <h3 className="text-2xl font-bold text-emerald-600">
+                {scanData.outcome === 'recovery' ? sessionCopy.recovered : 'Access Granted'}
+              </h3>
               <p className="mt-2 font-medium text-emerald-700/80">{scanData.name}</p>
               <p className="mt-1 text-xs text-emerald-600">{scanData.details}</p>
             </div>
@@ -362,11 +530,11 @@ export default function QRScanner() {
             className="h-10 pl-10 text-base"
             value={scannedToken}
             onChange={(event) => setScannedToken(event.target.value)}
-            disabled={scanning}
+            disabled={scanning || Boolean(pendingAccess)}
             autoFocus
           />
         </div>
-        <Button className="h-10 px-6" type="submit" disabled={scanning || !scannedToken.trim()}>
+        <Button className="h-10 px-6" type="submit" disabled={scanning || Boolean(pendingAccess) || !scannedToken.trim()}>
           Verify
         </Button>
       </form>
