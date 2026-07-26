@@ -177,6 +177,9 @@ test("limited multi-user plans expose distribution, cycles, immutable movements 
   const access = read("server/accessAuthorization.ts");
   const ledger = read("server/sessionLedger.ts");
   const listMaintenance = read("src/pages/ListMaintenance.tsx");
+  const accessPage = read("src/pages/AccessControl.tsx");
+  const privateClassesPage = read("src/pages/PrivateClasses.tsx");
+  const schedulingApi = read("src/lib/schedulingApi.ts");
   const reports = read("server/reports.ts");
 
   assert.match(management, /holderSessionsPerCycle/);
@@ -251,7 +254,28 @@ test("limited multi-user plans expose distribution, cycles, immutable movements 
   assert.match(access, /reservationAffiliationId/);
   assert.match(access, /AFFILIATION_SELECTION_REQUIRED/);
   assert.match(access, /SESSION_CONSUMPTION_CONFIRMATION_REQUIRED/);
+  assert.match(access, /SESSION_ACTION_REQUIRED/);
+  assert.match(access, /SESSION_RECOVERED/);
+  assert.match(access, /access_session_recovery/);
+  assert.match(access, /relatedMovementId: original\.id/);
+  assert.match(access, /RECOVERY_REASON_REQUIRED/);
+  assert.match(access, /session_recovered/);
   assert.match(access, /checkAndClaimCooldown/);
+  assert.doesNotMatch(
+    access.slice(
+      access.indexOf('app.post("/api/access/authorize"'),
+      access.indexOf('// Access attempts history'),
+    ),
+    /ENABLE_UNIFIED_ACCESS/,
+  );
+  assert.match(accessPage, /Deduct session/);
+  assert.match(accessPage, /Recover session/);
+  assert.match(accessPage, /recoveryReason/);
+  assert.match(scheduling, /limitedMembers/);
+  assert.match(scheduling, /LIMITED_SESSION_PLAN_REQUIRED/);
+  assert.match(scheduling, /deductionDeferredUntil: "check_in"/);
+  assert.match(privateClassesPage, /limitedMembers\.map/);
+  assert.match(schedulingApi, /limitedMembers: SchedulingPerson\[\]/);
   assert.match(ledger, /DUPLICATE_ACTIVITY/);
   assert.match(listMaintenance, /intervalSeconds/);
   assert.match(reports, /import \{ autoTable \} from "jspdf-autotable"/);
