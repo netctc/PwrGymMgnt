@@ -178,6 +178,7 @@ test("limited multi-user plans expose distribution, cycles, immutable movements 
   const ledger = read("server/sessionLedger.ts");
   const listMaintenance = read("src/pages/ListMaintenance.tsx");
   const accessPage = read("src/pages/AccessControl.tsx");
+  const qrScannerPage = read("src/pages/QRScanner.tsx");
   const privateClassesPage = read("src/pages/PrivateClasses.tsx");
   const schedulingApi = read("src/lib/schedulingApi.ts");
   const reports = read("server/reports.ts");
@@ -260,6 +261,11 @@ test("limited multi-user plans expose distribution, cycles, immutable movements 
   assert.match(access, /relatedMovementId: original\.id/);
   assert.match(access, /RECOVERY_REASON_REQUIRED/);
   assert.match(access, /session_recovered/);
+  assert.match(
+    access,
+    /createHash\("sha256"\)\.update\(rawAccessToken\)\.digest\("hex"\)/,
+  );
+  assert.match(access, /at\.revoked_at IS NULL/);
   assert.match(access, /checkAndClaimCooldown/);
   assert.doesNotMatch(
     access.slice(
@@ -271,6 +277,11 @@ test("limited multi-user plans expose distribution, cycles, immutable movements 
   assert.match(accessPage, /Deduct session/);
   assert.match(accessPage, /Recover session/);
   assert.match(accessPage, /recoveryReason/);
+  assert.match(qrScannerPage, /accessToken: cleanedToken/);
+  assert.match(qrScannerPage, /decision\.requiresSessionAction/);
+  assert.match(qrScannerPage, /handleSessionAction/);
+  assert.match(qrScannerPage, /Deduct session/);
+  assert.match(qrScannerPage, /Recover session/);
   assert.match(scheduling, /limitedMembers/);
   assert.match(scheduling, /LIMITED_SESSION_PLAN_REQUIRED/);
   assert.match(scheduling, /deductionDeferredUntil: "check_in"/);
