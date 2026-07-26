@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { loadCurrentEcardSubscription } from '../server/membership';
 
-function createSubscriptionPool(options: { structuredRows?: any[]; legacyRows?: any[] }) {
+function createSubscriptionPool(options: { structuredRows?: any[]; v2Rows?: any[] }) {
   const calls: string[] = [];
   return {
     calls,
@@ -13,8 +13,8 @@ function createSubscriptionPool(options: { structuredRows?: any[]; legacyRows?: 
       if (normalizedSql.includes('FROM member_subscriptions')) {
         return [options.structuredRows || [], []];
       }
-      if (normalizedSql.includes('FROM subscriptions s')) {
-        return [options.legacyRows || [], []];
+      if (normalizedSql.includes('FROM affiliations a')) {
+        return [options.v2Rows || [], []];
       }
       throw new Error(`Unexpected SQL in test: ${normalizedSql}`);
     },
@@ -46,38 +46,38 @@ test('e-card subscription lookup accepts active member_subscriptions rows with f
   assert.match(pool.calls[0], /DATE\(end_date\) >= CURDATE\(\)/);
 });
 
-test('e-card subscription lookup falls back to legacy subscriptions table', async () => {
+test('e-card subscription lookup falls back to active V2 affiliations', async () => {
   const pool = createSubscriptionPool({
     structuredRows: [],
-    legacyRows: [{
-      id: 'legacy_sub_1',
+    v2Rows: [{
+      id: 'v2_sub_1',
       member_id: 'member_1',
-      plan_id: 'legacy_plan',
-      plan_name: 'Legacy Premium',
+      plan_id: 'v2_plan',
+      plan_name: 'V2 Premium',
       status: 'active',
       start_date: null,
       end_date: '2099-02-01',
       price: 75,
       currency: 'USD',
-      data: JSON.stringify({ planName: 'Legacy Premium' }),
+      data: JSON.stringify({ planName: 'V2 Premium' }),
     }],
   });
 
   const subscription = await loadCurrentEcardSubscription(pool as any, 'member_1');
 
-  // After migration 023, the legacy table is no longer queried.
-  // If member_subscriptions returns nothing, the result is null.
-  assert.equal(subscription, null);
-  assert.equal(pool.calls.length, 1);
+  assert.equal(subscription.id, 'v2_sub_1');
+  assert.equal(subscription.plan_name, 'V2 Premium');
+  assert.equal(pool.calls.length, 2);
+  assert.match(pool.calls[1], /FROM affiliations a/);
 });
 
 test('e-card subscription lookup returns null when no active future expiry exists', async () => {
-  const pool = createSubscriptionPool({ structuredRows: [], legacyRows: [] });
+  const pool = createSubscriptionPool({ structuredRows: [], v2Rows: [] });
 
   const subscription = await loadCurrentEcardSubscription(pool as any, 'member_1');
 
   assert.equal(subscription, null);
-  assert.equal(pool.calls.length, 1);
+  assert.equal(pool.calls.length, 2);
 });
 
 test('e-card WhatsApp configuration helper requires token and phone number id', async () => {
