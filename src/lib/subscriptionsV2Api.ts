@@ -41,6 +41,9 @@ export type SubscriptionV2 = {
   holderFirstName?: string;
   holderLastName?: string;
   holderName?: string;
+  holderEmail?: string;
+  holderStatus?: string;
+  holderAffiliationId?: string | null;
   status: string;
   startDate: string;
   endDate: string;
@@ -50,11 +53,17 @@ export type SubscriptionV2 = {
   paymentStatus: string;
   expectedPaymentDate?: string | null;
   maxMembers: number;
+  activeMembers?: number;
   sessionsUnlimited: boolean;
   sessionsPerCycle: number | null;
+  cycleFrequency?: string;
   distributionModel: string;
+  sessionsContracted?: number | null;
+  sessionsConsumed?: number | null;
+  sessionsRemaining?: number | null;
   version: number;
   legacySubscriptionId: string | null;
+  source?: 'v2' | 'legacy';
 };
 
 export type Affiliation = {
@@ -192,8 +201,19 @@ export const subscriptionsV2Api = {
     apiRequest<{ planVersion: PlanVersion }>('/api/v2/plan-versions', { method: 'POST', body: JSON.stringify(payload) }),
 
   // Subscriptions
-  listSubscriptions: (params: { memberId?: string; status?: string } = {}) =>
-    apiRequest<{ subscriptions: SubscriptionV2[] }>(`/api/v2/subscriptions${toQuery(params)}`),
+  listSubscriptions: (params: {
+    memberId?: string;
+    status?: string;
+    memberStatus?: string;
+    paymentStatus?: string;
+    planId?: string;
+    sessions?: string;
+    search?: string;
+  } = {}) =>
+    apiRequest<{
+      subscriptions: SubscriptionV2[];
+      filterOptions?: { plans: Array<{ id: string; name: string }> };
+    }>(`/api/v2/subscriptions${toQuery(params)}`),
 
   createSubscription: (payload: { planVersionId: string; holderMemberId: string; startDate?: string; endDate?: string; paymentStatus?: string; paymentDate?: string }) =>
     apiRequest<{ subscription: SubscriptionV2; affiliationId: string }>('/api/v2/subscriptions', { method: 'POST', body: JSON.stringify(payload) }),
@@ -215,7 +235,7 @@ export const subscriptionsV2Api = {
 
   // Subscription Members
   listSubscriptionMembers: (subscriptionId: string) =>
-    apiRequest<{ members: Array<{ id: string; subscriptionId: string; memberId: string; role: string; status: string; joinedAt: string | null; firstName: string; lastName: string; email: string }> }>(`/api/v2/subscriptions/${encodeURIComponent(subscriptionId)}/members`),
+    apiRequest<{ members: Array<{ id: string; subscriptionId: string; memberId: string; affiliationId: string | null; role: string; status: string; joinedAt: string | null; firstName: string; lastName: string; email: string }> }>(`/api/v2/subscriptions/${encodeURIComponent(subscriptionId)}/members`),
 
   addSubscriptionMember: (subscriptionId: string, payload: { memberId: string; role?: string }) =>
     apiRequest<{ subscriptionMember: any; affiliationId: string }>(`/api/v2/subscriptions/${encodeURIComponent(subscriptionId)}/members`, { method: 'POST', body: JSON.stringify(payload) }),
@@ -253,6 +273,28 @@ export const subscriptionsV2Api = {
   }) =>
     apiRequest<{ processed: boolean; configuredMoment?: string; movement?: SessionMovement | null }>(
       '/api/v2/sessions/register-event',
+      { method: 'POST', body: JSON.stringify(payload) },
+    ),
+
+  adjustSessions: (payload: {
+    affiliationId: string;
+    direction: 'positive' | 'negative';
+    quantity: number;
+    reason: string;
+    idempotencyKey?: string;
+  }) =>
+    apiRequest<{ movement: { id: string; balanceAfter: number; type: string } }>(
+      '/api/v2/sessions/adjust',
+      { method: 'POST', body: JSON.stringify(payload) },
+    ),
+
+  returnLatestSession: (payload: {
+    affiliationId: string;
+    reason: string;
+    idempotencyKey?: string;
+  }) =>
+    apiRequest<{ movement: { id: string; relatedMovementId: string; balanceAfter: number; type: string } }>(
+      '/api/v2/sessions/return-latest',
       { method: 'POST', body: JSON.stringify(payload) },
     ),
 
