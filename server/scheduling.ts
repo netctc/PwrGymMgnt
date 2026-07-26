@@ -372,6 +372,26 @@ export function registerSchedulingRoutes(app: Express, poolProvider: PoolProvide
       const [memberRows]: any = await pool.query(
         "SELECT id, first_name, last_name, email, status FROM members WHERE status <> 'archived' ORDER BY first_name ASC, last_name ASC LIMIT 500",
       );
+      const [limitedMemberRows]: any = await pool.query(
+        `SELECT DISTINCT m.id, m.first_name, m.last_name, m.email, m.status
+           FROM members m
+           JOIN affiliations a
+             ON a.member_id = m.id
+            AND a.status = 'active'
+            AND a.start_date <= CURDATE()
+            AND a.end_date >= CURDATE()
+           JOIN subscriptions s
+             ON s.id = a.subscription_id
+            AND s.status = 'active'
+            AND s.start_date <= CURDATE()
+            AND s.end_date >= CURDATE()
+           JOIN plan_versions pv
+             ON pv.id = a.plan_version_id
+            AND pv.sessions_unlimited = 0
+          WHERE m.status = 'active'
+          ORDER BY m.first_name ASC, m.last_name ASC
+          LIMIT 500`,
+      );
       const [trainerRows]: any = await pool.query(
         // Canonical source: employees + admin_users (staff migrated in 023)
         "SELECT e.id, e.first_name, e.last_name, e.email, COALESCE(au.role, e.job_title, 'trainer') AS role, e.employment_status AS status FROM employees e LEFT JOIN admin_users au ON LOWER(TRIM(au.email)) = LOWER(TRIM(e.email)) WHERE e.employment_status <> 'archived' ORDER BY e.first_name ASC, e.last_name ASC LIMIT 500",
@@ -383,6 +403,13 @@ export function registerSchedulingRoutes(app: Express, poolProvider: PoolProvide
 
       res.json({
         members: memberRows.map((row: any) => ({
+          id: row.id,
+          firstName: row.first_name || "",
+          lastName: row.last_name || "",
+          email: row.email || "",
+          status: row.status || "active",
+        })),
+        limitedMembers: limitedMemberRows.map((row: any) => ({
           id: row.id,
           firstName: row.first_name || "",
           lastName: row.last_name || "",
@@ -637,153 +664,21 @@ export function registerSchedulingRoutes(app: Express, poolProvider: PoolProvide
         [bookingId, req.params.id, memberId, memberName || null, toMysqlJson(req.body.data)],
       );
 
-      // Session ledger integration: reserve a session if feature is enabled
-      let movementId: string | null = null;
-      let sessionsRemaining: number | null = null;
-      try {
-        const { isFeatureEnabled } = await import("./featureFlags");
-        const ledgerEnabled = await isFeatureEnabled(pool, "ENABLE_SESSION_LEDGER");
-        if (ledgerEnabled) {
-          // Resolve the affiliation using explicit choice, primary plan, then gym priority.
-          const [affRows]: any = await connection.query(
-            `SELECT a.id, a.subscription_id, a.is_primary,
-                    a.consumption_priority, pv.name AS plan_name,
-                    pv.sessions_unlimited, pv.distribution_model,
-                    pv.booking_policy
-             FROM affiliations a
-             JOIN plan_versions pv ON pv.id = a.plan_version_id
-             JOIN subscriptions s
-               ON s.id = a.subscription_id
-              AND s.status = 'active'
-              AND s.start_date <= CURDATE()
-              AND s.end_date >= CURDATE()
-             WHERE a.member_id = ?
-               AND a.status = 'active'
-               AND a.start_date <= CURDATE()
-               AND a.end_date >= CURDATE()
-             ORDER BY a.is_primary DESC, a.consumption_priority ASC, a.end_date ASC`,
-            [memberId],
-          );
-          if (affRows.length === 0) {
-            throw Object.assign(new Error("No active affiliation can be used for this booking"), {
-              status: 409,
-              code: "NO_ACTIVE_AFFILIATION",
-            });
-          }
-          const requestedAffiliationId = normalizeString(req.body.affiliationId);
-          let selectedAffiliation = requestedAffiliationId
-            ? affRows.find((row: any) => row.id === requestedAffiliationId)
-            : null;
-          if (requestedAffiliationId && !selectedAffiliation) {
-            throw Object.assign(new Error("Selected affiliation is not eligible"), {
-              status: 409,
-              code: "REQUESTED_AFFILIATION_NOT_ELIGIBLE",
-            });
-          }
-          if (!selectedAffiliation) {
-            const primaryRows = affRows.filter((row: any) => Boolean(row.is_primary));
-            if (primaryRows.length === 1) selectedAffiliation = primaryRows[0];
-          }
-          if (!selectedAffiliation) {
-            const priority = Math.min(
-              ...affRows.map((row: any) => Number(row.consumption_priority || 0)),
-            );
-            const priorityRows = affRows.filter(
-              (row: any) => Number(row.consumption_priority || 0) === priority,
-            );
-            if (priorityRows.length === 1) selectedAffiliation = priorityRows[0];
-          }
-          if (!selectedAffiliation) {
-            await connection.rollback();
-            return res.status(409).json({
-              error: "Select the plan to use for this booking",
-              code: "AFFILIATION_SELECTION_REQUIRED",
-              affiliations: affRows.map((row: any) => ({
-                affiliationId: row.id,
-                subscriptionId: row.subscription_id,
-                planName: row.plan_name,
-              })),
-            });
-          }
-          await connection.query(
-            `UPDATE class_bookings
-                SET data = JSON_SET(
-                  COALESCE(data, JSON_OBJECT()),
-                  '$.affiliationId', ?,
-                  '$.subscriptionId', ?
-                )
-              WHERE id = ?`,
-            [selectedAffiliation.id, selectedAffiliation.subscription_id, bookingId],
-          );
-          if (!selectedAffiliation.sessions_unlimited) {
-            const bookingPolicy = typeof selectedAffiliation.booking_policy === "string"
-              ? JSON.parse(selectedAffiliation.booking_policy || "{}")
-              : (selectedAffiliation.booking_policy || {});
-            const deductionMoment = bookingPolicy.deductionMoment || "booking_confirmation";
-            if (!["reservation", "booking_confirmation"].includes(deductionMoment)) {
-              await connection.commit();
-              const [rows]: any = await pool.query("SELECT * FROM class_bookings WHERE id = ?", [bookingId]);
-              return res.status(201).json({
-                booking: mapClassBooking(rows[0]),
-                movementId: null,
-                sessionsRemaining: null,
-                deductionDeferredUntil: deductionMoment,
-              });
-            }
-            const [cycleRows]: any = await connection.query(
-              "SELECT id FROM subscription_cycles WHERE subscription_id = ? AND status = 'active' ORDER BY cycle_number DESC LIMIT 1",
-              [selectedAffiliation.subscription_id],
-            );
-            if (cycleRows.length > 0) {
-              const { getBalanceForUpdate, createMovement, getSessionBalanceContext } = await import("./sessionLedger");
-              const context = getSessionBalanceContext(
-                selectedAffiliation.distribution_model,
-                selectedAffiliation.subscription_id,
-                selectedAffiliation.id,
-              );
-              const balance = await getBalanceForUpdate(
-                connection,
-                context.contextType,
-                context.contextId,
-                cycleRows[0].id,
-              );
-              if (balance.available <= 0) {
-                throw Object.assign(new Error("No sessions are available for this booking"), {
-                  status: 409,
-                  code: "NO_SESSIONS_AVAILABLE",
-                });
-              }
-              const movement = await createMovement(connection, {
-                  balanceId: balance.id,
-                  affiliationId: selectedAffiliation.id,
-                  cycleId: cycleRows[0].id,
-                  movementType: "reservation",
-                  quantity: 1,
-                  referenceType: "class_booking",
-                  referenceId: bookingId,
-                  reason: `Class booking: ${classes[0].title}`,
-                  performedBy: (req as any).user?.email || "system",
-                  idempotencyKey: `booking_reserve_${bookingId}`,
-              });
-              movementId = movement.id;
-              sessionsRemaining = movement.balanceAfter;
-            } else {
-              throw Object.assign(new Error("The subscription has no active session cycle"), {
-                status: 409,
-                code: "NO_ACTIVE_SESSION_CYCLE",
-              });
-            }
-          }
-        }
-      } catch (error) {
-        throw error;
-      }
+      // Option 3: bookings never reserve or consume sessions. The limited
+      // session is selected and deducted only when access is registered.
+      const movementId: string | null = null;
+      const sessionsRemaining: number | null = null;
 
       await connection.commit();
 
       const [rows]: any = await pool.query("SELECT * FROM class_bookings WHERE id = ?", [bookingId]);
       const booking = mapClassBooking(rows[0]);
-      res.status(201).json({ booking, movementId, sessionsRemaining });
+      res.status(201).json({
+        booking,
+        movementId,
+        sessionsRemaining,
+        deductionDeferredUntil: "check_in",
+      });
     } catch (error) {
       await connection.rollback();
       next(error);
@@ -971,6 +866,31 @@ export function registerSchedulingRoutes(app: Express, poolProvider: PoolProvide
       if (!room) return res.status(400).json({ error: "room is required" });
       if (!startDate || !endDate || !startTime) return res.status(400).json({ error: "startDate, endDate, and startTime are required" });
       if (durationMinutes <= 0) return res.status(400).json({ error: "durationMinutes must be greater than zero" });
+
+      const [eligibleRows]: any = await pool.query(
+        `SELECT a.id
+           FROM affiliations a
+           JOIN subscriptions s
+             ON s.id = a.subscription_id
+            AND s.status = 'active'
+            AND s.start_date <= CURDATE()
+            AND s.end_date >= CURDATE()
+           JOIN plan_versions pv
+             ON pv.id = a.plan_version_id
+            AND pv.sessions_unlimited = 0
+          WHERE a.member_id = ?
+            AND a.status = 'active'
+            AND a.start_date <= CURDATE()
+            AND a.end_date >= CURDATE()
+          LIMIT 1`,
+        [memberId],
+      );
+      if (!eligibleRows.length) {
+        return res.status(409).json({
+          error: "Private PT requires an active limited-session plan",
+          code: "LIMITED_SESSION_PLAN_REQUIRED",
+        });
+      }
 
       const days = datesBetween(startDate, endDate);
       const selectedSet = new Set(selectedDays.length > 0 ? selectedDays : days.map((day) => day.getUTCDay()));
