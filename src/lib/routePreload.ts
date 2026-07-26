@@ -3,6 +3,7 @@ type RoutePreloader = () => Promise<unknown>;
 const preloaders: Record<string, RoutePreloader> = {
   '/': () => import('../pages/Dashboard'),
   '/members': () => import('../pages/Members'),
+  '/subscriptions': () => import('../pages/Subscriptions'),
   '/plans': () => import('../pages/Plans'),
   '/classes': () => import('../pages/Classes'),
   '/private-classes': () => import('../pages/PrivateClasses'),
