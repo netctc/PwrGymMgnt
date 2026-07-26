@@ -6,7 +6,8 @@ import mysql from "mysql2/promise";
 import swaggerUi from "swagger-ui-express";
 import swaggerJsdoc from "swagger-jsdoc";
 import cron from "node-cron";
-import { exec } from "child_process";
+import { spawn } from "node:child_process";
+import { pipeline } from "node:stream/promises";
 import fs from "fs";
 import crypto from "crypto";
 import rateLimit from "express-rate-limit";
@@ -154,8 +155,48 @@ function isLegacyPlaintextPassword(storedPassword: string) {
   return Boolean(storedPassword && !storedPassword.startsWith("scrypt$"));
 }
 
-function shellQuote(value: string) {
-  return "'" + value.replace(/'/g, "'\"'\"'") + "'";
+async function runDatabaseBackup(config: DatabaseConfig, backupFile: string) {
+  const mysqldumpPath = process.env.MYSQLDUMP_PATH || "mysqldump";
+  const dumpArgs = [
+    "-h",
+    config.host,
+    "-P",
+    String(config.port),
+    "-u",
+    config.user,
+    config.database,
+  ];
+  const output = fs.createWriteStream(backupFile, { flags: "wx" });
+  const child = spawn(mysqldumpPath, dumpArgs, {
+    env: { ...process.env, MYSQL_PWD: config.password },
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+  });
+  let stderr = "";
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk.toString();
+  });
+
+  try {
+    const [exitCode] = await Promise.all([
+      new Promise<number>((resolve, reject) => {
+        child.once("error", reject);
+        child.once("close", (code) => resolve(Number(code ?? 1)));
+      }),
+      pipeline(child.stdout, output),
+    ]);
+    if (exitCode !== 0) {
+      throw new Error(stderr.trim() || `mysqldump exited with code ${exitCode}`);
+    }
+    const stat = fs.statSync(backupFile);
+    if (stat.size <= 0) throw new Error("mysqldump created an empty backup");
+  } catch (error) {
+    output.destroy();
+    try {
+      fs.unlinkSync(backupFile);
+    } catch {}
+    throw error;
+  }
 }
 
 
@@ -427,7 +468,7 @@ async function startServer() {
   } catch { /* Workers start silently if evolution tables don't exist yet */ }
 
   // Automated DB Backup (Runs every day at 00:00)
-  cron.schedule("0 0 * * *", () => {
+  cron.schedule("0 0 * * *", async () => {
     const backupDir = path.join(process.cwd(), "backups");
     if (!fs.existsSync(backupDir)) {
       fs.mkdirSync(backupDir, { recursive: true });
@@ -440,32 +481,29 @@ async function startServer() {
       return;
     }
 
-    const dumpCmd = `mysqldump -h ${shellQuote(dbConfig.host)} -P ${shellQuote(String(dbConfig.port))} -u ${shellQuote(dbConfig.user)} ${shellQuote(dbConfig.database)} > ${shellQuote(backupFile)}`;
-
-    exec(dumpCmd, { env: { ...process.env, MYSQL_PWD: dbConfig.password } }, (error, stdout, stderr) => {
-      if (error) {
-        console.error("Backup failed:");
-        console.error(error.message);
-      } else {
-        console.log(`Database backup successful: ${backupFile}`);
-        // Clean up backups older than 30 days
-        try {
-          const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
-          fs.readdirSync(backupDir).forEach((file) => {
-            if (file.endsWith(".sql")) {
-              const filePath = path.join(backupDir, file);
-              const stats = fs.statSync(filePath);
-              if (stats.mtimeMs < thirtyDaysAgo) {
-                fs.unlinkSync(filePath);
-                console.log(`Deleted backup older than 30 days: ${file}`);
-              }
+    try {
+      await runDatabaseBackup(dbConfig, backupFile);
+      console.log(`Database backup successful: ${backupFile}`);
+      // Clean up backups older than 30 days
+      try {
+        const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
+        fs.readdirSync(backupDir).forEach((file) => {
+          if (file.endsWith(".sql")) {
+            const filePath = path.join(backupDir, file);
+            const stats = fs.statSync(filePath);
+            if (stats.mtimeMs < thirtyDaysAgo) {
+              fs.unlinkSync(filePath);
+              console.log(`Deleted backup older than 30 days: ${file}`);
             }
-          });
-        } catch (cleanupError) {
-          console.error("Failed to clean up old backups:", cleanupError);
-        }
+          }
+        });
+      } catch (cleanupError) {
+        console.error("Failed to clean up old backups:", cleanupError);
       }
-    });
+    } catch (error: any) {
+      console.error("Backup failed:");
+      console.error(error?.message || error);
+    }
   });
 
   /**
@@ -907,7 +945,7 @@ async function startServer() {
    *       200:
    *         description: Backup triggered
    */
-  app.post("/api/trigger-backup", requirePermission("platform.backups.manage"), (req, res) => {
+  app.post("/api/trigger-backup", requirePermission("platform.backups.manage"), async (req, res) => {
     const backupDir = path.join(process.cwd(), "backups");
     if (!fs.existsSync(backupDir)) {
       fs.mkdirSync(backupDir, { recursive: true });
@@ -922,15 +960,12 @@ async function startServer() {
       });
     }
 
-    const dumpCmd = `mysqldump -h ${shellQuote(dbConfig.host)} -P ${shellQuote(String(dbConfig.port))} -u ${shellQuote(dbConfig.user)} ${shellQuote(dbConfig.database)} > ${shellQuote(backupFile)}`;
-
-    exec(dumpCmd, { env: { ...process.env, MYSQL_PWD: dbConfig.password } }, (error, stdout, stderr) => {
-      if (error) {
-        return res.status(500).json({ status: "error", message: error.message });
-      } else {
-        return res.json({ status: "success", file: backupFile, message: "Backup completed successfully" });
-      }
-    });
+    try {
+      await runDatabaseBackup(dbConfig, backupFile);
+      return res.json({ status: "success", file: backupFile, message: "Backup completed successfully" });
+    } catch (error: any) {
+      return res.status(500).json({ status: "error", message: error?.message || "Backup failed" });
+    }
   });
 
   /**
