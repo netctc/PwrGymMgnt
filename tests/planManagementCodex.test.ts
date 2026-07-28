@@ -137,6 +137,7 @@ test("trainer plan assignments are versioned, audited and settled outside fixed 
   const membersPage = read("src/pages/Members.tsx");
   const workers = read("server/workers.ts");
   const alertMigration = read("sql/027_member_session_history_alerts.sql");
+  const partialPaymentMigration = read("sql/028_trainer_commission_partial_payments.sql");
   const app = read("src/App.tsx");
 
   assert.match(management, /trainerCommissionPercent/);
@@ -155,6 +156,13 @@ test("trainer plan assignments are versioned, audited and settled outside fixed 
   assert.match(commissions, /ON DUPLICATE KEY UPDATE/);
   assert.match(commissions, /export\.csv/);
   assert.match(commissions, /export\.pdf/);
+  assert.match(commissions, /pay-partial/);
+  assert.match(commissions, /effectiveConsumedSessions/);
+  assert.match(commissions, /COMMISSION_TOTAL_EXCEEDED/);
+  assert.match(commissions, /No new consumed sessions are available for partial payment/);
+  assert.match(commissions, /trainer_commission_partially_paid/);
+  assert.match(commissions, /commission_liability_settlement_no_duplicate_expense/);
+  assert.match(commissions, /due_date = VALUES\(due_date\)/);
   assert.match(commissions, /private_sessions/);
   assert.match(commissions, /class_sessions/);
   assert.match(commissions, /trainer-commissions\/employees/);
@@ -165,6 +173,9 @@ test("trainer plan assignments are versioned, audited and settled outside fixed 
   assert.match(plansPage, /trainerCommissionPercent/);
   assert.match(commissionsPage, /Commission history/);
   assert.match(commissionsPage, /Mark paid/);
+  assert.match(commissionsPage, /Partial paid/);
+  assert.match(commissionsPage, /Payment history/);
+  assert.match(commissionsPage, /amountPending/);
   assert.match(commissionsPage, /Fixed monthly salary remains separate/);
   assert.match(commissionsPage, /formatDateTime/);
   assert.doesNotMatch(commissionsPage, /\bformatDate\(/);
@@ -178,6 +189,10 @@ test("trainer plan assignments are versioned, audited and settled outside fixed 
   assert.match(workers, /notifyExpiringSessionBalances/);
   assert.match(workers, /session_expiry_alert/);
   assert.match(alertMigration, /ml_session_expiry_alerts/);
+  assert.match(partialPaymentMigration, /CREATE TABLE IF NOT EXISTS trainer_commission_payments/);
+  assert.match(partialPaymentMigration, /idempotency_key/);
+  assert.match(partialPaymentMigration, /authorized_by/);
+  assert.match(partialPaymentMigration, /subscription\.end_date/);
   assert.match(alertMigration, /label_ar/);
   assert.match(app, /trainer-commissions/);
 });
