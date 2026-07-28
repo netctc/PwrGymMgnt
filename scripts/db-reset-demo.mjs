@@ -6,7 +6,6 @@ import 'dotenv/config';
 import { getDatabaseEnv, getMissingDatabaseEnv } from './db-env.mjs';
 
 const CONFIRMATION = 'RESET_DEMO_DATA';
-const DEFAULT_PASSWORD = 'PowerGym@2026!';
 
 function parseArgs(argv = process.argv.slice(2)) {
   const args = { confirm: '', migrate: true, allowProduction: false, dryRun: false, json: false, backupConfirmed: false };
@@ -19,12 +18,6 @@ function parseArgs(argv = process.argv.slice(2)) {
     else if (arg.startsWith('--confirm=')) args.confirm = arg.slice('--confirm='.length);
   }
   return args;
-}
-
-function hashPassword(password) {
-  const salt = crypto.randomBytes(16).toString('hex');
-  const hash = crypto.scryptSync(password, salt, 64).toString('hex');
-  return `scrypt$${salt}$${hash}`;
 }
 
 function sha256(value) {
@@ -127,17 +120,6 @@ async function bulkInsert(connection, table, columns, rows) {
   const values = rows.flatMap((row) => columns.map((column) => row[column]));
   await connection.query(`INSERT INTO \`${table}\` (${columns.map((column) => `\`${column}\``).join(', ')}) VALUES ${placeholders}`, values);
   return rows.length;
-}
-
-async function bulkInsertIgnore(connection, table, columns, rows) {
-  if (!rows.length) return 0;
-  const placeholders = rows.map(() => `(${columns.map(() => '?').join(', ')})`).join(', ');
-  const values = rows.flatMap((row) => columns.map((column) => row[column]));
-  const [result] = await connection.query(
-    `INSERT IGNORE INTO \`${table}\` (${columns.map((column) => `\`${column}\``).join(', ')}) VALUES ${placeholders}`,
-    values,
-  );
-  return Number(result?.affectedRows || 0);
 }
 
 function buildEvolutionDataset(subscriptionPlans) {
@@ -246,6 +228,35 @@ function buildEvolutionDataset(subscriptionPlans) {
       consumption_priority: item.role === 'holder' ? 100 : 50,
       data: mysqlJson({ demo: true }),
     };
+  });
+  const subscriptionMemberHistory = subscriptionMembers.flatMap((item, index) => {
+    const events = [{
+      id: `v2_hist_join_${pad(index + 1)}`,
+      subscription_id: item.subscription_id,
+      subscription_member_id: item.id,
+      member_id: item.member_id,
+      action: item.role === 'holder' ? 'holder_assigned' : 'member_added',
+      previous_status: null,
+      new_status: 'active',
+      effective_at: item.joined_at,
+      performed_by: 'admin',
+      details: mysqlJson({ demo: true, role: item.role }),
+    }];
+    if (item.status !== 'active') {
+      events.push({
+        id: `v2_hist_status_${pad(index + 1)}`,
+        subscription_id: item.subscription_id,
+        subscription_member_id: item.id,
+        member_id: item.member_id,
+        action: item.status === 'removed' ? 'member_removed' : 'status_changed',
+        previous_status: 'active',
+        new_status: item.status,
+        effective_at: item.left_at || dateTimeOffset(-2, 18, 0),
+        performed_by: 'admin',
+        details: mysqlJson({ demo: true, reason: 'Demonstration lifecycle event' }),
+      });
+    }
+    return events;
   });
 
   const cycles = subscriptions
@@ -364,29 +375,74 @@ function buildEvolutionDataset(subscriptionPlans) {
     data: mysqlJson({ demo: true, operatorConfirmation: decision === 'allowed' }),
   }));
 
-  return { planVersions, subscriptions, subscriptionMembers, affiliations, cycles, balances, movements, accessAttempts };
+  return { planVersions, subscriptions, subscriptionMembers, subscriptionMemberHistory, affiliations, cycles, balances, movements, accessAttempts };
 }
 
 function buildDemoDataset() {
-  const passwordHash = hashPassword(DEFAULT_PASSWORD);
   const taxRate = 0.05;
 
-  const adminUsers = [
-    { email: 'superadmin@powergym.demo', role: 'super_admin' },
-    { email: 'admin@powergym.demo', role: 'admin' },
-    { email: 'manager@powergym.demo', role: 'manager' },
-    { email: 'accounting@powergym.demo', role: 'accounting' },
-    { email: 'warehouse.manager@powergym.demo', role: 'warehouse_manager' },
-    { email: 'cashier@powergym.demo', role: 'cashier' },
-    { email: 'reception@powergym.demo', role: 'reception' },
-    { email: 'trainer@powergym.demo', role: 'trainer' },
-  ].map((user) => ({ ...user, password_hash: passwordHash }));
+  // Authentication accounts are deliberately not generated. Existing admin and
+  // super_admin rows are preserved in-place, including their password hashes.
+  const adminUsers = [];
+  const users = [];
 
-  const users = adminUsers.map((user, index) => ({
-    id: `demo_user_${pad(index + 1)}`,
-    email: user.email,
-    role: user.role,
-    data: mysqlJson({ demo: true, seededLoginPassword: DEFAULT_PASSWORD }),
+  const featureFlags = [
+    ['ff_new_sub_model', 'ENABLE_NEW_SUBSCRIPTION_MODEL', 'Enable the versioned subscription and affiliation model'],
+    ['ff_session_ledger', 'ENABLE_SESSION_LEDGER', 'Enable immutable limited-session movements'],
+    ['ff_multi_affiliation', 'ENABLE_MULTI_AFFILIATION', 'Enable multiple simultaneous affiliations per member'],
+    ['ff_multi_user_plans', 'ENABLE_MULTI_USER_PLANS', 'Enable family, group and corporate plans'],
+    ['ff_unified_access', 'ENABLE_UNIFIED_ACCESS', 'Enable unified access authorization'],
+    ['ff_facial_access', 'ENABLE_FACIAL_ACCESS', 'Enable facial recognition access'],
+  ].map(([id, flag_key, description]) => ({
+    id,
+    flag_key,
+    enabled: 1,
+    scope: 'global',
+    scope_value: null,
+    description,
+  }));
+
+  const accessPoints = [
+    { id: 'main_entrance', name: 'Main Entrance', branch: 'Main Branch', zone: 'Reception', direction: 'entry', access_methods: mysqlJson(['qr', 'card', 'biometric', 'manual']), status: 'active', cooldown_seconds: 60 },
+    { id: 'studio_entrance', name: 'Class Studios', branch: 'Main Branch', zone: 'Studios', direction: 'entry', access_methods: mysqlJson(['qr', 'card', 'manual']), status: 'active', cooldown_seconds: 45 },
+    { id: 'main_exit', name: 'Main Exit', branch: 'Main Branch', zone: 'Reception', direction: 'exit', access_methods: mysqlJson(['qr', 'card', 'biometric']), status: 'active', cooldown_seconds: 30 },
+  ];
+
+  const hrDepartments = [
+    ['dept_gen', 'General', 'GEN'],
+    ['dept_adm', 'Administration', 'ADM'],
+    ['dept_fit', 'Fitness', 'FIT'],
+    ['dept_ops', 'Operations', 'OPS'],
+    ['dept_fin', 'Finance', 'FIN'],
+    ['dept_sal', 'Sales', 'SAL'],
+    ['dept_rec', 'Reception', 'REC'],
+    ['dept_sup', 'Support', 'SUP'],
+  ].map(([id, name, code]) => ({ id, name, code, status: 'active' }));
+
+  const hrJobTitles = [
+    ['job_gm', 'General Manager', 'dept_gen'],
+    ['job_trainer', 'Personal Trainer', 'dept_fit'],
+    ['job_group_trainer', 'Group Class Trainer', 'dept_fit'],
+    ['job_warehouse', 'Warehouse Manager', 'dept_ops'],
+    ['job_reception', 'Reception Officer', 'dept_rec'],
+    ['job_accountant', 'Accountant', 'dept_fin'],
+    ['job_cashier', 'Cashier', 'dept_sal'],
+    ['job_support', 'Support Agent', 'dept_sup'],
+  ].map(([id, name, department_id]) => ({ id, name, department_id, status: 'active' }));
+
+  const warehouseCategories = [
+    ['cat_general', 'General', 'general', null],
+    ['cat_apparel', 'Apparel', 'apparel', 'Clothing and branded merchandise'],
+    ['cat_equipment', 'Equipment', 'equipment', 'Training equipment and accessories'],
+    ['cat_supplements', 'Supplements', 'supplements', 'Nutrition and hydration products'],
+  ].map(([id, name, slug, description]) => ({
+    id,
+    name,
+    slug,
+    parent_id: null,
+    description,
+    status: 'active',
+    data: mysqlJson({ demo: true }),
   }));
 
   const subscriptionPlans = [
@@ -590,7 +646,7 @@ function buildDemoDataset() {
       class_id: session.id,
       member_id: member.id,
       member_name: `${member.first_name} ${member.last_name}`,
-      status: i % 11 === 0 ? 'cancelled' : 'booked',
+      status: i % 11 === 0 ? 'cancelled' : session.status === 'completed' ? (i % 2 === 0 ? 'attended' : 'no_show') : 'booked',
       booked_at: dateTimeOffset(-7 + (i % 5), 10, i % 60),
       cancelled_at: i % 11 === 0 ? dateTimeOffset(-2, 12, 0) : null,
       data: mysqlJson({ demo: true }),
@@ -734,6 +790,32 @@ function buildDemoDataset() {
     created_by: 'warehouse.manager@powergym.demo',
     data: mysqlJson({ demo: true }),
   }));
+
+  const purchaseOrderStatusHistory = purchaseOrders.flatMap((order, index) => {
+    const events = [{
+      id: `po_hist_${pad(index + 1)}_01`,
+      purchase_order_id: order.id,
+      from_status: null,
+      to_status: 'pending',
+      changed_by: 'warehouse.manager@powergym.demo',
+      changed_at: `${order.order_date} 09:00:00`,
+      notes: 'Demo purchase order created.',
+      data: mysqlJson({ demo: true }),
+    }];
+    if (order.status !== 'pending') {
+      events.push({
+        id: `po_hist_${pad(index + 1)}_02`,
+        purchase_order_id: order.id,
+        from_status: 'pending',
+        to_status: order.status,
+        changed_by: 'warehouse.manager@powergym.demo',
+        changed_at: order.received_date ? `${order.received_date} 15:00:00` : dateTimeOffset(-1 + index, 15, 0),
+        notes: `Demo transition to ${order.status}.`,
+        data: mysqlJson({ demo: true }),
+      });
+    }
+    return events;
+  });
 
   const poItems = [
     ['poi_001', 'po_001', 'prod_012', 6, 6, 110],
@@ -1021,24 +1103,15 @@ function buildDemoDataset() {
   ];
 
   const notifications = [
-    { id: 'notif_001', user_id: 'demo_user_005', role: 'warehouse_manager', title: 'Low stock alert', body: '4 products are below minimum stock.', type: 'warning', channel: 'in_app', link_url: '/warehouse', read_at: null, expires_at: dateTimeOffset(7, 23, 59), data: mysqlJson({ demo: true }) },
-    { id: 'notif_002', user_id: 'demo_user_006', role: 'cashier', title: 'Cash register reconciliation', body: 'Close today\'s POS register before end of shift.', type: 'info', channel: 'in_app', link_url: '/warehouse?tab=pos', read_at: null, expires_at: dateTimeOffset(1, 23, 59), data: mysqlJson({ demo: true }) },
-    { id: 'notif_003', user_id: 'demo_user_007', role: 'reception', title: 'Payment pending', body: 'A subscription has a pending estimated payment date.', type: 'warning', channel: 'in_app', link_url: '/subscriptions', read_at: null, expires_at: dateTimeOffset(4, 23, 59), data: mysqlJson({ demo: true }) },
-    { id: 'notif_004', user_id: 'demo_user_008', role: 'trainer', title: 'PT session scheduled', body: 'A limited-session member booked a private session.', type: 'info', channel: 'email', link_url: '/private-classes', read_at: dateTimeOffset(-1, 10, 0), expires_at: dateTimeOffset(7, 23, 59), data: mysqlJson({ demo: true }) },
-    { id: 'notif_005', user_id: 'demo_user_003', role: 'manager', title: 'Subscription capacity reached', body: 'A family plan has no remaining beneficiary places.', type: 'warning', channel: 'in_app', link_url: '/multi-user-memberships', read_at: null, expires_at: dateTimeOffset(2, 23, 59), data: mysqlJson({ demo: true }) },
-    { id: 'notif_006', user_id: 'demo_user_003', role: 'manager', title: 'Demo dataset ready', body: 'Comprehensive cross-module demonstration data is available.', type: 'success', channel: 'in_app', link_url: '/dashboard', read_at: dateTimeOffset(0, 9, 0), expires_at: dateTimeOffset(30, 23, 59), data: mysqlJson({ demo: true }) },
+    { id: 'notif_001', user_id: null, role: 'warehouse_manager', title: 'Low stock alert', body: '4 products are below minimum stock.', type: 'warning', channel: 'in_app', link_url: '/warehouse', read_at: null, expires_at: dateTimeOffset(7, 23, 59), data: mysqlJson({ demo: true }) },
+    { id: 'notif_002', user_id: null, role: 'cashier', title: 'Cash register reconciliation', body: 'Close today\'s POS register before end of shift.', type: 'info', channel: 'in_app', link_url: '/warehouse?tab=pos', read_at: null, expires_at: dateTimeOffset(1, 23, 59), data: mysqlJson({ demo: true }) },
+    { id: 'notif_003', user_id: null, role: 'reception', title: 'Payment pending', body: 'A subscription has a pending estimated payment date.', type: 'warning', channel: 'in_app', link_url: '/subscriptions', read_at: null, expires_at: dateTimeOffset(4, 23, 59), data: mysqlJson({ demo: true }) },
+    { id: 'notif_004', user_id: null, role: 'trainer', title: 'PT session scheduled', body: 'A limited-session member booked a private session.', type: 'info', channel: 'email', link_url: '/private-classes', read_at: dateTimeOffset(-1, 10, 0), expires_at: dateTimeOffset(7, 23, 59), data: mysqlJson({ demo: true }) },
+    { id: 'notif_005', user_id: null, role: 'manager', title: 'Subscription capacity reached', body: 'A family plan has no remaining beneficiary places.', type: 'warning', channel: 'in_app', link_url: '/multi-user-memberships', read_at: null, expires_at: dateTimeOffset(2, 23, 59), data: mysqlJson({ demo: true }) },
+    { id: 'notif_006', user_id: null, role: 'admin', title: 'Demo dataset ready', body: 'Comprehensive cross-module demonstration data is available.', type: 'success', channel: 'in_app', link_url: '/dashboard', read_at: dateTimeOffset(0, 9, 0), expires_at: dateTimeOffset(30, 23, 59), data: mysqlJson({ demo: true }) },
   ];
 
-  const notificationPreferences = users.map((user) => ({
-    user_id: user.id,
-    in_app_enabled: 1,
-    email_enabled: 1,
-    whatsapp_enabled: user.role === 'reception' ? 1 : 0,
-    class_reminders: 1,
-    billing_reminders: 1,
-    support_updates: 1,
-    data: mysqlJson({ demo: true }),
-  }));
+  const notificationPreferences = [];
 
   const securityAuditEvents = [
     { request_id: 'demo_req_001', actor_id: 'demo_user_001', actor_email: 'superadmin@powergym.demo', actor_role: 'super_admin', method: 'POST', path: '/api/platform/data-integrity/checks', module: 'platform', action: 'data_integrity_check', status_code: 200, duration_ms: 120, ip_address: '127.0.0.1', user_agent: 'Demo Seeder', severity: 'info', metadata: mysqlJson({ demo: true }) },
@@ -1073,9 +1146,13 @@ function buildDemoDataset() {
   const evolution = buildEvolutionDataset(subscriptionPlans);
 
   return {
-    defaultPassword: DEFAULT_PASSWORD,
     adminUsers,
     users,
+    featureFlags,
+    accessPoints,
+    hrDepartments,
+    hrJobTitles,
+    warehouseCategories,
     subscriptionPlans,
     plans,
     members,
@@ -1083,6 +1160,7 @@ function buildDemoDataset() {
     planVersions: evolution.planVersions,
     subscriptionsV2: evolution.subscriptions,
     subscriptionMembers: evolution.subscriptionMembers,
+    subscriptionMemberHistory: evolution.subscriptionMemberHistory,
     affiliations: evolution.affiliations,
     subscriptionCycles: evolution.cycles,
     sessionBalances: evolution.balances,
@@ -1100,6 +1178,7 @@ function buildDemoDataset() {
     products,
     productBatches,
     purchaseOrders,
+    purchaseOrderStatusHistory,
     poItems,
     posSales,
     posItems,
@@ -1127,8 +1206,13 @@ function buildDemoDataset() {
 
 async function seed(connection, dataset) {
   const inserted = {};
-  inserted.admin_users = await bulkInsertIgnore(connection, 'admin_users', ['email', 'password_hash', 'role'], dataset.adminUsers);
-  inserted.users = await bulkInsertIgnore(connection, 'users', ['id', 'email', 'role', 'data'], dataset.users);
+  inserted.admin_users = 0;
+  inserted.users = 0;
+  inserted.feature_flags = await bulkInsert(connection, 'feature_flags', ['id', 'flag_key', 'enabled', 'scope', 'scope_value', 'description'], dataset.featureFlags);
+  inserted.access_points = await bulkInsert(connection, 'access_points', ['id', 'name', 'branch', 'zone', 'direction', 'access_methods', 'status', 'cooldown_seconds'], dataset.accessPoints);
+  inserted.hr_departments = await bulkInsert(connection, 'hr_departments', ['id', 'name', 'code', 'status'], dataset.hrDepartments);
+  inserted.hr_job_titles = await bulkInsert(connection, 'hr_job_titles', ['id', 'name', 'department_id', 'status'], dataset.hrJobTitles);
+  inserted.warehouse_categories = await bulkInsert(connection, 'warehouse_categories', ['id', 'name', 'slug', 'parent_id', 'description', 'status', 'data'], dataset.warehouseCategories);
   inserted.subscription_plans = await bulkInsert(connection, 'subscription_plans', ['id', 'name', 'description', 'duration_days', 'price', 'currency', 'status', 'data'], dataset.subscriptionPlans);
   inserted.plans = await bulkInsert(connection, 'plans', ['id', 'name', 'price', 'duration_days', 'status', 'data'], dataset.plans);
   inserted.members = await bulkInsert(connection, 'members', ['id', 'first_name', 'last_name', 'email', 'phone', 'status', 'join_date', 'plan', 'qr_code', 'last_access_at', 'data'], dataset.members);
@@ -1136,6 +1220,7 @@ async function seed(connection, dataset) {
   inserted.plan_versions = await bulkInsert(connection, 'plan_versions', ['id', 'plan_id', 'version_number', 'name', 'description', 'plan_type', 'price', 'currency', 'duration_days', 'max_members', 'sessions_unlimited', 'sessions_per_cycle', 'cycle_frequency', 'distribution_model', 'status', 'published_at', 'data'], dataset.planVersions);
   inserted.subscriptions = await bulkInsert(connection, 'subscriptions', ['id', 'plan_id', 'plan_version_id', 'holder_member_id', 'status', 'start_date', 'end_date', 'auto_renew', 'price_paid', 'currency', 'payment_status', 'max_members', 'notes', 'data'], dataset.subscriptionsV2);
   inserted.subscription_members = await bulkInsert(connection, 'subscription_members', ['id', 'subscription_id', 'member_id', 'role', 'status', 'joined_at', 'left_at', 'invited_by', 'restrictions'], dataset.subscriptionMembers);
+  inserted.subscription_member_history = await bulkInsert(connection, 'subscription_member_history', ['id', 'subscription_id', 'subscription_member_id', 'member_id', 'action', 'previous_status', 'new_status', 'effective_at', 'performed_by', 'details'], dataset.subscriptionMemberHistory);
   inserted.affiliations = await bulkInsert(connection, 'affiliations', ['id', 'member_id', 'subscription_id', 'subscription_member_id', 'plan_version_id', 'status', 'role', 'is_primary', 'start_date', 'end_date', 'consumption_priority', 'data'], dataset.affiliations);
   inserted.subscription_cycles = await bulkInsert(connection, 'subscription_cycles', ['id', 'subscription_id', 'cycle_number', 'start_date', 'end_date', 'status', 'sessions_allocated', 'sessions_carried', 'closed_at', 'idempotency_key'], dataset.subscriptionCycles);
   inserted.session_balances = await bulkInsert(connection, 'session_balances', ['id', 'context_type', 'context_id', 'cycle_id', 'included', 'carried_over', 'purchased', 'adjustments_positive', 'refunds', 'reserved', 'consumed', 'expired', 'adjustments_negative', 'available', 'last_movement_id', 'version'], dataset.sessionBalances);
@@ -1156,6 +1241,7 @@ async function seed(connection, dataset) {
   inserted.warehouse_products = await bulkInsert(connection, 'warehouse_products', ['id', 'sku', 'barcode', 'name', 'description', 'category', 'supplier_id', 'cost_price', 'retail_price', 'wholesale_price', 'member_price', 'stock_quantity', 'min_stock', 'max_stock', 'unit', 'location', 'expiry_date', 'status', 'data'], dataset.products);
   inserted.warehouse_product_batches = await bulkInsert(connection, 'warehouse_product_batches', ['id', 'product_id', 'batch_number', 'lot_number', 'serial_number', 'expiry_date', 'quantity', 'cost_price', 'status', 'data'], dataset.productBatches);
   inserted.warehouse_purchase_orders = await bulkInsert(connection, 'warehouse_purchase_orders', ['id', 'po_number', 'supplier_id', 'status', 'order_date', 'expected_date', 'received_date', 'subtotal', 'tax_total', 'shipping_total', 'total', 'notes', 'created_by', 'data'], dataset.purchaseOrders);
+  inserted.warehouse_purchase_order_status_history = await bulkInsert(connection, 'warehouse_purchase_order_status_history', ['id', 'purchase_order_id', 'from_status', 'to_status', 'changed_by', 'changed_at', 'notes', 'data'], dataset.purchaseOrderStatusHistory);
   inserted.warehouse_purchase_order_items = await bulkInsert(connection, 'warehouse_purchase_order_items', ['id', 'purchase_order_id', 'product_id', 'sku', 'description', 'quantity_ordered', 'quantity_received', 'unit_cost', 'line_total', 'data'], dataset.poItems);
   inserted.warehouse_pos_sales = await bulkInsert(connection, 'warehouse_pos_sales', ['id', 'receipt_number', 'sale_date', 'status', 'cashier', 'member_id', 'customer_name', 'payment_method', 'subtotal', 'discount_total', 'tax_total', 'total', 'cogs_total', 'notes', 'data'], dataset.posSales);
   inserted.warehouse_pos_sale_items = await bulkInsert(connection, 'warehouse_pos_sale_items', ['id', 'sale_id', 'product_id', 'sku', 'description', 'quantity', 'unit_price', 'unit_cost', 'discount', 'line_total', 'data'], dataset.posItems);
@@ -1169,17 +1255,7 @@ async function seed(connection, dataset) {
   inserted.support_tickets = await bulkInsert(connection, 'support_tickets', ['id', 'ticket_number', 'requester_name', 'requester_email', 'requester_phone', 'inquiry_type', 'priority', 'subject', 'description', 'status', 'assigned_to', 'created_by', 'resolved_at', 'data'], dataset.supportTickets);
   inserted.support_ticket_messages = await bulkInsert(connection, 'support_ticket_messages', ['id', 'ticket_id', 'author_email', 'author_role', 'message', 'visibility', 'data'], dataset.supportMessages);
   inserted.notifications = await bulkInsert(connection, 'notifications', ['id', 'user_id', 'role', 'title', 'body', 'type', 'channel', 'link_url', 'read_at', 'expires_at', 'data'], dataset.notifications);
-  const [existingUserRows] = await connection.query(
-    `SELECT id FROM users WHERE id IN (${dataset.notificationPreferences.map(() => '?').join(', ')})`,
-    dataset.notificationPreferences.map((item) => item.user_id),
-  );
-  const existingUserIds = new Set(existingUserRows.map((row) => row.id));
-  inserted.notification_preferences = await bulkInsert(
-    connection,
-    'notification_preferences',
-    ['user_id', 'in_app_enabled', 'email_enabled', 'whatsapp_enabled', 'class_reminders', 'billing_reminders', 'support_updates', 'data'],
-    dataset.notificationPreferences.filter((item) => existingUserIds.has(item.user_id)),
-  );
+  inserted.notification_preferences = 0;
   inserted.security_audit_events = await bulkInsert(connection, 'security_audit_events', ['request_id', 'actor_id', 'actor_email', 'actor_role', 'method', 'path', 'module', 'action', 'status_code', 'duration_ms', 'ip_address', 'user_agent', 'severity', 'metadata'], dataset.securityAuditEvents);
   inserted.security_events = await bulkInsert(connection, 'security_events', ['event_type', 'severity', 'actor_email', 'ip_address', 'details', 'metadata'], dataset.securityEvents);
   inserted.audit_logs = await bulkInsert(connection, 'audit_logs', ['action', 'details', 'performed_by'], dataset.auditLogs);
@@ -1201,6 +1277,7 @@ const RESET_TABLES = [
   'warehouse_stock_movements',
   'warehouse_product_batches',
   'warehouse_products',
+  'warehouse_categories',
   'warehouse_suppliers',
   'notification_preferences',
   'notifications',
@@ -1216,6 +1293,8 @@ const RESET_TABLES = [
   'payroll_items',
   'payroll_runs',
   'employee_attendance',
+  'hr_job_titles',
+  'hr_departments',
   'private_sessions',
   'private_classes',
   'class_bookings',
@@ -1230,6 +1309,7 @@ const RESET_TABLES = [
   'subscription_members',
   'access_attempts',
   'access_replay_locks',
+  'access_points',
   'outbox_events',
   'idempotency_keys',
   'invoices',
@@ -1237,11 +1317,14 @@ const RESET_TABLES = [
   'member_subscriptions',
   'subscriptions',
   'plan_versions',
+  'migration_mappings',
+  'feature_flags',
   'members',
   'plans',
   'subscription_plans',
   'staff',
   'employees',
+  'role_permission_overrides',
   'accounting',
   'hr',
   'audit_logs',
@@ -1314,13 +1397,26 @@ async function main() {
     const [adminCountRows] = await connection.query(
       "SELECT COUNT(*) AS count FROM admin_users WHERE LOWER(TRIM(role)) IN ('admin', 'super_admin')",
     );
+    const [requiredRoleRows] = await connection.query(
+      "SELECT LOWER(TRIM(role)) AS role, COUNT(*) AS count FROM admin_users WHERE LOWER(TRIM(role)) IN ('admin', 'super_admin') GROUP BY LOWER(TRIM(role))",
+    );
+    const requiredRoles = new Set(requiredRoleRows.filter((row) => Number(row.count) > 0).map((row) => row.role));
+    if (!requiredRoles.has('admin') || !requiredRoles.has('super_admin')) {
+      throw new Error('Reset aborted: at least one existing admin and one existing super_admin account are required.');
+    }
     const [userCountRows] = await connection.query(
       "SELECT COUNT(*) AS count FROM users WHERE LOWER(TRIM(role)) IN ('admin', 'super_admin')",
     );
     preservedAdminUsers = Number(adminCountRows?.[0]?.count || 0);
     preservedAuthUsers = Number(userCountRows?.[0]?.count || 0);
-    await connection.query("DELETE FROM admin_users WHERE LOWER(TRIM(role)) NOT IN ('admin', 'super_admin')");
-    await connection.query("DELETE FROM users WHERE LOWER(TRIM(role)) NOT IN ('admin', 'super_admin')");
+    await connection.query("DELETE FROM admin_users WHERE COALESCE(LOWER(TRIM(role)), '') NOT IN ('admin', 'super_admin')");
+    await connection.query("DELETE FROM users WHERE COALESCE(LOWER(TRIM(role)), '') NOT IN ('admin', 'super_admin')");
+    if (await tableExists(connection, 'maintenance_list_items')) {
+      await connection.query("DELETE FROM maintenance_list_items WHERE is_system = 0 OR id NOT LIKE 'mli\\_%'");
+    }
+    if (await tableExists(connection, 'maintenance_lists')) {
+      await connection.query("DELETE FROM maintenance_lists WHERE id NOT LIKE 'ml\\_%'");
+    }
     for (const table of RESET_TABLES) {
       if (await truncateIfExists(connection, table)) truncated.push(table);
     }
@@ -1339,8 +1435,7 @@ async function main() {
         authUsers: preservedAuthUsers,
         passwordHashesModified: false,
       },
-      demoLogins: dataset.adminUsers.map((user) => ({ email: user.email, role: user.role })),
-      defaultPassword: dataset.defaultPassword,
+      authenticationAccountsCreated: 0,
       scenarios: {
         members: '20 members with active, expired, paused and pending scenarios',
         employees: '10 employees including 5 trainers',
@@ -1351,7 +1446,7 @@ async function main() {
         accounting: 'Membership, POS, COGS, inventory purchases, payroll, rent and utilities',
       },
     };
-    console.log(args.json ? JSON.stringify(summary, null, 2) : `Demo dataset ready. Inserted ${Object.values(inserted).reduce((sum, count) => sum + Number(count || 0), 0)} records. Default password: ${dataset.defaultPassword}`);
+    console.log(args.json ? JSON.stringify(summary, null, 2) : `Demo dataset ready. Inserted ${Object.values(inserted).reduce((sum, count) => sum + Number(count || 0), 0)} records. Existing admin and super_admin credentials were preserved.`);
   } catch (error) {
     await connection.rollback().catch(() => undefined);
     await connection.query('SET FOREIGN_KEY_CHECKS = 1').catch(() => undefined);
