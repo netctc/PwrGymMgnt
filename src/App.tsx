@@ -28,6 +28,7 @@ const Subscriptions = lazy(() => import('./pages/Subscriptions'));
 const AccessControl = lazy(() => import('./pages/AccessControl'));
 const Biometrics = lazy(() => import('./pages/Biometrics'));
 const EvolutionDashboard = lazy(() => import('./pages/EvolutionDashboard'));
+const TrainerCommissions = lazy(() => import('./pages/TrainerCommissions'));
 
 function LazyPage({ children }: { children: React.ReactNode }) {
   return <Suspense fallback={<PageFallback />}>{children}</Suspense>;
@@ -61,6 +62,7 @@ export default function App() {
               <Route path="staff" element={<ProtectedRoute requiredPermission="hr.read"><Navigate to="/hr?tab=employees" replace /></ProtectedRoute>} />
               <Route path="hr" element={<ProtectedRoute requiredPermission="hr.read"><LazyPage><HumanResources /></LazyPage></ProtectedRoute>} />
               <Route path="plans" element={<ProtectedRoute requiredPermission="membership.read"><LazyPage><Plans /></LazyPage></ProtectedRoute>} />
+              <Route path="trainer-commissions" element={<ProtectedRoute requiredPermission="finance.read"><LazyPage><TrainerCommissions /></LazyPage></ProtectedRoute>} />
               <Route path="plans/multi-user" element={<ProtectedRoute requiredPermission="membership.read"><LazyPage><MultiUserMemberships /></LazyPage></ProtectedRoute>} />
               <Route path="subscriptions/new-hybrid" element={<ProtectedRoute requiredPermission="membership.read"><LazyPage><HybridSubscriptionWizard /></LazyPage></ProtectedRoute>} />
               <Route path="classes" element={<ProtectedRoute requiredPermission="scheduling.read"><LazyPage><Classes /></LazyPage></ProtectedRoute>} />
