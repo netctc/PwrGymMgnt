@@ -11,11 +11,16 @@
  * across multiple instances.
  */
 
+import crypto from "crypto";
 import type { Pool } from "mysql2/promise";
 import { closeCycleAndOpenNext } from "./subscriptionCycles";
 import { appLogger } from "./observability";
 
 const LOCK_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+function createId(prefix: string) {
+  return `${prefix}_${crypto.randomUUID().replace(/-/g, "")}`;
+}
 
 /**
  * Acquire a distributed lock in MySQL.
@@ -262,6 +267,90 @@ export async function releaseExpiredReservations(pool: Pool): Promise<{ released
   return { released };
 }
 
+export async function notifyExpiringSessionBalances(pool: Pool): Promise<{ created: number }> {
+  const locked = await acquireLock(pool, "powergym_session_expiry_alerts");
+  if (!locked) return { created: 0 };
+  let created = 0;
+  try {
+    const [settingRows]: any = await pool.query(
+      `SELECT CAST(JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.days')) AS UNSIGNED) AS warning_days
+         FROM maintenance_list_items
+        WHERE list_id = 'ml_session_expiry_alerts'
+          AND item_code = 'warning_days'
+          AND status = 'active'
+        LIMIT 1`,
+    );
+    const warningDays = Math.min(90, Math.max(1, Number(settingRows[0]?.warning_days || 7)));
+    const [rows]: any = await pool.query(
+      `SELECT sc.id AS cycle_id, sc.end_date, sb.available,
+              pv.name AS plan_name,
+              CASE
+                WHEN sb.context_type = 'affiliation' THEN context_aff.member_id
+                ELSE s.holder_member_id
+              END AS member_id,
+              CONCAT_WS(' ', m.first_name, m.last_name) AS member_name
+         FROM subscription_cycles sc
+         JOIN subscriptions s ON s.id = sc.subscription_id
+         JOIN plan_versions pv ON pv.id = s.plan_version_id
+         JOIN session_balances sb ON sb.cycle_id = sc.id
+         LEFT JOIN affiliations context_aff
+           ON sb.context_type = 'affiliation' AND context_aff.id = sb.context_id
+         JOIN members m ON m.id = CASE
+           WHEN sb.context_type = 'affiliation' THEN context_aff.member_id
+           ELSE s.holder_member_id
+         END
+        WHERE sc.status = 'active'
+          AND pv.sessions_unlimited = 0
+          AND sb.available > 0
+          AND sc.end_date BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL ? DAY)
+          AND NOT EXISTS (
+            SELECT 1 FROM notifications n
+             WHERE JSON_UNQUOTE(JSON_EXTRACT(n.data, '$.source')) = 'session_expiry_alert'
+               AND JSON_UNQUOTE(JSON_EXTRACT(n.data, '$.cycleId')) = sc.id
+               AND (
+                 n.user_id = CASE
+                   WHEN sb.context_type = 'affiliation' THEN context_aff.member_id
+                   ELSE s.holder_member_id
+                 END
+                 OR n.role = 'reception'
+               )
+          )
+        ORDER BY sc.end_date ASC`,
+      [warningDays],
+    );
+    for (const row of rows) {
+      const body =
+        `${row.member_name} has ${Number(row.available)} session(s) remaining in ${row.plan_name}, expiring on ${String(row.end_date).slice(0, 10)}. ` +
+        `لدى ${row.member_name} عدد ${Number(row.available)} جلسة متبقية في ${row.plan_name} وتنتهي في ${String(row.end_date).slice(0, 10)}.`;
+      const data = JSON.stringify({
+        source: "session_expiry_alert",
+        cycleId: row.cycle_id,
+        memberId: row.member_id,
+        remainingSessions: Number(row.available),
+        expiryDate: String(row.end_date).slice(0, 10),
+        warningDays,
+      });
+      await pool.query(
+        `INSERT INTO notifications
+          (id, user_id, role, title, body, type, channel, link_url, expires_at, data)
+         VALUES
+          (?, ?, NULL, ?, ?, 'warning', 'in_app', '/members', DATE_ADD(?, INTERVAL 1 DAY), ?),
+          (?, NULL, 'reception', ?, ?, 'warning', 'in_app', '/members', DATE_ADD(?, INTERVAL 1 DAY), ?)`,
+        [
+          createId("notif"), row.member_id,
+          "Sessions expire soon / جلسات على وشك الانتهاء", body, row.end_date, data,
+          createId("notif"),
+          "Member sessions expire soon / جلسات عضو على وشك الانتهاء", body, row.end_date, data,
+        ],
+      );
+      created += 2;
+    }
+  } finally {
+    await releaseLock(pool, "powergym_session_expiry_alerts");
+  }
+  return { created };
+}
+
 export async function expireCarriedSessions(pool: Pool): Promise<{ expired: number }> {
   const locked = await acquireLock(pool, "powergym_carryover_expiration");
   if (!locked) return { expired: 0 };
@@ -383,6 +472,9 @@ export function startWorkers(poolProvider: () => Pool | null, intervalMs = 60_00
 
       const carryover = await expireCarriedSessions(pool);
       if (carryover.expired > 0) appLogger.info("Carried sessions expired", carryover);
+
+      const expiryAlerts = await notifyExpiringSessionBalances(pool);
+      if (expiryAlerts.created > 0) appLogger.info("Session expiry alerts created", expiryAlerts);
     } catch (error: any) {
       appLogger.error("Worker cycle failed", { error: error.message });
     }
