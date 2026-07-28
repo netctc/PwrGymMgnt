@@ -124,6 +124,42 @@ test("frontend routes plans to the new page and exposes settings list maintenanc
   assert.match(settings, /listMaintenanceLabel/);
 });
 
+test("trainer plan assignments are versioned, audited and settled outside fixed payroll", () => {
+  const management = read("server/planManagement.ts");
+  const commissions = read("server/trainerCommissions.ts");
+  const subscriptions = read("server/subscriptionsV2.ts");
+  const lifecycle = read("server/subscriptionLifecycle.ts");
+  const migration = read("sql/026_trainer_plan_commissions.sql");
+  const plansPage = read("src/pages/MembershipPlansCodex.tsx");
+  const commissionsPage = read("src/pages/TrainerCommissions.tsx");
+  const app = read("src/App.tsx");
+
+  assert.match(management, /trainerCommissionPercent/);
+  assert.match(management, /trainer_commission_percent/);
+  assert.match(management, /trainer_plan_assignment_history/);
+  assert.match(management, /A trainer is required when a commission percentage is configured/);
+  assert.match(migration, /CREATE TABLE IF NOT EXISTS trainer_plan_commissions/);
+  assert.match(migration, /UNIQUE KEY uq_trainer_commission_cycle/);
+  assert.match(migration, /CREATE TABLE IF NOT EXISTS trainer_plan_assignment_history/);
+  assert.match(commissions, /upsertTrainerPlanCommission/);
+  assert.match(commissions, /Trainer Plan Commission/);
+  assert.match(commissions, /'expense'/);
+  assert.match(commissions, /separateFromPayroll: true/);
+  assert.match(commissions, /ON DUPLICATE KEY UPDATE/);
+  assert.match(commissions, /export\.csv/);
+  assert.match(commissions, /export\.pdf/);
+  assert.match(commissions, /private_sessions/);
+  assert.match(commissions, /class_sessions/);
+  assert.match(subscriptions, /upsertTrainerPlanCommission/);
+  assert.match(lifecycle, /upsertTrainerPlanCommission/);
+  assert.match(plansPage, /assignedTrainer/);
+  assert.match(plansPage, /trainerCommissionPercent/);
+  assert.match(commissionsPage, /Commission history/);
+  assert.match(commissionsPage, /Mark paid/);
+  assert.match(commissionsPage, /Fixed monthly salary remains separate/);
+  assert.match(app, /trainer-commissions/);
+});
+
 test("hybrid subscription flow is atomic and supports deferred member assignment", () => {
   const server = read("server/planManagement.ts");
   const wizard = read("src/pages/HybridSubscriptionWizard.tsx");
