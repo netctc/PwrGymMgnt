@@ -15,6 +15,7 @@ import {
   normalizePaymentStatus,
   OUTSTANDING_PAYMENT_STATUSES,
 } from "./subscriptionPaymentRules";
+import { upsertTrainerPlanCommission } from "./trainerCommissions";
 
 type PoolProvider = () => Pool | null;
 type AuthenticatedRequest = Request & { user?: { uid?: string; email?: string; role?: string } };
@@ -382,6 +383,14 @@ export function registerSubscriptionLifecycleRoutes(app: Express, poolProvider: 
           }),
         ],
       );
+      await upsertTrainerPlanCommission(pool, {
+        subscriptionId: req.params.id,
+        invoiceId,
+        invoiceNumber,
+        paymentStatus: renewalPaymentStatus,
+        dueDate: paymentDate,
+        createdBy: req.user?.email || req.user?.uid || "system",
+      });
 
       res.json({
         ok: true,
