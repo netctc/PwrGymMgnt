@@ -51,6 +51,9 @@ export type MembershipMember = {
     planName: string;
     description?: string | null;
     planType: string;
+    trainerId?: string | null;
+    trainerName?: string | null;
+    trainerCommissionPercent?: number;
     role: string;
     status: string;
     subscriptionStatus: string;
@@ -317,5 +320,11 @@ export const membershipApi = {
     downloadBlob(
       `/api/membership/invoices/${encodeURIComponent(id)}/receipt.pdf`,
       `PowerGym_Receipt_${String(invoiceNumber || id).replace(/[^A-Za-z0-9_-]/g, '_')}.pdf`,
+    ),
+
+  downloadMemberSessionHistory: (memberId: string, memberName?: string) =>
+    downloadBlob(
+      `/api/membership/members/${encodeURIComponent(memberId)}/session-history.pdf`,
+      `PowerGym_Session_History_${String(memberName || memberId).replace(/[^A-Za-z0-9_-]/g, '_')}.pdf`,
     ),
 };
