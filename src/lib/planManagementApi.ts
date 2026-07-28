@@ -26,6 +26,9 @@ export type ManagedPlan = {
   versionNumber: number;
   name: string;
   description: string;
+  trainerId: string | null;
+  trainerName: string;
+  trainerCommissionPercent: number;
   planType: string;
   price: number;
   currency: string;
@@ -63,6 +66,13 @@ export type ManagedPlan = {
   status: string;
 };
 
+export type TrainerOption = {
+  id: string;
+  name: string;
+  email?: string;
+  job_title?: string;
+};
+
 async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
   const headers = new Headers(options.headers);
   if (options.body) headers.set("Content-Type", "application/json");
@@ -95,6 +105,8 @@ export const planManagementApi = {
       `/api/v2/plan-management/plans/${encodeURIComponent(id)}`,
       { method: "PUT", body: JSON.stringify(payload) },
     ),
+  listTrainers: () =>
+    request<{ trainers: TrainerOption[] }>("/api/v2/trainer-commissions/trainers"),
   listMaintenance: () =>
     request<{ lists: MaintenanceList[] }>("/api/v2/list-maintenance"),
   addListItem: (listId: string, payload: Partial<LocalizedListItem>) =>
