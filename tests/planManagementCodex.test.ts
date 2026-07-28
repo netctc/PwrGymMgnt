@@ -132,12 +132,19 @@ test("trainer plan assignments are versioned, audited and settled outside fixed 
   const migration = read("sql/026_trainer_plan_commissions.sql");
   const plansPage = read("src/pages/MembershipPlansCodex.tsx");
   const commissionsPage = read("src/pages/TrainerCommissions.tsx");
+  const membership = read("server/membership.ts");
+  const membershipApi = read("src/lib/membershipApi.ts");
+  const membersPage = read("src/pages/Members.tsx");
+  const workers = read("server/workers.ts");
+  const alertMigration = read("sql/027_member_session_history_alerts.sql");
   const app = read("src/App.tsx");
 
   assert.match(management, /trainerCommissionPercent/);
   assert.match(management, /trainer_commission_percent/);
   assert.match(management, /trainer_plan_assignment_history/);
   assert.match(management, /A trainer is required when a commission percentage is configured/);
+  assert.match(management, /percentage must be between 0 and 100/);
+  assert.match(management, /WHERE e\.id = \? AND e\.employment_status = 'active'/);
   assert.match(migration, /CREATE TABLE IF NOT EXISTS trainer_plan_commissions/);
   assert.match(migration, /UNIQUE KEY uq_trainer_commission_cycle/);
   assert.match(migration, /CREATE TABLE IF NOT EXISTS trainer_plan_assignment_history/);
@@ -150,6 +157,8 @@ test("trainer plan assignments are versioned, audited and settled outside fixed 
   assert.match(commissions, /export\.pdf/);
   assert.match(commissions, /private_sessions/);
   assert.match(commissions, /class_sessions/);
+  assert.match(commissions, /trainer-commissions\/employees/);
+  assert.match(commissions, /WHERE e\.employment_status = 'active'/);
   assert.match(subscriptions, /upsertTrainerPlanCommission/);
   assert.match(lifecycle, /upsertTrainerPlanCommission/);
   assert.match(plansPage, /assignedTrainer/);
@@ -157,6 +166,19 @@ test("trainer plan assignments are versioned, audited and settled outside fixed 
   assert.match(commissionsPage, /Commission history/);
   assert.match(commissionsPage, /Mark paid/);
   assert.match(commissionsPage, /Fixed monthly salary remains separate/);
+  assert.match(commissionsPage, /formatDateTime/);
+  assert.doesNotMatch(commissionsPage, /\bformatDate\(/);
+  assert.match(membership, /session-history\.pdf/);
+  assert.match(membership, /Member plan and session history/);
+  assert.match(membership, /Unconsumed sessions by cycle/);
+  assert.match(membership, /member_session_history_pdf_exported/);
+  assert.match(membershipApi, /downloadMemberSessionHistory/);
+  assert.match(membersPage, /downloadMemberSessionHistory/);
+  assert.match(membersPage, /trainerName/);
+  assert.match(workers, /notifyExpiringSessionBalances/);
+  assert.match(workers, /session_expiry_alert/);
+  assert.match(alertMigration, /ml_session_expiry_alerts/);
+  assert.match(alertMigration, /label_ar/);
   assert.match(app, /trainer-commissions/);
 });
 
