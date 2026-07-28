@@ -618,7 +618,13 @@ export function registerPlanManagementRoutes(app: Express, provider: PoolProvide
           paymentStatus === "paid" ? "paid" : "issued",
           Number(plan.price || 0), Number(plan.price || 0), plan.currency || "USD",
           paymentDate, paymentStatus === "paid" ? new Date() : null,
-          json({ source: "hybrid_subscription", subscriptionV2Id: subscriptionId, paymentStatus }),
+          json({
+            source: "hybrid_subscription",
+            subscriptionV2Id: subscriptionId,
+            periodStart: startDate,
+            periodEnd: endDate,
+            paymentStatus,
+          }),
         ],
       );
       await connection.query(
