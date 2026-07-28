@@ -13,7 +13,7 @@ import DateInput from '../components/DateInput';
 import InlineAlert from '../components/InlineAlert';
 import EmptyState from '../components/EmptyState';
 import { useLocalization } from '../contexts/LocalizationContext';
-import { planManagementApi, type MaintenanceList, type ManagedPlan } from '../lib/planManagementApi';
+import { planManagementApi, type MaintenanceList, type ManagedPlan, type TrainerOption } from '../lib/planManagementApi';
 
 const copy = {
   en: {
@@ -24,6 +24,11 @@ const copy = {
     listMaintenance: 'List maintenance',
     manageMembers: 'Manage multi-user memberships',
     newMultiSubscription: 'New multi-user subscription',
+    trainerCommissions: 'Trainer commissions',
+    assignedTrainer: 'Responsible trainer',
+    noTrainer: 'No trainer assigned',
+    commissionPercent: 'Trainer commission (%)',
+    gymShare: 'The remaining percentage is allocated to the gym. Commissions are tracked separately from fixed salary.',
     total: 'Total plans',
     active: 'Active plans',
     multiUser: 'Multi-user plans',
@@ -88,6 +93,11 @@ const copy = {
     listMaintenance: 'صيانة القوائم',
     manageMembers: 'إدارة العضويات متعددة المستخدمين',
     newMultiSubscription: 'اشتراك جديد متعدد المستخدمين',
+    trainerCommissions: 'عمولات المدربين',
+    assignedTrainer: 'المدرب المسؤول',
+    noTrainer: 'لا يوجد مدرب معين',
+    commissionPercent: 'عمولة المدرب (%)',
+    gymShare: 'تُخصص النسبة المتبقية للنادي. وتُتابع العمولات بشكل منفصل عن الراتب الثابت.',
     total: 'إجمالي الخطط',
     active: 'الخطط النشطة',
     multiUser: 'الخطط متعددة المستخدمين',
@@ -150,6 +160,8 @@ type FormState = {
   id: string;
   name: string;
   description: string;
+  trainerId: string;
+  trainerCommissionPercent: string;
   planType: string;
   price: string;
   currency: string;
@@ -186,6 +198,7 @@ type FormState = {
 
 const emptyForm: FormState = {
   id: '', name: '', description: '', planType: 'individual', price: '0', currency: 'USD',
+  trainerId: '', trainerCommissionPercent: '0',
   durationDays: '30', validFrom: '', validTo: '', maxMembers: '1',
   sessionsUnlimited: true, sessionsPerCycle: '', cycleFrequency: 'monthly',
   distributionModel: 'individual', sharedBenefits: true, futureBookingPolicy: 'cancel',
@@ -213,6 +226,7 @@ export default function MembershipPlansCodex() {
   const c = locale === 'ar' ? copy.ar : copy.en;
   const [plans, setPlans] = useState<ManagedPlan[]>([]);
   const [lists, setLists] = useState<MaintenanceList[]>([]);
+  const [trainers, setTrainers] = useState<TrainerOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -273,12 +287,14 @@ export default function MembershipPlansCodex() {
     setLoading(true);
     setError('');
     try {
-      const [plansResponse, listsResponse] = await Promise.all([
+      const [plansResponse, listsResponse, trainersResponse] = await Promise.all([
         planManagementApi.listPlans(),
         planManagementApi.listMaintenance(),
+        planManagementApi.listTrainers(),
       ]);
       setPlans(plansResponse.plans);
       setLists(listsResponse.lists);
+      setTrainers(trainersResponse.trainers);
     } catch (loadError: any) {
       setError(loadError?.message || c.loadError);
     } finally {
@@ -295,6 +311,8 @@ export default function MembershipPlansCodex() {
   const openEdit = (plan: ManagedPlan) => {
     setForm({
       id: plan.id, name: plan.name, description: plan.description, planType: plan.planType,
+      trainerId: plan.trainerId || '',
+      trainerCommissionPercent: String(plan.trainerCommissionPercent || 0),
       price: String(plan.price), currency: plan.currency, durationDays: String(plan.durationDays),
       validFrom: plan.validFrom || '', validTo: plan.validTo || '', maxMembers: String(plan.maxMembers),
       sessionsUnlimited: plan.sessionsUnlimited, sessionsPerCycle: plan.sessionsPerCycle ? String(plan.sessionsPerCycle) : '',
@@ -346,7 +364,10 @@ export default function MembershipPlansCodex() {
       Number(form.durationDays) < 1 ||
       Number(form.price) < 0 ||
       (!individual && Number(form.maxMembers) < 2) ||
-      (!form.sessionsUnlimited && Number(form.sessionsPerCycle) < 1)
+      (!form.sessionsUnlimited && Number(form.sessionsPerCycle) < 1) ||
+      Number(form.trainerCommissionPercent) < 0 ||
+      Number(form.trainerCommissionPercent) > 100 ||
+      (Number(form.trainerCommissionPercent) > 0 && !form.trainerId)
     ) {
       toast.error(c.validation);
       return;
@@ -355,6 +376,8 @@ export default function MembershipPlansCodex() {
     try {
       const payload = {
         name: form.name, description: form.description, planType: form.planType,
+        trainerId: form.trainerId || null,
+        trainerCommissionPercent: Number(form.trainerCommissionPercent || 0),
         price: Number(form.price), currency: form.currency, durationDays: Number(form.durationDays),
         validFrom: form.validFrom || null, validTo: form.validTo || null,
         maxMembers: individual ? 1 : Number(form.maxMembers),
@@ -406,6 +429,7 @@ export default function MembershipPlansCodex() {
           <Button asChild><Link to="/subscriptions/new-hybrid">{c.newMultiSubscription}</Link></Button>
           <Button variant="outline" asChild><Link to="/plans/multi-user">{c.manageMembers}</Link></Button>
           <Button variant="outline" asChild><Link to="/settings/list-maintenance">{c.listMaintenance}</Link></Button>
+          <Button variant="outline" asChild><Link to="/trainer-commissions">{c.trainerCommissions}</Link></Button>
           <Button variant="outline" onClick={load} disabled={loading}><RefreshCw className="me-2 h-4 w-4" />{c.refresh}</Button>
           <Button onClick={openCreate}><Plus className="me-2 h-4 w-4" />{c.newPlan}</Button>
         </div>
@@ -457,6 +481,37 @@ export default function MembershipPlansCodex() {
               <div className="space-y-2"><Label>{c.type}</Label><select className="h-9 w-full rounded-md border bg-white px-3" value={form.planType} onChange={(e) => update('planType', e.target.value)}>{planTypes.map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}</select></div>
             </div>
             <div className="space-y-2"><Label>{c.description}</Label><textarea className="min-h-20 w-full rounded-md border bg-white p-3 text-sm" value={form.description} onChange={(e) => update('description', e.target.value)} /></div>
+            <div className="rounded-lg border bg-slate-50 p-4">
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label>{c.assignedTrainer}</Label>
+                  <select
+                    className="h-9 w-full rounded-md border bg-white px-3"
+                    value={form.trainerId}
+                    onChange={(event) => {
+                      update('trainerId', event.target.value);
+                      if (!event.target.value) update('trainerCommissionPercent', '0');
+                    }}
+                  >
+                    <option value="">{c.noTrainer}</option>
+                    {trainers.map((trainer) => <option key={trainer.id} value={trainer.id}>{trainer.name}</option>)}
+                  </select>
+                </div>
+                <div className="space-y-2">
+                  <Label>{c.commissionPercent}</Label>
+                  <Input
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="0.01"
+                    disabled={!form.trainerId}
+                    value={form.trainerCommissionPercent}
+                    onChange={(event) => update('trainerCommissionPercent', event.target.value)}
+                  />
+                </div>
+              </div>
+              <p className="mt-2 text-xs text-slate-500">{c.gymShare}</p>
+            </div>
             <div className="grid gap-4 md:grid-cols-4">
               <div className="space-y-2"><Label>{c.price}</Label><Input type="number" min="0" step="0.01" value={form.price} onChange={(e) => update('price', e.target.value)} /></div>
               <div className="space-y-2"><Label>{c.currency}</Label><Input maxLength={3} value={form.currency} onChange={(e) => update('currency', e.target.value.toUpperCase())} /></div>
