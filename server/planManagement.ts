@@ -89,7 +89,10 @@ function normalizePlanInput(body: any) {
   const requestedSessionsUnlimited = bool(body.sessionsUnlimited, true);
   const maxMembers = isIndividual ? 1 : Math.max(2, number(body.maxMembers, 2));
   const trainerId = text(body.trainerId);
-  const trainerCommissionPercent = Math.max(0, Math.min(100, number(body.trainerCommissionPercent, 0)));
+  const trainerCommissionPercent = number(body.trainerCommissionPercent, 0);
+  if (trainerCommissionPercent < 0 || trainerCommissionPercent > 100) {
+    throw Object.assign(new Error("Trainer commission percentage must be between 0 and 100"), { status: 400 });
+  }
   if (trainerCommissionPercent > 0 && !trainerId) {
     throw Object.assign(new Error("A trainer is required when a commission percentage is configured"), { status: 400 });
   }
@@ -244,17 +247,11 @@ async function resolveTrainer(connection: PoolConnection, input: ReturnType<type
   const [rows]: any = await connection.query(
     `SELECT e.id, CONCAT_WS(' ', e.first_name, e.last_name) AS name
        FROM employees e
-       LEFT JOIN admin_users au ON LOWER(TRIM(au.email)) = LOWER(TRIM(e.email))
       WHERE e.id = ? AND e.employment_status = 'active'
-        AND (
-          LOWER(COALESCE(au.role, '')) = 'trainer'
-          OR LOWER(COALESCE(e.job_title, '')) LIKE '%trainer%'
-          OR LOWER(COALESCE(e.department, '')) IN ('training', 'coaching')
-        )
       LIMIT 1`,
     [input.trainerId],
   );
-  if (!rows.length) throw Object.assign(new Error("The selected trainer is not active or was not found"), { status: 400 });
+  if (!rows.length) throw Object.assign(new Error("The selected responsible employee is not active or was not found"), { status: 400 });
   input.trainerName = rows[0].name || input.trainerId;
 }
 
