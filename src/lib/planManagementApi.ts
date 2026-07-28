@@ -71,6 +71,7 @@ export type TrainerOption = {
   name: string;
   email?: string;
   job_title?: string;
+  department?: string;
 };
 
 async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
@@ -106,7 +107,8 @@ export const planManagementApi = {
       { method: "PUT", body: JSON.stringify(payload) },
     ),
   listTrainers: () =>
-    request<{ trainers: TrainerOption[] }>("/api/v2/trainer-commissions/trainers"),
+    request<{ trainers: TrainerOption[] }>("/api/v2/trainer-commissions/employees")
+      .then((response: any) => ({ trainers: response.employees || [] })),
   listMaintenance: () =>
     request<{ lists: MaintenanceList[] }>("/api/v2/list-maintenance"),
   addListItem: (listId: string, payload: Partial<LocalizedListItem>) =>
