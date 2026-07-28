@@ -19,12 +19,39 @@ export type TrainerCommissionHistory = {
   commissionPercent: number;
   trainerAmount: number;
   gymAmount: number;
+  amountPaid: number;
+  amountPending: number;
+  sessionsContracted: number;
+  sessionsConsumed: number;
+  sessionsRemaining: number;
+  sessionsPaid: number;
   currency: string;
-  paymentStatus: "pending" | "earned" | "paid";
+  paymentStatus: "pending" | "earned" | "partially_paid" | "paid";
   dueDate: string | null;
   earnedAt: string | null;
   paidAt: string | null;
   createdAt: string;
+};
+
+export type TrainerCommissionPayment = {
+  id: string;
+  commissionId: string;
+  trainerId: string;
+  trainerName: string;
+  planName: string;
+  invoiceNumber: string;
+  paymentType: "partial" | "full";
+  amount: number;
+  commissionTotal: number;
+  balanceBefore: number;
+  balanceAfter: number;
+  sessionsContracted: number;
+  sessionsConsumed: number;
+  sessionsPaidBefore: number;
+  sessionsPaidAfter: number;
+  currency: string;
+  authorizedBy: string;
+  paidAt: string;
 };
 
 export type TrainerCommissionFilters = {
@@ -68,12 +95,29 @@ async function download(url: string, filename: string) {
 
 export const trainerCommissionsApi = {
   list: (filters: TrainerCommissionFilters) =>
-    request<{ trainers: TrainerCommissionSummary[]; history: TrainerCommissionHistory[] }>(
+    request<{
+      trainers: TrainerCommissionSummary[];
+      history: TrainerCommissionHistory[];
+      payments: TrainerCommissionPayment[];
+    }>(
       `/api/v2/trainer-commissions?${query(filters)}`,
     ),
   markPaid: (id: string) =>
     request<{ ok: boolean; paymentStatus: string }>(
       `/api/v2/trainer-commissions/${encodeURIComponent(id)}/pay`,
+      { method: "PATCH" },
+    ),
+  markPartialPaid: (id: string) =>
+    request<{
+      ok: boolean;
+      paymentStatus: string;
+      amount: number;
+      amountPaid: number;
+      amountPending: number;
+      sessionsConsumed: number;
+      sessionsContracted: number;
+    }>(
+      `/api/v2/trainer-commissions/${encodeURIComponent(id)}/pay-partial`,
       { method: "PATCH" },
     ),
   exportCsv: (filters: TrainerCommissionFilters) =>
