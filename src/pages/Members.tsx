@@ -220,6 +220,13 @@ export default function Members() {
         reserved: 'المحجوز',
         setPrimary: 'تعيين كخطة رئيسية',
         primaryUpdated: 'تم تحديث الخطة الرئيسية',
+        planSessionHistory: 'سجل الخطط والجلسات',
+        planSessionHistoryDescription: 'تنزيل الخطط ذات الجلسات المحدودة والجلسات المستهلكة والمتبقية بصيغة PDF.',
+        downloadSessionHistory: 'تنزيل سجل الجلسات PDF',
+        downloadingSessionHistory: 'جارٍ إنشاء التقرير...',
+        responsibleTrainer: 'المدرب المسؤول',
+        sessionBalance: 'الجلسات: المستهلكة / المحجوزة / المتبقية',
+        noSessionReport: 'لا توجد خطة حالية أو سابقة ذات جلسات محدودة ومدرب مسؤول.',
       }
     : {
         create: 'New multi-user subscription',
@@ -257,6 +264,13 @@ export default function Members() {
         reserved: 'Reserved',
         setPrimary: 'Set as primary',
         primaryUpdated: 'Primary plan updated',
+        planSessionHistory: 'Plan and session history',
+        planSessionHistoryDescription: 'Download limited-session plans, consumed sessions and remaining cycle balances as PDF.',
+        downloadSessionHistory: 'Download session history PDF',
+        downloadingSessionHistory: 'Generating report...',
+        responsibleTrainer: 'Responsible trainer',
+        sessionBalance: 'Sessions: consumed / reserved / remaining',
+        noSessionReport: 'No current or historical limited-session plan with a responsible trainer.',
       };
   const [members, setMembers] = useState<MembershipMember[]>([]);
   const [plans, setPlans] = useState<MembershipPlan[]>([]);
@@ -308,6 +322,7 @@ export default function Members() {
   const [detailOpen, setDetailOpen] = useState(false);
   const [detail, setDetail] = useState<MemberDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [sessionHistoryDownloading, setSessionHistoryDownloading] = useState(false);
   const [renewOpen, setRenewOpen] = useState(false);
   const [subscriptionIntent, setSubscriptionIntent] = useState<'renew' | 'new'>('renew');
   const [newSubscriptionMemberSearch, setNewSubscriptionMemberSearch] = useState('');
@@ -1070,6 +1085,20 @@ export default function Members() {
       await membershipApi.downloadInvoiceReceipt(invoice.id, invoice.invoiceNumber);
     } catch (err: any) {
       toast.error(err.message || 'Failed to download receipt PDF');
+    }
+  };
+
+  const downloadMemberSessionHistory = async () => {
+    if (!detail?.member) return;
+    setSessionHistoryDownloading(true);
+    try {
+      const memberName = `${detail.member.firstName || ''}_${detail.member.lastName || ''}`.replace(/\s+/g, '_');
+      await membershipApi.downloadMemberSessionHistory(detail.member.id, memberName);
+      toast.success(multiUserCopy.downloadSessionHistory);
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to download session history PDF');
+    } finally {
+      setSessionHistoryDownloading(false);
     }
   };
 
@@ -2077,23 +2106,66 @@ The secure QR token is embedded in the attached PDF/QR image.`;
 
                 <Card>
                   <CardHeader>
+                    <CardTitle>{multiUserCopy.planSessionHistory}</CardTitle>
+                    <CardDescription>{multiUserCopy.planSessionHistoryDescription}</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    {(detail.member.plans || []).some(
+                      (plan) => !plan.sessionsUnlimited && Boolean(plan.trainerId),
+                    ) ? (
+                      <Button
+                        variant="outline"
+                        onClick={downloadMemberSessionHistory}
+                        disabled={sessionHistoryDownloading}
+                      >
+                        <Download className="mr-2 h-4 w-4" />
+                        {sessionHistoryDownloading
+                          ? multiUserCopy.downloadingSessionHistory
+                          : multiUserCopy.downloadSessionHistory}
+                      </Button>
+                    ) : (
+                      <p className="text-sm text-slate-500">{multiUserCopy.noSessionReport}</p>
+                    )}
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader>
                     <CardTitle>Subscriptions</CardTitle>
                   </CardHeader>
                   <CardContent>
-                    {detail.subscriptions.length === 0 ? (
+                    {(detail.member.plans || []).length === 0 && detail.subscriptions.length === 0 ? (
                       <p className="text-sm text-slate-500">No subscriptions recorded.</p>
                     ) : (
                       <div className="space-y-2">
-                        {detail.subscriptions.map((subscription) => (
-                          <div key={subscription.id} className="rounded-lg border p-3 text-sm">
+                        {(detail.member.plans || []).length > 0
+                          ? (detail.member.plans || []).map((plan) => (
+                          <div key={`${plan.subscriptionId}_${plan.affiliationId || plan.id}`} className="rounded-lg border p-3 text-sm">
                             <div className="flex justify-between gap-3">
-                              <p className="font-medium">{subscription.planName}</p>
-                              <Badge variant={badgeVariant(subscription.status) as any}>{subscription.status}</Badge>
+                              <p className="font-medium">{plan.planName}</p>
+                              <Badge variant={badgeVariant(plan.status) as any}>{plan.status}</Badge>
                             </div>
-                            <p className="text-slate-500">{formatDate(subscription.startDate)} - {formatDate(subscription.endDate)}</p>
-                            <p className="text-slate-500">{formatMoney(subscription.price, subscription.currency)}</p>
+                            <p className="text-slate-500">{formatDate(plan.startDate)} - {formatDate(plan.endDate)}</p>
+                            {plan.trainerName && (
+                              <p className="text-slate-500">{multiUserCopy.responsibleTrainer}: {plan.trainerName}</p>
+                            )}
+                            {!plan.sessionsUnlimited && (
+                              <p className="text-slate-500">
+                                {multiUserCopy.sessionBalance}: {plan.sessionsConsumed || 0} / {plan.sessionsReserved || 0} / {plan.sessionsPending || 0}
+                              </p>
+                            )}
                           </div>
-                        ))}
+                          ))
+                          : detail.subscriptions.map((subscription) => (
+                            <div key={subscription.id} className="rounded-lg border p-3 text-sm">
+                              <div className="flex justify-between gap-3">
+                                <p className="font-medium">{subscription.planName}</p>
+                                <Badge variant={badgeVariant(subscription.status) as any}>{subscription.status}</Badge>
+                              </div>
+                              <p className="text-slate-500">{formatDate(subscription.startDate)} - {formatDate(subscription.endDate)}</p>
+                              <p className="text-slate-500">{formatMoney(subscription.price, subscription.currency)}</p>
+                            </div>
+                          ))}
                       </div>
                     )}
                   </CardContent>
