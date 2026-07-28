@@ -10,6 +10,7 @@ import {
   assertNoOutstandingSubscriptionPayment,
   normalizePaymentStatus,
 } from "./subscriptionPaymentRules";
+import { upsertTrainerPlanCommission } from "./trainerCommissions";
 
 type PoolProvider = () => Pool | null;
 type AuthenticatedRequest = Request & { user?: { email?: string; uid?: string } };
@@ -20,6 +21,11 @@ const MEMBER_STATUSES = new Set(["active", "suspended", "removed"]);
 
 function createId(prefix: string) {
   return `${prefix}_${crypto.randomUUID().replace(/-/g, "")}`;
+}
+
+function createInvoiceNumber() {
+  const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
+  return `INV-${stamp}-${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
 }
 
 function requirePool(provider: PoolProvider) {
@@ -82,6 +88,11 @@ function normalizePlanInput(body: any) {
   const sessionsUnlimited = isIndividual ? bool(body.sessionsUnlimited, true) : true;
   const requestedSessionsUnlimited = bool(body.sessionsUnlimited, true);
   const maxMembers = isIndividual ? 1 : Math.max(2, number(body.maxMembers, 2));
+  const trainerId = text(body.trainerId);
+  const trainerCommissionPercent = Math.max(0, Math.min(100, number(body.trainerCommissionPercent, 0)));
+  if (trainerCommissionPercent > 0 && !trainerId) {
+    throw Object.assign(new Error("A trainer is required when a commission percentage is configured"), { status: 400 });
+  }
   const bookingPolicy = {
     futureBookingPolicy: text(body.futureBookingPolicy) || "cancel",
     deductionMoment: text(body.deductionMoment) || "booking_confirmation",
@@ -97,6 +108,9 @@ function normalizePlanInput(body: any) {
   return {
     name,
     description: text(body.description),
+    trainerId: trainerId || null,
+    trainerName: "",
+    trainerCommissionPercent,
     planType,
     price: Math.max(0, number(body.price, 0)),
     currency: text(body.currency).toUpperCase() || "USD",
@@ -135,6 +149,9 @@ function mapPlan(row: any) {
     versionNumber: Number(row.version_number || 1),
     name: row.version_name || row.plan_name,
     description: row.version_description || row.plan_description || "",
+    trainerId: row.trainer_id || null,
+    trainerName: row.trainer_name || "",
+    trainerCommissionPercent: Number(row.trainer_commission_percent || 0),
     planType: row.plan_type || "individual",
     price: Number(row.version_price || 0),
     currency: row.version_currency || "USD",
@@ -168,6 +185,7 @@ const PLAN_SELECT = `
   SELECT sp.id AS plan_id, sp.name AS plan_name, sp.description AS plan_description,
          sp.status AS plan_status, pv.id AS plan_version_id, pv.version_number,
          pv.name AS version_name, pv.description AS version_description,
+         pv.trainer_id, pv.trainer_name, pv.trainer_commission_percent,
          pv.plan_type, pv.price AS version_price, pv.currency AS version_currency,
          pv.duration_days, pv.max_members, pv.sessions_unlimited, pv.sessions_per_cycle,
          pv.cycle_frequency, pv.distribution_model, pv.carryover_enabled, pv.carryover_max,
@@ -185,14 +203,17 @@ async function insertPlanVersion(connection: PoolConnection, planId: string, ver
   const id = createId("pv");
   await connection.query(
     `INSERT INTO plan_versions
-      (id, plan_id, version_number, name, description, plan_type, price, currency,
+      (id, plan_id, version_number, name, description, trainer_id, trainer_name,
+       trainer_commission_percent, plan_type, price, currency,
        duration_days, max_members, sessions_unlimited, sessions_per_cycle,
        cycle_frequency, distribution_model, carryover_enabled, carryover_max,
        carryover_expiry_days, extra_session_price, consumption_priority,
        benefits, restrictions, booking_policy, status, published_at, data)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
-      id, planId, versionNumber, input.name, input.description || null, input.planType,
+      id, planId, versionNumber, input.name, input.description || null,
+      input.trainerId, input.trainerName || null, input.trainerCommissionPercent,
+      input.planType,
       input.price, input.currency, input.durationDays, input.maxMembers,
       input.sessionsUnlimited ? 1 : 0, input.sessionsPerCycle, input.cycleFrequency,
       input.distributionModel, input.carryoverEnabled ? 1 : 0, input.carryoverMax,
@@ -214,6 +235,56 @@ async function insertPlanVersion(connection: PoolConnection, planId: string, ver
   return id;
 }
 
+async function resolveTrainer(connection: PoolConnection, input: ReturnType<typeof normalizePlanInput>) {
+  if (!input.trainerId) {
+    input.trainerName = "";
+    input.trainerCommissionPercent = 0;
+    return;
+  }
+  const [rows]: any = await connection.query(
+    `SELECT e.id, CONCAT_WS(' ', e.first_name, e.last_name) AS name
+       FROM employees e
+       LEFT JOIN admin_users au ON LOWER(TRIM(au.email)) = LOWER(TRIM(e.email))
+      WHERE e.id = ? AND e.employment_status = 'active'
+        AND (
+          LOWER(COALESCE(au.role, '')) = 'trainer'
+          OR LOWER(COALESCE(e.job_title, '')) LIKE '%trainer%'
+          OR LOWER(COALESCE(e.department, '')) IN ('training', 'coaching')
+        )
+      LIMIT 1`,
+    [input.trainerId],
+  );
+  if (!rows.length) throw Object.assign(new Error("The selected trainer is not active or was not found"), { status: 400 });
+  input.trainerName = rows[0].name || input.trainerId;
+}
+
+async function auditTrainerAssignment(
+  connection: PoolConnection,
+  input: {
+    planId: string;
+    planVersionId: string;
+    previous?: any;
+    current: ReturnType<typeof normalizePlanInput>;
+    changedBy?: string | null;
+  },
+) {
+  await connection.query(
+    `INSERT INTO trainer_plan_assignment_history
+      (id, plan_id, plan_version_id, previous_trainer_id, previous_trainer_name,
+       previous_commission_percent, trainer_id, trainer_name, commission_percent,
+       changed_by, details)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      createId("tpah"), input.planId, input.planVersionId,
+      input.previous?.trainer_id || null, input.previous?.trainer_name || null,
+      input.previous?.trainer_commission_percent ?? null,
+      input.current.trainerId, input.current.trainerName || null,
+      input.current.trainerCommissionPercent, input.changedBy || "system",
+      json({ source: "plan_version", versioned: true }),
+    ],
+  );
+}
+
 export function registerPlanManagementRoutes(app: Express, provider: PoolProvider) {
   app.get("/api/v2/plan-management/plans", requirePermission("membership.read"), async (_req, res, next) => {
     try {
@@ -223,19 +294,26 @@ export function registerPlanManagementRoutes(app: Express, provider: PoolProvide
     } catch (error) { next(error); }
   });
 
-  app.post("/api/v2/plan-management/plans", requirePermission("membership.write"), async (req, res, next) => {
+  app.post("/api/v2/plan-management/plans", requirePermission("membership.write"), async (req: AuthenticatedRequest, res, next) => {
     const pool = requirePool(provider);
     const connection = await pool.getConnection();
     try {
       const input = normalizePlanInput(req.body);
       const planId = createId("plan");
       await connection.beginTransaction();
+      await resolveTrainer(connection, input);
       await connection.query(
         `INSERT INTO subscription_plans (id, name, description, duration_days, price, currency, status, data)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         [planId, input.name, input.description || null, input.durationDays, input.price, input.currency, input.status, json({ planType: input.planType })],
       );
       const planVersionId = await insertPlanVersion(connection, planId, 1, input);
+      await auditTrainerAssignment(connection, {
+        planId,
+        planVersionId,
+        current: input,
+        changedBy: req.user?.email || req.user?.uid,
+      });
       await connection.commit();
       const [rows]: any = await pool.query(`${PLAN_SELECT} WHERE sp.id = ?`, [planId]);
       res.status(201).json({ plan: mapPlan(rows[0]), planVersionId });
@@ -245,14 +323,20 @@ export function registerPlanManagementRoutes(app: Express, provider: PoolProvide
     } finally { connection.release(); }
   });
 
-  app.put("/api/v2/plan-management/plans/:id", requirePermission("membership.write"), async (req, res, next) => {
+  app.put("/api/v2/plan-management/plans/:id", requirePermission("membership.write"), async (req: AuthenticatedRequest, res, next) => {
     const pool = requirePool(provider);
     const connection = await pool.getConnection();
     try {
       const input = normalizePlanInput(req.body);
       await connection.beginTransaction();
+      await resolveTrainer(connection, input);
       const [current]: any = await connection.query(
-        "SELECT COALESCE(MAX(version_number), 0) AS version_number FROM plan_versions WHERE plan_id = ? FOR UPDATE",
+        `SELECT version_number, trainer_id, trainer_name, trainer_commission_percent
+           FROM plan_versions
+          WHERE plan_id = ?
+          ORDER BY version_number DESC
+          LIMIT 1
+          FOR UPDATE`,
         [req.params.id],
       );
       if (!Number(current[0]?.version_number)) throw Object.assign(new Error("Plan not found"), { status: 404 });
@@ -260,7 +344,14 @@ export function registerPlanManagementRoutes(app: Express, provider: PoolProvide
         `UPDATE subscription_plans SET name = ?, description = ?, duration_days = ?, price = ?, currency = ?, status = ?, data = ? WHERE id = ?`,
         [input.name, input.description || null, input.durationDays, input.price, input.currency, input.status, json({ planType: input.planType }), req.params.id],
       );
-      await insertPlanVersion(connection, req.params.id, Number(current[0].version_number) + 1, input);
+      const planVersionId = await insertPlanVersion(connection, req.params.id, Number(current[0].version_number) + 1, input);
+      await auditTrainerAssignment(connection, {
+        planId: req.params.id,
+        planVersionId,
+        previous: current[0],
+        current: input,
+        changedBy: req.user?.email || req.user?.uid,
+      });
       await connection.commit();
       const [rows]: any = await pool.query(`${PLAN_SELECT} WHERE sp.id = ?`, [req.params.id]);
       res.json({ plan: mapPlan(rows[0]) });
@@ -517,6 +608,45 @@ export function registerPlanManagementRoutes(app: Express, provider: PoolProvide
           customAllocations,
         },
       );
+      const invoiceId = createId("inv");
+      const invoiceNumber = createInvoiceNumber();
+      const paymentDate = paymentStatus === "paid" ? startDate : startDate;
+      await connection.query(
+        `INSERT INTO invoices
+          (id, invoice_number, member_id, subscription_id, status,
+           subtotal, tax_amount, total, currency, due_date, paid_at, data)
+         VALUES (?, ?, ?, NULL, ?, ?, 0, ?, ?, ?, ?, ?)`,
+        [
+          invoiceId, invoiceNumber, holder.id,
+          paymentStatus === "paid" ? "paid" : "issued",
+          Number(plan.price || 0), Number(plan.price || 0), plan.currency || "USD",
+          paymentDate, paymentStatus === "paid" ? new Date() : null,
+          json({ source: "hybrid_subscription", subscriptionV2Id: subscriptionId, paymentStatus }),
+        ],
+      );
+      await connection.query(
+        `INSERT INTO finance_transactions
+          (id, type, category, amount, transaction_date, source, reference_type,
+           reference_id, description, status, created_by, approved_by, data)
+         VALUES (?, 'income', 'Membership Subscription', ?, ?,
+                 'subscription', 'subscription_v2_payment', ?, ?, ?, ?, ?, ?)`,
+        [
+          createId("ftx"), Number(plan.price || 0), paymentDate, subscriptionId,
+          `Subscription payment ${invoiceNumber} - member ${holder.id} - ${plan.name || plan.catalog_name}`,
+          paymentStatus === "paid" ? "posted" : "pending",
+          req.user?.email || req.user?.uid || "system",
+          paymentStatus === "paid" ? req.user?.email || req.user?.uid || "system" : null,
+          json({ source: "hybrid_subscription", subscriptionId, invoiceNumber, paymentStatus }),
+        ],
+      );
+      await upsertTrainerPlanCommission(connection, {
+        subscriptionId,
+        invoiceId,
+        invoiceNumber,
+        paymentStatus,
+        dueDate: paymentDate,
+        createdBy: req.user?.email || req.user?.uid || "system",
+      });
       await connection.query(
         `INSERT INTO outbox_events (id, event_type, payload, status)
          VALUES (?, 'multi_user_subscription_created', ?, 'pending')`,
