@@ -20,6 +20,7 @@ import { registerEvolutionDashboardRoutes } from "./evolutionDashboard";
 import { registerSubscriptionLifecycleRoutes } from "./subscriptionLifecycle";
 import { registerMemberPortalRoutes } from "./memberPortal";
 import { registerPlanManagementRoutes } from "./planManagement";
+import { registerTrainerCommissionRoutes } from "./trainerCommissions";
 
 export type PoolProvider = () => Pool | null;
 
@@ -46,6 +47,12 @@ export const APPLICATION_ROUTE_MODULES: readonly ApplicationRouteModule[] = Obje
     area: "domain",
     description: "Versioned individual and multi-user plans plus database-backed bilingual list maintenance.",
     register: (app, getPool) => registerPlanManagementRoutes(app, getPool),
+  },
+  {
+    name: "trainer-commissions",
+    area: "domain",
+    description: "Versioned plan trainer assignments, commission ledger, settlement history and exports.",
+    register: (app, getPool) => registerTrainerCommissionRoutes(app, getPool),
   },
   {
     name: "scheduling",
@@ -166,4 +173,3 @@ export function registerApplicationRouteModules(app: Express, poolProvider: Pool
 export function getApplicationModuleSummary() {
   return APPLICATION_ROUTE_MODULES.map(({ name, area, description }) => ({ name, area, description }));
 }
-
