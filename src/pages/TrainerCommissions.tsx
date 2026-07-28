@@ -51,7 +51,7 @@ const copy = {
 const planTypes = ["individual", "family", "group", "corporate"];
 
 export default function TrainerCommissions() {
-  const { locale, formatCurrency, formatDate } = useLocalization();
+  const { locale, formatCurrency, formatDateTime } = useLocalization();
   const c = locale === "ar" ? copy.ar : copy.en;
   const [filters, setFilters] = useState<TrainerCommissionFilters>({});
   const [appliedFilters, setAppliedFilters] = useState<TrainerCommissionFilters>({});
@@ -142,7 +142,7 @@ export default function TrainerCommissions() {
           <Table>
             <TableHeader><TableRow><TableHead>{c.trainer}</TableHead><TableHead>{c.plan}</TableHead><TableHead>{c.invoice}</TableHead><TableHead>{c.gross}</TableHead><TableHead>{c.percentage}</TableHead><TableHead>{c.commission}</TableHead><TableHead>{c.gym}</TableHead><TableHead>{c.status}</TableHead><TableHead>{c.due}</TableHead><TableHead>{c.actions}</TableHead></TableRow></TableHeader>
             <TableBody>
-              {history.map((item) => <TableRow key={item.id}><TableCell>{item.trainerName}</TableCell><TableCell><div className="font-medium">{item.planName}</div><div className="text-xs text-slate-500">{item.planType}</div></TableCell><TableCell>{item.invoiceNumber}</TableCell><TableCell>{formatCurrency(item.grossAmount, item.currency)}</TableCell><TableCell>{item.commissionPercent}%</TableCell><TableCell>{formatCurrency(item.trainerAmount, item.currency)}</TableCell><TableCell>{formatCurrency(item.gymAmount, item.currency)}</TableCell><TableCell><Badge variant={item.paymentStatus === "paid" ? "default" : "secondary"}>{statusLabel(item.paymentStatus)}</Badge></TableCell><TableCell>{item.dueDate ? formatDate(item.dueDate) : "—"}</TableCell><TableCell>{item.paymentStatus === "earned" ? <Button size="sm" onClick={() => markPaid(item.id)}>{c.markPaid}</Button> : "—"}</TableCell></TableRow>)}
+              {history.map((item) => <TableRow key={item.id}><TableCell>{item.trainerName}</TableCell><TableCell><div className="font-medium">{item.planName}</div><div className="text-xs text-slate-500">{item.planType}</div></TableCell><TableCell>{item.invoiceNumber}</TableCell><TableCell>{formatCurrency(item.grossAmount, item.currency)}</TableCell><TableCell>{item.commissionPercent}%</TableCell><TableCell>{formatCurrency(item.trainerAmount, item.currency)}</TableCell><TableCell>{formatCurrency(item.gymAmount, item.currency)}</TableCell><TableCell><Badge variant={item.paymentStatus === "paid" ? "default" : "secondary"}>{statusLabel(item.paymentStatus)}</Badge></TableCell><TableCell>{item.dueDate ? formatDateTime(item.dueDate) : "—"}</TableCell><TableCell>{item.paymentStatus === "earned" ? <Button size="sm" onClick={() => markPaid(item.id)}>{c.markPaid}</Button> : "—"}</TableCell></TableRow>)}
               {!loading && history.length === 0 && <TableRow><TableCell colSpan={10}><EmptyState compact title={c.none} description={c.noneDescription} /></TableCell></TableRow>}
             </TableBody>
           </Table>
