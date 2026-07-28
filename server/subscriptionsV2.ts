@@ -16,6 +16,7 @@ import {
   assertNoOutstandingSubscriptionPayment,
   normalizePaymentStatus,
 } from "./subscriptionPaymentRules";
+import { upsertTrainerPlanCommission } from "./trainerCommissions";
 
 type PoolProvider = () => Pool | null;
 type AuthenticatedRequest = Request & { user?: { uid?: string; email?: string; role?: string } };
@@ -542,6 +543,14 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
           }),
         ],
       );
+      await upsertTrainerPlanCommission(connection, {
+        subscriptionId: id,
+        invoiceId,
+        invoiceNumber,
+        paymentStatus,
+        dueDate: paymentDate,
+        createdBy: req.user?.email || req.user?.uid || "system",
+      });
       await connection.query(
         "INSERT INTO outbox_events (id, event_type, payload, status) VALUES (?, 'subscription_created', ?, 'pending')",
         [
@@ -761,6 +770,16 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
           }),
         ],
       );
+      if (invoiceId && invoiceNumber) {
+        await upsertTrainerPlanCommission(connection, {
+          subscriptionId: req.params.id,
+          invoiceId,
+          invoiceNumber,
+          paymentStatus,
+          dueDate: paymentDate,
+          createdBy: req.user?.email || req.user?.uid || "system",
+        });
+      }
       await connection.query(
         "INSERT INTO outbox_events (id, event_type, payload, status) VALUES (?, 'subscription_payment_status_changed', ?, 'pending')",
         [createId("evt"), JSON.stringify({
