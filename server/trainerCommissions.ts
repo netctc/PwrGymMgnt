@@ -223,6 +223,20 @@ async function registeredTrainerPerformance(pool: Pool, req: Request) {
 }
 
 export function registerTrainerCommissionRoutes(app: Express, provider: PoolProvider) {
+  app.get("/api/v2/trainer-commissions/employees", requirePermission("membership.read"), async (_req, res, next) => {
+    try {
+      const pool = requirePool(provider);
+      const [rows]: any = await pool.query(
+        `SELECT e.id, CONCAT_WS(' ', e.first_name, e.last_name) AS name,
+                e.email, e.job_title, e.department
+           FROM employees e
+          WHERE e.employment_status = 'active'
+          ORDER BY e.first_name, e.last_name`,
+      );
+      res.json({ employees: rows });
+    } catch (error) { next(error); }
+  });
+
   app.get("/api/v2/trainer-commissions/trainers", requirePermission("membership.read"), async (_req, res, next) => {
     try {
       const pool = requirePool(provider);
