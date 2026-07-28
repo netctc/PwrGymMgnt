@@ -502,6 +502,8 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
           JSON.stringify({
             source: "subscription_v2",
             subscriptionV2Id: id,
+            periodStart: startDate,
+            periodEnd: endDate,
             paymentStatus,
             expectedPaymentDate:
               paymentStatus === "pending" ? paymentDate : null,
@@ -707,6 +709,8 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
             JSON.stringify({
               source: "subscription_v2",
               subscriptionV2Id: req.params.id,
+              periodStart: rows[0].start_date,
+              periodEnd: rows[0].end_date,
               paymentStatus,
               expectedPaymentDate:
                 paymentStatus === "pending" ? paymentDate : null,
