@@ -33,6 +33,7 @@ export default function Layout() {
     { labelKey: 'nav.members', path: '/members', icon: <Users className="w-4 h-4" />, permission: 'membership.read' },
     { labelKey: 'nav.subscriptions', path: '/subscriptions', icon: <CreditCard className="w-4 h-4" />, permission: 'membership.read' },
     { labelKey: 'nav.plans', path: '/plans', icon: <CreditCard className="w-4 h-4" />, permission: 'membership.read' },
+    { labelKey: 'nav.trainerCommissions', path: '/trainer-commissions', icon: <Receipt className="w-4 h-4" />, permission: 'finance.read' },
     { labelKey: 'nav.classes', path: '/classes', icon: <Calendar className="w-4 h-4" />, permission: 'scheduling.read' },
     { labelKey: 'nav.privatePt', path: '/private-classes', icon: <Dumbbell className="w-4 h-4" />, permission: 'scheduling.read' },
     { labelKey: 'nav.employees', path: '/hr?tab=employees', icon: <Users className="w-4 h-4" />, permission: 'hr.read' },
