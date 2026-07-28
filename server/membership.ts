@@ -2,6 +2,7 @@ import crypto from "crypto";
 import dns from "dns/promises";
 import net from "net";
 import { jsPDF } from "jspdf";
+import { autoTable } from "jspdf-autotable";
 import type { Express, NextFunction, Request, Response } from "express";
 import type { Pool } from "mysql2/promise";
 import { z } from "zod";
@@ -192,9 +193,14 @@ async function getMultiUserMemberships(pool: Pool, memberId?: string) {
   return memberships;
 }
 
-async function getMemberPlanMemberships(pool: Pool, memberId?: string) {
+async function getMemberPlanMemberships(pool: Pool, memberId?: string, includeHistorical = false) {
   const params: string[] = [];
   const v2MemberFilter = memberId ? "AND a.member_id = ?" : "";
+  const v2LifecycleFilter = includeHistorical
+    ? ""
+    : `AND a.status IN ('active', 'suspended')
+       AND s.status IN ('active', 'suspended', 'frozen')
+       AND a.end_date >= CURDATE()`;
   if (memberId) params.push(memberId);
   const [v2Rows]: any = await pool.query(
     `SELECT a.member_id, a.id AS affiliation_id, a.subscription_id,
@@ -205,6 +211,7 @@ async function getMemberPlanMemberships(pool: Pool, memberId?: string) {
             pv.id AS plan_version_id, pv.name AS plan_name,
             COALESCE(sp.description, pv.description) AS plan_description,
             pv.plan_type, pv.sessions_unlimited, pv.distribution_model,
+            pv.trainer_id, pv.trainer_name, pv.trainer_commission_percent,
             sc.id AS cycle_id,
             COALESCE(sb.included, 0) AS sessions_included,
             COALESCE(sb.consumed, 0) AS sessions_consumed,
@@ -227,16 +234,18 @@ async function getMemberPlanMemberships(pool: Pool, memberId?: string) {
            AND sb.context_type = 'affiliation'
            AND sb.context_id = a.id)
         )
-      WHERE a.status IN ('active', 'suspended')
-        AND s.status IN ('active', 'suspended', 'frozen')
-        AND a.end_date >= CURDATE()
+      WHERE 1 = 1
+        ${v2LifecycleFilter}
         ${v2MemberFilter}
-      ORDER BY a.member_id, a.is_primary DESC, a.consumption_priority ASC,
-               a.end_date ASC`,
+      ORDER BY a.member_id, a.end_date DESC, a.is_primary DESC,
+               a.consumption_priority ASC`,
     params,
   );
   const legacyParams: string[] = [];
   const legacyMemberFilter = memberId ? "AND ms.member_id = ?" : "";
+  const legacyLifecycleFilter = includeHistorical
+    ? ""
+    : "AND LOWER(TRIM(ms.status)) = 'active' AND ms.end_date >= CURDATE()";
   if (memberId) legacyParams.push(memberId);
   const [legacyRows]: any = await pool.query(
     `SELECT ms.member_id, ms.id AS subscription_id, ms.plan_id,
@@ -244,8 +253,8 @@ async function getMemberPlanMemberships(pool: Pool, memberId?: string) {
             ms.price, ms.currency, sp.description AS plan_description
        FROM member_subscriptions ms
        LEFT JOIN subscription_plans sp ON sp.id = ms.plan_id
-      WHERE LOWER(TRIM(ms.status)) = 'active'
-        AND ms.end_date >= CURDATE()
+      WHERE 1 = 1
+        ${legacyLifecycleFilter}
         ${legacyMemberFilter}
       ORDER BY ms.member_id, ms.end_date ASC`,
     legacyParams,
@@ -270,6 +279,9 @@ async function getMemberPlanMemberships(pool: Pool, memberId?: string) {
       planName: row.plan_name || "",
       description: row.plan_description || null,
       planType: row.plan_type || "individual",
+      trainerId: row.trainer_id || null,
+      trainerName: row.trainer_name || null,
+      trainerCommissionPercent: Number(row.trainer_commission_percent || 0),
       role: row.role || "beneficiary",
       status: row.affiliation_status,
       subscriptionStatus: row.subscription_status,
@@ -296,6 +308,9 @@ async function getMemberPlanMemberships(pool: Pool, memberId?: string) {
       planName: row.plan_name || "",
       description: row.plan_description || null,
       planType: "individual",
+      trainerId: null,
+      trainerName: null,
+      trainerCommissionPercent: 0,
       role: "holder",
       status: row.status,
       subscriptionStatus: row.status,
@@ -1462,6 +1477,7 @@ export function registerMembershipRoutes(app: Express, poolProvider: PoolProvide
       const memberPlanMemberships = await getMemberPlanMemberships(
         pool,
         req.params.id,
+        true,
       );
       const member = mapMember(rows[0]);
       const legacyPlanDescriptions = await getLegacyPlanDescriptions(pool);
@@ -1477,6 +1493,205 @@ export function registerMembershipRoutes(app: Express, poolProvider: PoolProvide
         subscriptions: subs.map(mapSubscription),
         invoices: invoices.map(mapInvoice),
       });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/membership/members/:id/session-history.pdf", requirePermission("membership.read"), async (req: AuthenticatedRequest, res, next) => {
+    try {
+      const pool = await getReadyPool();
+      const [memberRows]: any = await pool.query(
+        "SELECT id, first_name, last_name, email FROM members WHERE id = ? LIMIT 1",
+        [req.params.id],
+      );
+      if (!memberRows.length) return res.status(404).json({ error: "Member not found" });
+      const member = memberRows[0];
+
+      const [planRows]: any = await pool.query(
+        `SELECT pv.name AS plan_name, pv.trainer_name,
+                a.start_date, a.end_date, a.status AS affiliation_status,
+                s.status AS subscription_status,
+                COALESCE(SUM(
+                  sb.included + sb.carried_over + sb.purchased +
+                  sb.adjustments_positive + sb.refunds
+                ), 0) AS sessions_contracted,
+                COALESCE(SUM(sb.consumed + sb.adjustments_negative), 0) AS sessions_consumed,
+                COALESCE(SUM(sb.reserved), 0) AS sessions_reserved,
+                COALESCE(SUM(sb.available), 0) AS sessions_remaining
+           FROM affiliations a
+           JOIN subscriptions s ON s.id = a.subscription_id
+           JOIN plan_versions pv ON pv.id = a.plan_version_id
+           LEFT JOIN subscription_cycles sc ON sc.subscription_id = s.id
+           LEFT JOIN session_balances sb
+             ON sb.cycle_id = sc.id
+            AND (
+              (pv.distribution_model = 'shared'
+               AND sb.context_type = 'subscription' AND sb.context_id = s.id)
+              OR
+              (pv.distribution_model <> 'shared'
+               AND sb.context_type = 'affiliation' AND sb.context_id = a.id)
+            )
+          WHERE a.member_id = ?
+            AND pv.sessions_unlimited = 0
+            AND pv.trainer_id IS NOT NULL
+          GROUP BY pv.name, pv.trainer_name, a.id, a.start_date, a.end_date,
+                   a.status, s.status
+          ORDER BY a.start_date DESC, a.end_date DESC`,
+        [req.params.id],
+      );
+      if (!planRows.length) {
+        return res.status(404).json({
+          error: "This member has no current or historical limited-session plan with an assigned trainer",
+        });
+      }
+
+      const [movementRows]: any = await pool.query(
+        `SELECT COALESCE(ps.start_time, cs.start_time, sm.created_at) AS session_datetime,
+                pv.name AS plan_name,
+                COALESCE(
+                  NULLIF(ps.trainer_name, ''),
+                  NULLIF(cs.trainer_name, ''),
+                  NULLIF(pv.trainer_name, ''),
+                  NULLIF(JSON_UNQUOTE(JSON_EXTRACT(sm.data, '$.trainerName')), ''),
+                  'Not recorded'
+                ) AS trainer_name,
+                CASE
+                  WHEN ps.id IS NOT NULL THEN TIMESTAMPDIFF(MINUTE, ps.start_time, ps.end_time)
+                  WHEN cs.id IS NOT NULL THEN TIMESTAMPDIFF(MINUTE, cs.start_time, cs.end_time)
+                  ELSE CAST(JSON_UNQUOTE(JSON_EXTRACT(sm.data, '$.durationMinutes')) AS UNSIGNED)
+                END AS duration_minutes,
+                CASE
+                  WHEN ps.id IS NOT NULL THEN 'Private PT'
+                  WHEN cs.id IS NOT NULL THEN 'Group class'
+                  WHEN sm.reference_type = 'access_attempt' THEN 'Access control'
+                  ELSE COALESCE(NULLIF(sm.reference_type, ''), 'Manual')
+                END AS session_source,
+                ABS(sm.quantity) AS quantity,
+                CASE WHEN EXISTS (
+                  SELECT 1 FROM session_movements reversal
+                   WHERE reversal.related_movement_id = sm.id
+                     AND reversal.direction = '+'
+                     AND reversal.movement_type IN ('refund', 'adjustment_positive', 'release')
+                ) THEN 'Recovered' ELSE 'Consumed' END AS movement_status
+           FROM session_movements sm
+           JOIN affiliations a ON a.id = sm.affiliation_id
+           JOIN subscriptions s ON s.id = a.subscription_id
+           JOIN plan_versions pv ON pv.id = a.plan_version_id
+           LEFT JOIN private_sessions ps
+             ON sm.reference_id = ps.id
+            AND sm.reference_type IN ('private_session', 'private_pt', 'private_class')
+           LEFT JOIN class_bookings cb
+             ON sm.reference_id = cb.id
+            AND sm.reference_type IN ('class_booking', 'booking')
+           LEFT JOIN class_sessions cs ON cs.id = cb.class_id
+          WHERE a.member_id = ?
+            AND pv.sessions_unlimited = 0
+            AND pv.trainer_id IS NOT NULL
+            AND sm.direction = '-'
+            AND sm.movement_type IN ('consumption', 'adjustment_negative')
+          ORDER BY session_datetime DESC`,
+        [req.params.id],
+      );
+
+      const [pendingRows]: any = await pool.query(
+        `SELECT pv.name AS plan_name, pv.trainer_name,
+                sc.start_date, sc.end_date, sc.status AS cycle_status,
+                sb.included, sb.carried_over, sb.purchased, sb.consumed,
+                sb.reserved, sb.available
+           FROM affiliations a
+           JOIN subscriptions s ON s.id = a.subscription_id
+           JOIN plan_versions pv ON pv.id = a.plan_version_id
+           JOIN subscription_cycles sc ON sc.subscription_id = s.id
+           JOIN session_balances sb
+             ON sb.cycle_id = sc.id
+            AND (
+              (pv.distribution_model = 'shared'
+               AND sb.context_type = 'subscription' AND sb.context_id = s.id)
+              OR
+              (pv.distribution_model <> 'shared'
+               AND sb.context_type = 'affiliation' AND sb.context_id = a.id)
+            )
+          WHERE a.member_id = ?
+            AND pv.sessions_unlimited = 0
+            AND pv.trainer_id IS NOT NULL
+            AND sb.available > 0
+          ORDER BY sc.end_date DESC`,
+        [req.params.id],
+      );
+
+      const memberName = `${member.first_name || ""} ${member.last_name || ""}`.trim();
+      const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
+      doc.setFontSize(18);
+      doc.text("Member plan and session history", 36, 36);
+      doc.setFontSize(10);
+      doc.text(`Member: ${memberName}`, 36, 54);
+      doc.text(`Generated: ${new Date().toISOString()}`, 36, 69);
+
+      autoTable(doc, {
+        startY: 86,
+        head: [["Plan", "Responsible trainer", "Start", "End", "Status", "Contracted", "Consumed", "Reserved", "Remaining"]],
+        body: planRows.map((row: any) => [
+          row.plan_name, row.trainer_name || "Not recorded",
+          formatDisplayDate(row.start_date), formatDisplayDate(row.end_date),
+          `${row.subscription_status} / ${row.affiliation_status}`,
+          Number(row.sessions_contracted || 0), Number(row.sessions_consumed || 0),
+          Number(row.sessions_reserved || 0), Number(row.sessions_remaining || 0),
+        ]),
+        styles: { fontSize: 8 },
+        headStyles: { fillColor: [43, 43, 43] },
+      });
+
+      autoTable(doc, {
+        startY: Number((doc as any).lastAutoTable?.finalY || 86) + 24,
+        head: [["Session date & time", "Plan", "Trainer", "Duration", "Source", "Quantity", "Status"]],
+        body: movementRows.length
+          ? movementRows.map((row: any) => [
+              row.session_datetime ? new Date(row.session_datetime).toLocaleString("en-GB") : "Not recorded",
+              row.plan_name, row.trainer_name,
+              row.duration_minutes ? `${row.duration_minutes} min` : "Not recorded",
+              row.session_source, Number(row.quantity || 0), row.movement_status,
+            ])
+          : [["No consumed sessions recorded", "", "", "", "", "", ""]],
+        styles: { fontSize: 8 },
+        headStyles: { fillColor: [43, 43, 43] },
+      });
+
+      autoTable(doc, {
+        startY: Number((doc as any).lastAutoTable?.finalY || 86) + 24,
+        head: [["Unconsumed sessions by cycle", "Trainer", "Cycle start", "Cycle expiry", "Cycle status", "Included", "Carried", "Purchased", "Consumed", "Reserved", "Remaining"]],
+        body: pendingRows.length
+          ? pendingRows.map((row: any) => [
+              row.plan_name, row.trainer_name || "Not recorded",
+              formatDisplayDate(row.start_date), formatDisplayDate(row.end_date),
+              row.cycle_status, Number(row.included || 0), Number(row.carried_over || 0),
+              Number(row.purchased || 0), Number(row.consumed || 0),
+              Number(row.reserved || 0), Number(row.available || 0),
+            ])
+          : [["No unconsumed sessions remain", "", "", "", "", "", "", "", "", "", ""]],
+        styles: { fontSize: 7 },
+        headStyles: { fillColor: [43, 43, 43] },
+      });
+
+      await pool.query(
+        "INSERT INTO audit_logs (action, details, performed_by) VALUES ('member_session_history_pdf_exported', ?, ?)",
+        [
+          JSON.stringify({
+            memberId: req.params.id,
+            plans: planRows.length,
+            consumedSessionRows: movementRows.length,
+            pendingCycleRows: pendingRows.length,
+          }),
+          req.user?.email || req.user?.uid || "system",
+        ],
+      );
+
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="PowerGym_Session_History_${memberName.replace(/[^A-Za-z0-9_-]/g, "_") || "member"}.pdf"`,
+      );
+      res.send(pdfArrayBufferToBuffer(doc));
     } catch (error) {
       next(error);
     }
