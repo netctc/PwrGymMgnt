@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { addDays, addWeeks, format, isSameDay, startOfWeek, subWeeks } from 'date-fns';
 import { AlertTriangle, Printer, Trash2, UserRoundCheck, Edit3, ToggleLeft, List, CalendarDays } from 'lucide-react';
 import { toast } from 'sonner';
+import { useSearchParams } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { Card, CardContent } from '../components/ui/card';
 import { Button } from '../components/ui/button';
@@ -42,6 +43,8 @@ const daysOfWeek = [
 
 export default function PrivateClasses() {
   const { profile } = useAuth();
+  const [searchParams] = useSearchParams();
+  const initialTodayFilter = searchParams.get('date') === 'today';
   const [classes, setClasses] = useState<PrivateClassSession[]>([]);
   const [members, setMembers] = useState<SchedulingPerson[]>([]);
   const [limitedMembers, setLimitedMembers] = useState<SchedulingPerson[]>([]);
@@ -63,6 +66,26 @@ export default function PrivateClasses() {
   const [branch, setBranch] = useState('General');
   const [notes, setNotes] = useState('');
   const [printTrainerId, setPrintTrainerId] = useState('all');
+  const [viewMode, setViewMode] = useState<'calendar' | 'list'>(
+    searchParams.get('view') === 'list' ? 'list' : 'calendar',
+  );
+  const [listFrom, setListFrom] = useState(
+    initialTodayFilter ? format(new Date(), 'yyyy-MM-dd') : '',
+  );
+  const [listTo, setListTo] = useState(
+    initialTodayFilter ? format(new Date(), 'yyyy-MM-dd') : '',
+  );
+  const [listTrainerId, setListTrainerId] = useState('');
+  const [listClassType, setListClassType] = useState('');
+  const [listPage, setListPage] = useState(1);
+  const [listPageSize, setListPageSize] = useState(25);
+  const [filterRevision, setFilterRevision] = useState(0);
+  const [listPagination, setListPagination] = useState({
+    page: 1,
+    pageSize: 25,
+    total: 0,
+    totalPages: 1,
+  });
 
   const isScheduler = hasClientPermission(profile?.role, 'scheduling.write');
   const weekStart = useMemo(() => startOfWeek(currentDate, { weekStartsOn: 1 }), [currentDate]);
@@ -77,14 +100,38 @@ export default function PrivateClasses() {
     if (!room && response.rooms[0]) setRoom(response.rooms[0]);
   };
 
-  const fetchPrivateClasses = async () => {
+  const fetchPrivateClasses = async (audit = false, requestedPage = listPage) => {
     setLoading(true);
     try {
+      const listFromDate = listFrom
+        ? new Date(`${listFrom}T00:00:00`).toISOString()
+        : undefined;
+      const listToDate = listTo
+        ? new Date(`${listTo}T23:59:59.999`).toISOString()
+        : undefined;
       const response = await schedulingApi.listPrivateClasses({
-        from: weekStart.toISOString(),
-        to: addDays(weekStart, 7).toISOString(),
+        from: viewMode === 'calendar' ? weekStart.toISOString() : listFromDate,
+        to:
+          viewMode === 'calendar'
+            ? addDays(weekStart, 7).toISOString()
+            : listToDate,
+        trainerId:
+          viewMode === 'list' ? listTrainerId || undefined : undefined,
+        classType:
+          viewMode === 'list' ? listClassType || undefined : undefined,
+        page: viewMode === 'list' ? requestedPage : 1,
+        pageSize: viewMode === 'list' ? listPageSize : 200,
+        audit,
       });
       setClasses(response.privateClasses);
+      setListPagination(
+        response.pagination || {
+          page: 1,
+          pageSize: response.privateClasses.length,
+          total: response.privateClasses.length,
+          totalPages: 1,
+        },
+      );
     } catch (error) {
       toast.error(errorMessage(error));
     } finally {
@@ -98,7 +145,7 @@ export default function PrivateClasses() {
 
   useEffect(() => {
     fetchPrivateClasses();
-  }, [weekStart]);
+  }, [weekStart, viewMode, listPage, listPageSize, filterRevision]);
 
   const toggleDay = (dayId: number) => {
     setSelectedDays((current) => current.includes(dayId) ? current.filter((item) => item !== dayId) : [...current, dayId]);
@@ -161,7 +208,6 @@ export default function PrivateClasses() {
   };
 
   // --- List/Management view state ---
-  const [viewMode, setViewMode] = useState<'calendar' | 'list'>('calendar');
   const [editingSession, setEditingSession] = useState<PrivateClassSession | null>(null);
   const [editForm, setEditForm] = useState({ memberId: '', trainerId: '', startTime: '', duration: '60', room: '', level: '', branch: '', notes: '' });
 
@@ -219,15 +265,53 @@ export default function PrivateClasses() {
   const handlePrintScheduledSessions = async () => {
     try {
       await reportsApi.downloadScheduledSessionsPdf('private-pt', {
-        from: format(weekDays[0], 'yyyy-MM-dd'),
-        to: format(weekDays[6], 'yyyy-MM-dd'),
-        trainerId: printTrainerId,
+        from:
+          viewMode === 'list' && listFrom
+            ? listFrom
+            : format(weekDays[0], 'yyyy-MM-dd'),
+        to:
+          viewMode === 'list' && listTo
+            ? listTo
+            : format(weekDays[6], 'yyyy-MM-dd'),
+        trainerId:
+          viewMode === 'list'
+            ? listTrainerId || 'all'
+            : printTrainerId,
       });
       toast.success('Scheduled private/PT sessions PDF generated');
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Failed to generate scheduled PT PDF');
     }
   };
+
+  const applyListFilters = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setListPage(1);
+    await fetchPrivateClasses(true, 1);
+  };
+
+  const clearListFilters = () => {
+    setListFrom('');
+    setListTo('');
+    setListTrainerId('');
+    setListClassType('');
+    setListPage(1);
+    setFilterRevision((current) => current + 1);
+  };
+
+  const upcomingSessions = useMemo(() => {
+    const now = Date.now();
+    const limit = now + 48 * 60 * 60 * 1000;
+    return classes.filter((session) => {
+      const start = new Date(session.startTime).getTime();
+      return (
+        session.status === 'scheduled' &&
+        Number.isFinite(start) &&
+        start >= now &&
+        start <= limit
+      );
+    }).length;
+  }, [classes]);
 
   return (
     <div className="flex flex-col lg:flex-row gap-6 h-full p-2">
@@ -343,7 +427,7 @@ export default function PrivateClasses() {
             <div className="flex items-center gap-2">
               <div className="flex items-center bg-slate-100 rounded-lg p-1">
                 <button type="button" onClick={() => setViewMode('calendar')} className={`px-3 py-2 text-sm font-medium rounded-md ${viewMode === 'calendar' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}><CalendarDays className="h-4 w-4 inline mr-1" />Calendar</button>
-                <button type="button" onClick={() => setViewMode('list')} className={`px-3 py-2 text-sm font-medium rounded-md ${viewMode === 'list' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}><List className="h-4 w-4 inline mr-1" />List</button>
+                <button type="button" onClick={() => { setListPage(1); setViewMode('list'); }} className={`px-3 py-2 text-sm font-medium rounded-md ${viewMode === 'list' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}><List className="h-4 w-4 inline mr-1" />List</button>
               </div>
               {viewMode === 'calendar' && (
                 <div className="flex items-center bg-slate-100 rounded-lg p-1">
@@ -354,11 +438,13 @@ export default function PrivateClasses() {
               )}
             </div>
             <div className="flex flex-col sm:flex-row sm:items-end gap-3">
-              <div className="text-lg font-bold text-slate-800 sm:pb-2">
-                {format(weekDays[0], 'dd/MM/yyyy')} – {format(weekDays[6], 'dd/MM/yyyy')}
-              </div>
+              {viewMode === 'calendar' && (
+                <div className="text-lg font-bold text-slate-800 sm:pb-2">
+                  {format(weekDays[0], 'dd/MM/yyyy')} – {format(weekDays[6], 'dd/MM/yyyy')}
+                </div>
+              )}
               <div className="flex flex-wrap items-end gap-2">
-                <div className="space-y-1">
+                {viewMode === 'calendar' && <div className="space-y-1">
                   <Label className="text-xs text-slate-500">Trainer</Label>
                   <select
                     className="h-9 min-w-[180px] rounded-md border border-slate-200 px-2 text-xs bg-white"
@@ -368,7 +454,7 @@ export default function PrivateClasses() {
                     <option value="all">All trainers</option>
                     {trainers.map((trainer) => <option key={trainer.id} value={trainer.id}>{fullName(trainer)}</option>)}
                   </select>
-                </div>
+                </div>}
                 <Button type="button" size="sm" variant="outline" onClick={handlePrintScheduledSessions} className="h-9">
                   <Printer className="h-3.5 w-3.5" /> Print Scheduled Session
                 </Button>
@@ -377,14 +463,97 @@ export default function PrivateClasses() {
           </div>
         </div>
 
+        {viewMode === 'list' && (
+          <form
+            onSubmit={applyListFilters}
+            className="mb-4 grid grid-cols-1 gap-3 rounded-2xl border border-slate-100 bg-white p-4 shadow-sm sm:grid-cols-2 xl:grid-cols-6"
+          >
+            <div className="space-y-1">
+              <Label htmlFor="privatePtFrom">From</Label>
+              <DateInput id="privatePtFrom" value={listFrom} onChange={setListFrom} />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="privatePtTo">To</Label>
+              <DateInput id="privatePtTo" value={listTo} onChange={setListTo} />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="privatePtTrainer">Trainer</Label>
+              <select
+                id="privatePtTrainer"
+                className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm"
+                value={listTrainerId}
+                onChange={(event) => setListTrainerId(event.target.value)}
+              >
+                <option value="">All trainers</option>
+                {trainers.map((trainer) => (
+                  <option key={trainer.id} value={trainer.id}>{fullName(trainer)}</option>
+                ))}
+              </select>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="privatePtType">Class type / level</Label>
+              <select
+                id="privatePtType"
+                className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm"
+                value={listClassType}
+                onChange={(event) => setListClassType(event.target.value)}
+              >
+                <option value="">All types</option>
+                <option value="Beginner">Beginner</option>
+                <option value="Intermediate">Intermediate</option>
+                <option value="Advanced">Advanced</option>
+              </select>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="privatePtPageSize">Classes per page</Label>
+              <select
+                id="privatePtPageSize"
+                className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm"
+                value={listPageSize}
+                onChange={(event) => {
+                  setListPage(1);
+                  setListPageSize(Number(event.target.value));
+                }}
+              >
+                <option value={10}>10</option>
+                <option value={25}>25</option>
+                <option value={50}>50</option>
+              </select>
+            </div>
+            <div className="flex items-end gap-2">
+              <Button type="submit" disabled={loading}>Apply</Button>
+              <Button type="button" variant="outline" onClick={clearListFilters} disabled={loading}>Clear</Button>
+            </div>
+          </form>
+        )}
+
+        {upcomingSessions > 0 && (
+          <div className="mb-4 flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            <AlertTriangle className="h-4 w-4 shrink-0" />
+            {upcomingSessions} scheduled Private PT {upcomingSessions === 1 ? 'class is' : 'classes are'} starting in the next 48 hours.
+          </div>
+        )}
+
         <ScreenReportActions
           compact
           reportIds={['private-pt-sessions']}
-          params={{ trainerId: printTrainerId }}
+          params={{
+            trainerId:
+              viewMode === 'list' ? listTrainerId || 'all' : printTrainerId,
+            classType: viewMode === 'list' ? listClassType : undefined,
+          }}
           title="Private PT screen PDFs"
           description="Generate private/PT session PDFs for the selected trainer and period."
-          defaultFrom={format(weekDays[0], 'yyyy-MM-dd')}
-          defaultTo={format(weekDays[6], 'yyyy-MM-dd')}
+          defaultFrom={
+            viewMode === 'list' && listFrom
+              ? listFrom
+              : format(weekDays[0], 'yyyy-MM-dd')
+          }
+          defaultTo={
+            viewMode === 'list' && listTo
+              ? listTo
+              : format(weekDays[6], 'yyyy-MM-dd')
+          }
         />
 
         {viewMode === 'calendar' && (
@@ -445,7 +614,8 @@ export default function PrivateClasses() {
 
         {viewMode === 'list' && (
           <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
-            <table className="w-full text-sm">
+            <div className="overflow-x-auto">
+            <table className="w-full min-w-[960px] text-sm">
               <thead className="bg-slate-50 border-b">
                 <tr>
                   <th className="text-left px-4 py-3 font-semibold text-slate-600">Member</th>
@@ -461,7 +631,7 @@ export default function PrivateClasses() {
                 {loading ? (
                   <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-500">Loading...</td></tr>
                 ) : classes.length === 0 ? (
-                  <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-400">No private sessions for this week</td></tr>
+                  <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-400">No private sessions match the selected filters</td></tr>
                 ) : (
                   classes.map((session) => (
                     <tr key={session.id} className="hover:bg-slate-50/60">
@@ -498,6 +668,35 @@ export default function PrivateClasses() {
                 )}
               </tbody>
             </table>
+            </div>
+            <div className="flex flex-col gap-3 border-t border-slate-100 px-4 py-3 text-sm text-slate-600 sm:flex-row sm:items-center sm:justify-between">
+              <span>
+                {listPagination.total === 0
+                  ? 'No classes'
+                  : `Showing ${(listPagination.page - 1) * listPagination.pageSize + 1}–${Math.min(listPagination.page * listPagination.pageSize, listPagination.total)} of ${listPagination.total} classes`}
+              </span>
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={loading || listPagination.page <= 1}
+                  onClick={() => setListPage((page) => Math.max(1, page - 1))}
+                >
+                  Previous
+                </Button>
+                <span>Page {listPagination.page} of {listPagination.totalPages}</span>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={loading || listPagination.page >= listPagination.totalPages}
+                  onClick={() => setListPage((page) => Math.min(listPagination.totalPages, page + 1))}
+                >
+                  Next
+                </Button>
+              </div>
+            </div>
           </div>
         )}
       </div>

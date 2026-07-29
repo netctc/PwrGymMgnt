@@ -381,6 +381,7 @@ export const subscriptionsV2Api = {
     payload: {
       paymentStatus: 'paid' | 'pending';
       paymentDate: string;
+      confirmOutstandingPayment?: boolean;
     } = {
       paymentStatus: 'pending',
       paymentDate: new Date().toISOString().slice(0, 10),

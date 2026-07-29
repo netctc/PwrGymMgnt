@@ -187,6 +187,7 @@ export const membershipApi = {
   listMembers: (params: {
     search?: string;
     status?: string;
+    subscriptionStatus?: string;
     accessedToday?: boolean;
     accessDate?: string;
     currentPlan?: string;
@@ -195,10 +196,12 @@ export const membershipApi = {
     sortBy?: string;
     page?: number;
     pageSize?: number;
+    audit?: boolean;
   } = {}) => {
     const query = new URLSearchParams();
     if (params.search) query.set('search', params.search);
     if (params.status) query.set('status', params.status);
+    if (params.subscriptionStatus) query.set('subscriptionStatus', params.subscriptionStatus);
     if (params.accessedToday) query.set('accessedToday', 'true');
     if (params.accessDate) query.set('accessDate', params.accessDate);
     if (params.currentPlan) query.set('currentPlan', params.currentPlan);
@@ -207,6 +210,7 @@ export const membershipApi = {
     if (params.sortBy) query.set('sortBy', params.sortBy);
     if (params.page) query.set('page', String(params.page));
     if (params.pageSize) query.set('pageSize', String(params.pageSize));
+    if (params.audit) query.set('audit', 'true');
     const suffix = query.toString() ? `?${query}` : '';
     return apiRequest<{
       members: MembershipMember[];
@@ -256,6 +260,7 @@ export const membershipApi = {
       createInvoice?: boolean;
       paymentStatus: 'paid' | 'pending';
       paymentDate: string;
+      confirmOutstandingPayment?: boolean;
     },
   ) =>
     apiRequest<{ subscription: MembershipSubscription; invoice: MembershipInvoice | null }>(

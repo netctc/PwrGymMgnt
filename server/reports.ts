@@ -1749,6 +1749,21 @@ function renderReportPdf(report: ReportData) {
 }
 
 export function registerReportsRoutes(app: Express, poolProvider: PoolProvider) {
+  const auditPdfDownload = async (
+    pool: Pool,
+    req: AuthenticatedRequest,
+    reportId: string,
+    filters: Record<string, unknown>,
+  ) => {
+    await pool.query(
+      `INSERT INTO audit_logs (action, details, performed_by)
+       VALUES ('report_pdf_downloaded', ?, ?)`,
+      [
+        JSON.stringify({ reportId, filters }),
+        req.user?.email || req.user?.uid || "system",
+      ],
+    );
+  };
   app.get("/api/reports/sections", (req: AuthenticatedRequest, res: Response) => {
     const role = req.user?.role || "";
     const sections = REPORT_SECTIONS.filter((section) => canAccessReport(section, role)).map(({ id, label, description }) => ({ id, label, description }));
@@ -1785,6 +1800,7 @@ export function registerReportsRoutes(app: Express, poolProvider: PoolProvider) 
       const filters = parseScreenReportFilters(req.query);
       const report = await buildScreenReport(pool, definition, filters);
       const buffer = renderReportPdf(report);
+      await auditPdfDownload(pool, req, reportId, filters);
 
       res.setHeader("Content-Type", "application/pdf");
       res.setHeader("Content-Disposition", `attachment; filename="${screenReportFilename(reportId)}"`);
@@ -1815,6 +1831,7 @@ export function registerReportsRoutes(app: Express, poolProvider: PoolProvider) 
       const pool = requirePool(poolProvider);
       const report = await buildSingleClassPrintReport(pool, classId);
       const buffer = renderReportPdf(report);
+      await auditPdfDownload(pool, req, "class-session", { classId });
       res.setHeader("Content-Type", "application/pdf");
       res.setHeader("Content-Disposition", `attachment; filename="powergym-class-session-${classId}-${todayDate()}.pdf"`);
       res.setHeader("Content-Length", buffer.length);
@@ -1845,6 +1862,12 @@ export function registerReportsRoutes(app: Express, poolProvider: PoolProvider) 
       const status = sanitizeTextFilter(req.query.status, 32) || "scheduled";
       const report = await buildScheduledClassesPrintReport(pool, fromDate, toDate, trainerId, status);
       const buffer = renderReportPdf(report);
+      await auditPdfDownload(pool, req, "scheduled-classes", {
+        fromDate,
+        toDate,
+        trainerId: trainerId || null,
+        status,
+      });
       res.setHeader("Content-Type", "application/pdf");
       res.setHeader("Content-Disposition", `attachment; filename="powergym-scheduled-classes-${todayDate()}.pdf"`);
       res.setHeader("Content-Length", buffer.length);
@@ -1868,6 +1891,12 @@ export function registerReportsRoutes(app: Express, poolProvider: PoolProvider) 
       const status = sanitizeTextFilter(req.query.status, 32) || "scheduled";
       const report = await buildScheduledPrivatePtPrintReport(pool, fromDate, toDate, trainerId, status);
       const buffer = renderReportPdf(report);
+      await auditPdfDownload(pool, req, "scheduled-private-pt", {
+        fromDate,
+        toDate,
+        trainerId: trainerId || null,
+        status,
+      });
       res.setHeader("Content-Type", "application/pdf");
       res.setHeader("Content-Disposition", `attachment; filename="powergym-scheduled-private-pt-${todayDate()}.pdf"`);
       res.setHeader("Content-Length", buffer.length);
@@ -1893,6 +1922,7 @@ export function registerReportsRoutes(app: Express, poolProvider: PoolProvider) 
       const toDate = normalizeDate(req.query.to, todayDate());
       const report = await buildReportData(pool, sectionId, fromDate, toDate);
       const buffer = renderReportPdf(report);
+      await auditPdfDownload(pool, req, sectionId, { fromDate, toDate });
 
       res.setHeader("Content-Type", "application/pdf");
       res.setHeader("Content-Disposition", `attachment; filename="${reportFilename(sectionId)}"`);

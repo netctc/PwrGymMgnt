@@ -258,6 +258,7 @@ test("limited multi-user plans expose distribution, cycles, immutable movements 
   const reports = read("server/reports.ts");
   const commissions = read("server/trainerCommissions.ts");
   const commissionsPage = read("src/pages/TrainerCommissions.tsx");
+  const dashboardPage = read("src/pages/Dashboard.tsx");
 
   assert.match(management, /holderSessionsPerCycle/);
   assert.match(management, /beneficiarySessionsPerCycle/);
@@ -401,4 +402,15 @@ test("limited multi-user plans expose distribution, cycles, immutable movements 
   assert.match(reports, /import \{ autoTable \} from "jspdf-autotable"/);
   assert.match(reports, /id: "consumed-sessions"/);
   assert.match(reports, /Consumed Sessions Report/);
+  assert.match(dashboardPage, /members\?subscriptionStatus=active/);
+  assert.match(dashboardPage, /private-classes\?view=list&date=today/);
+  assert.match(membership, /subscriptionStatusFilter/);
+  assert.match(privateClassesPage, /Class type \/ level/);
+  assert.match(privateClassesPage, /Classes per page/);
+  assert.match(privateClassesPage, /listPagination/);
+  assert.match(scheduling, /private_pt_filters_applied/);
+  assert.match(lifecycle, /confirmOutstandingPayment/);
+  assert.match(lifecycle, /subscription_renewed_with_outstanding_payment/);
+  assert.match(membership, /member_directory_filters_applied/);
+  assert.match(reports, /report_pdf_downloaded/);
 });

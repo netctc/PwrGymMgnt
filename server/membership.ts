@@ -1202,6 +1202,7 @@ export function registerMembershipRoutes(app: Express, poolProvider: PoolProvide
       const pool = await getReadyPool();
       const search = normalizeString(req.query.search);
       const status = normalizeString(req.query.status);
+      const subscriptionStatusFilter = normalizeString(req.query.subscriptionStatus).toLowerCase();
       const accessDate = normalizeDate(req.query.accessDate);
       const accessedToday = normalizeString(req.query.accessedToday).toLowerCase() === "true";
       const currentPlanFilter = normalizeString(req.query.currentPlan).toLowerCase();
@@ -1311,6 +1312,24 @@ export function registerMembershipRoutes(app: Express, poolProvider: PoolProvide
       ).sort((a, b) => a.localeCompare(b));
       const filteredMembers = enrichedMembers.filter((member: any) => {
         if (
+          subscriptionStatusFilter &&
+          !(member.plans || []).some((plan: any) => {
+            const subscriptionStatus = normalizeString(plan.subscriptionStatus).toLowerCase();
+            const affiliationStatus = normalizeString(plan.status).toLowerCase();
+            const endDate = dateOnly(plan.endDate);
+            if (subscriptionStatusFilter === "active") {
+              return (
+                subscriptionStatus === "active" &&
+                affiliationStatus === "active" &&
+                Boolean(endDate && endDate >= todayDateString())
+              );
+            }
+            return subscriptionStatus === subscriptionStatusFilter;
+          })
+        ) {
+          return false;
+        }
+        if (
           currentPlanFilter &&
           !(member.plans || []).some(
             (plan: any) =>
@@ -1374,6 +1393,33 @@ export function registerMembershipRoutes(app: Express, poolProvider: PoolProvide
       const totalPages = Math.max(1, Math.ceil(total / pageSize));
       const page = Math.min(requestedPage, totalPages);
       const offset = (page - 1) * pageSize;
+      if (
+        normalizeString(req.query.audit).toLowerCase() === "true"
+      ) {
+        await pool.query(
+          `INSERT INTO audit_logs (action, details, performed_by)
+           VALUES ('member_directory_filters_applied', ?, ?)`,
+          [
+            JSON.stringify({
+              search: search || null,
+              memberStatus: status || null,
+              subscriptionStatus: subscriptionStatusFilter || null,
+              currentPlan: currentPlanFilter || null,
+              paymentStatus: paymentStatusFilter || null,
+              expiryDate: expiryDateFilter || null,
+              accessedToday,
+              accessDate: accessDate || null,
+              sortBy,
+              page,
+              pageSize,
+              results: total,
+            }),
+            (req as AuthenticatedRequest).user?.email ||
+              (req as AuthenticatedRequest).user?.uid ||
+              "system",
+          ],
+        );
+      }
       res.json({
         members: filteredMembers.slice(offset, offset + pageSize),
         pagination: {
@@ -1764,12 +1810,15 @@ export function registerMembershipRoutes(app: Express, poolProvider: PoolProvide
           LIMIT 1`,
         [req.params.id],
       );
-      if (outstandingInvoices.length) {
+      const confirmOutstandingPayment =
+        req.body.confirmOutstandingPayment === true;
+      if (outstandingInvoices.length && !confirmOutstandingPayment) {
         await connection.rollback();
         return res.status(409).json({
-          error: `Outstanding payment for invoice ${outstandingInvoices[0].invoice_number} must be settled before renewal`,
+          error: `Outstanding payment for invoice ${outstandingInvoices[0].invoice_number} must be explicitly confirmed before renewal`,
           code: "OUTSTANDING_SUBSCRIPTION_PAYMENT",
           invoiceId: outstandingInvoices[0].id,
+          confirmationRequired: true,
         });
       }
 
@@ -1897,6 +1946,27 @@ export function registerMembershipRoutes(app: Express, poolProvider: PoolProvide
         });
         const [invoiceRows]: any = await connection.query("SELECT * FROM invoices WHERE id = ?", [invoiceId]);
         invoice = mapInvoice(invoiceRows[0]);
+      }
+
+      if (outstandingInvoices.length) {
+        await connection.query(
+          `INSERT INTO audit_logs (action, details, performed_by)
+           VALUES ('subscription_renewed_with_outstanding_payment', ?, ?)`,
+          [
+            JSON.stringify({
+              memberId: req.params.id,
+              renewedSubscriptionId: subscriptionId,
+              previousInvoiceId: outstandingInvoices[0].id,
+              previousInvoiceNumber:
+                outstandingInvoices[0].invoice_number,
+              newInvoiceNumber: invoice?.invoiceNumber || null,
+              operatorConfirmation: true,
+            }),
+            (req as AuthenticatedRequest).user?.email ||
+              (req as AuthenticatedRequest).user?.uid ||
+              "system",
+          ],
+        );
       }
 
       const [subscriptionRows]: any = await connection.query("SELECT * FROM member_subscriptions WHERE id = ?", [subscriptionId]);

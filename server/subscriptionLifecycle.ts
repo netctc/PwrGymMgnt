@@ -194,15 +194,37 @@ export function registerSubscriptionLifecycleRoutes(app: Express, poolProvider: 
       );
       if (subRows.length === 0) return res.status(404).json({ error: "Subscription not found" });
       const sub = subRows[0];
-      if (OUTSTANDING_PAYMENT_STATUSES.includes(sub.payment_status)) {
+      const confirmOutstandingPayment = req.body.confirmOutstandingPayment === true;
+      let outstandingPayment: Record<string, unknown> | null =
+        OUTSTANDING_PAYMENT_STATUSES.includes(sub.payment_status)
+          ? {
+              subscriptionId: sub.id,
+              paymentStatus: sub.payment_status,
+              source: "current_subscription",
+            }
+          : null;
+      try {
+        await assertNoOutstandingSubscriptionPayment(
+          pool,
+          sub.holder_member_id,
+          req.params.id,
+        );
+      } catch (error: any) {
+        if (error?.code !== "OUTSTANDING_SUBSCRIPTION_PAYMENT") throw error;
+        outstandingPayment = {
+          subscriptionId: error.subscriptionId,
+          paymentStatus: error.paymentStatus,
+          source: "another_subscription",
+        };
+      }
+      if (outstandingPayment && !confirmOutstandingPayment) {
         return res.status(409).json({
-          error: "The current subscription payment must be settled before renewal",
+          error: "The current subscription payment must be settled or explicitly confirmed before renewal",
           code: "OUTSTANDING_SUBSCRIPTION_PAYMENT",
-          subscriptionId: sub.id,
-          paymentStatus: sub.payment_status,
+          ...outstandingPayment,
+          confirmationRequired: true,
         });
       }
-      await assertNoOutstandingSubscriptionPayment(pool, sub.holder_member_id, req.params.id);
       const requestedPaymentStatus = normalizeString(req.body.paymentStatus).toLowerCase();
       if (!["paid", "pending"].includes(requestedPaymentStatus)) {
         return res.status(400).json({
@@ -391,6 +413,24 @@ export function registerSubscriptionLifecycleRoutes(app: Express, poolProvider: 
         dueDate: paymentDate,
         createdBy: req.user?.email || req.user?.uid || "system",
       });
+      if (outstandingPayment) {
+        await pool.query(
+          `INSERT INTO audit_logs (action, details, performed_by)
+           VALUES ('subscription_renewed_with_outstanding_payment', ?, ?)`,
+          [
+            JSON.stringify({
+              renewedSubscriptionId: req.params.id,
+              holderMemberId: sub.holder_member_id,
+              invoiceNumber,
+              newStartDate,
+              newEndDate,
+              outstandingPayment,
+              operatorConfirmation: true,
+            }),
+            req.user?.email || req.user?.uid || "system",
+          ],
+        );
+      }
 
       res.json({
         ok: true,

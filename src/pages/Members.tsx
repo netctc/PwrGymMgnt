@@ -183,6 +183,9 @@ function badgeVariant(status?: string) {
 export default function Members() {
   const { locale } = useLocalization();
   const [pageSearchParams, setPageSearchParams] = useSearchParams();
+  const requestedSubscriptionStatusFromUrl =
+    pageSearchParams.get('subscriptionStatus') ||
+    (pageSearchParams.get('filter') === 'active' ? 'active' : '');
   const multiUserCopy = locale === 'ar'
     ? {
         create: 'اشتراك جديد متعدد المستخدمين',
@@ -193,6 +196,9 @@ export default function Members() {
         capacity: 'السعة',
         available: 'المتاح',
         currentPlanFilter: 'الخطة الحالية',
+        subscriptionStatusFilter: 'حالة الاشتراك',
+        allSubscriptionStatuses: 'جميع حالات الاشتراك',
+        activeSubscriptions: 'الاشتراكات النشطة',
         paymentStatusFilter: 'حالة الدفع',
         expiryDateFilter: 'تاريخ الانتهاء',
         sortBy: 'الترتيب حسب',
@@ -237,6 +243,9 @@ export default function Members() {
         capacity: 'Capacity',
         available: 'Available',
         currentPlanFilter: 'Current Plan',
+        subscriptionStatusFilter: 'Subscription Status',
+        allSubscriptionStatuses: 'All subscription statuses',
+        activeSubscriptions: 'Active subscriptions',
         paymentStatusFilter: 'Payment Status',
         expiryDateFilter: 'Expiry Date',
         sortBy: 'Sort by',
@@ -278,6 +287,11 @@ export default function Members() {
     useState<ManagedPlan[]>([]);
   const [search, setSearch] = usePersistentState('powergym.members.search', '');
   const [statusFilter, setStatusFilter] = usePersistentState('powergym.members.statusFilter', '');
+  const [subscriptionStatusFilter, setSubscriptionStatusFilter] =
+    usePersistentState(
+      'powergym.members.subscriptionStatusFilter',
+      requestedSubscriptionStatusFromUrl,
+    );
   const [accessFilter, setAccessFilter] = usePersistentState('powergym.members.accessFilter', '');
   const [accessDate, setAccessDate] = usePersistentState('powergym.members.accessDate', today());
   const [currentPlanFilter, setCurrentPlanFilter] = usePersistentState(
@@ -482,6 +496,7 @@ export default function Members() {
     requestedPage = memberPage,
     requestedPageSize = membersPerPage,
     clearFilters = false,
+    audit = false,
   ) => {
     setLoading(true);
     setError(null);
@@ -489,6 +504,9 @@ export default function Members() {
       const response = await membershipApi.listMembers({
         search: clearFilters ? '' : search,
         status: clearFilters ? '' : statusFilter,
+        subscriptionStatus: clearFilters
+          ? ''
+          : requestedSubscriptionStatusFromUrl || subscriptionStatusFilter,
         accessedToday: !clearFilters && accessFilter === 'today',
         accessDate:
           !clearFilters && accessFilter === 'date' ? accessDate : undefined,
@@ -498,6 +516,7 @@ export default function Members() {
         sortBy: clearFilters ? 'joined_desc' : sortBy,
         page: requestedPage,
         pageSize: requestedPageSize,
+        audit,
       });
       setMembers(response.members);
       setMemberPagination(response.pagination);
@@ -510,6 +529,17 @@ export default function Members() {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    if (!requestedSubscriptionStatusFromUrl) return;
+    setSubscriptionStatusFilter(requestedSubscriptionStatusFromUrl);
+    const next = new URLSearchParams(pageSearchParams);
+    next.delete('subscriptionStatus');
+    next.delete('filter');
+    setPageSearchParams(next, { replace: true });
+    // Consume the dashboard URL filter once, then let the visible select control it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     loadPlans();
@@ -531,12 +561,13 @@ export default function Members() {
   const applyFilters = (event?: FormEvent<HTMLFormElement>) => {
     event?.preventDefault();
     setMemberPage(1);
-    loadMembers(1);
+    loadMembers(1, membersPerPage, false, true);
   };
 
   const clearMemberFilters = () => {
     setSearch('');
     setStatusFilter('');
+    setSubscriptionStatusFilter('');
     setAccessFilter('');
     setAccessDate(today());
     setCurrentPlanFilter('');
@@ -936,6 +967,24 @@ export default function Members() {
       toast.error('Estimated payment date cannot be in the past.');
       return;
     }
+    const hasOutstandingPayment =
+      ['pending', 'partial', 'overdue'].includes(
+        String(renewMember.paymentStatus || '').toLowerCase(),
+      ) ||
+      (renewMember.plans || []).some((plan) =>
+        ['pending', 'partial', 'overdue'].includes(
+          String(plan.paymentStatus || '').toLowerCase(),
+        ),
+      );
+    let confirmOutstandingPayment = false;
+    if (hasOutstandingPayment && subscriptionIntent === 'renew' && renewMode !== 'edit') {
+      confirmOutstandingPayment = window.confirm(
+        locale === 'ar'
+          ? 'لدى هذا العضو دفعات معلّقة. أنت على وشك تجديد الاشتراك دون تحصيل المبلغ السابق. هل تريد المتابعة تحت مسؤوليتك؟ سيتم تسجيل هذه العملية في سجل التدقيق.'
+          : 'This member has outstanding payments. You are about to renew the subscription without collecting the previous balance. Continue under your responsibility? This action will be recorded in the audit trail.',
+      );
+      if (!confirmOutstandingPayment) return;
+    }
     setSaving(true);
     try {
       if (subscriptionIntent === 'new') {
@@ -988,6 +1037,7 @@ export default function Members() {
           {
             paymentStatus: renewPaymentStatus,
             paymentDate: renewPaymentDate,
+            confirmOutstandingPayment,
           },
         );
         toast.success('Subscription renewed and invoice created');
@@ -1002,6 +1052,7 @@ export default function Members() {
         createInvoice: true,
         paymentStatus: renewPaymentStatus,
         paymentDate: renewPaymentDate,
+        confirmOutstandingPayment,
       });
       toast.success('Subscription renewed and invoice created');
       setRenewOpen(false);
@@ -1294,6 +1345,21 @@ The secure QR token is embedded in the attached PDF/QR image.`;
               </select>
             </div>
             <div className="space-y-1">
+              <Label htmlFor="subscriptionStatusFilter">{multiUserCopy.subscriptionStatusFilter}</Label>
+              <select
+                id="subscriptionStatusFilter"
+                className="h-8 w-full rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+                value={subscriptionStatusFilter}
+                onChange={(event) => setSubscriptionStatusFilter(event.target.value)}
+              >
+                <option value="">{multiUserCopy.allSubscriptionStatuses}</option>
+                <option value="active">{multiUserCopy.activeSubscriptions}</option>
+                <option value="suspended">Suspended</option>
+                <option value="expired">Expired</option>
+                <option value="cancelled">Cancelled</option>
+              </select>
+            </div>
+            <div className="space-y-1">
               <Label htmlFor="paymentStatusFilter">{multiUserCopy.paymentStatusFilter}</Label>
               <select
                 id="paymentStatusFilter"
@@ -1384,7 +1450,13 @@ The secure QR token is embedded in the attached PDF/QR image.`;
           <ScreenReportActions
             compact
             reportIds={['members-directory', 'subscriptions-validity', 'invoices-collection']}
-            params={{ status: statusFilter, q: search }}
+            params={{
+              status: statusFilter,
+              subscriptionStatus: subscriptionStatusFilter,
+              paymentStatus: paymentStatusFilter,
+              plan: currentPlanFilter,
+              q: search,
+            }}
             title="Member screen PDFs"
             description="Download member, subscription and collection PDFs using the same status/search context as this screen."
           />

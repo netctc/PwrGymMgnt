@@ -98,7 +98,7 @@ export default function Dashboard() {
             
             <Card className="border-slate-200 shadow-sm border-t-4 border-t-emerald-500">
               <CardHeader className="flex flex-row items-center justify-between pb-2">
-                <Link to="/members?filter=active" className="text-sm font-medium text-slate-600 hover:text-emerald-600 hover:underline transition-colors block p-0">
+                <Link to="/members?subscriptionStatus=active" className="text-sm font-medium text-slate-600 hover:text-emerald-600 hover:underline transition-colors block p-0">
                   Active Subscriptions
                 </Link>
                 <CreditCard className="h-4 w-4 text-emerald-500" />
@@ -110,7 +110,9 @@ export default function Dashboard() {
 
             <Card className="border-slate-200 shadow-sm border-t-4 border-t-amber-500">
               <CardHeader className="flex flex-row items-center justify-between pb-2">
-                <CardTitle className="text-sm font-medium text-slate-600">Classes Today</CardTitle>
+                <Link to="/private-classes?view=list&date=today" className="text-sm font-medium text-slate-600 hover:text-amber-600 hover:underline transition-colors">
+                  Classes Today
+                </Link>
                 <Calendar className="h-4 w-4 text-amber-500" />
               </CardHeader>
               <CardContent>
@@ -120,7 +122,9 @@ export default function Dashboard() {
 
             <Card className="border-slate-200 shadow-sm border-t-4 border-t-rose-500">
               <CardHeader className="flex flex-row items-center justify-between pb-2">
-                <CardTitle className="text-sm font-medium text-slate-600">Occupancy Rate</CardTitle>
+                <Link to="/classes?date=today" className="text-sm font-medium text-slate-600 hover:text-rose-600 hover:underline transition-colors">
+                  Occupancy Rate
+                </Link>
                 <Activity className="h-4 w-4 text-rose-500" />
               </CardHeader>
               <CardContent>

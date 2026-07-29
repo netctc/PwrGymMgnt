@@ -97,7 +97,7 @@ async function apiRequest<T>(url: string, options: ApiOptions = {}): Promise<T> 
   return payload as T;
 }
 
-function toQuery(params: Record<string, string | number | undefined | null>) {
+function toQuery(params: Record<string, string | number | boolean | undefined | null>) {
   const query = new URLSearchParams();
   Object.entries(params).forEach(([key, value]) => {
     if (value !== undefined && value !== null && String(value).trim() !== '') {
@@ -152,8 +152,26 @@ export const schedulingApi = {
   cancelBooking: (bookingId: string) =>
     apiRequest<{ success: boolean; status: string }>(`/api/scheduling/bookings/${encodeURIComponent(bookingId)}`, { method: 'DELETE' }),
 
-  listPrivateClasses: (params: { from?: string; to?: string; trainerId?: string; memberId?: string; status?: string } = {}) =>
-    apiRequest<{ privateClasses: PrivateClassSession[] }>(`/api/scheduling/private-classes${toQuery(params)}`),
+  listPrivateClasses: (params: {
+    from?: string;
+    to?: string;
+    trainerId?: string;
+    memberId?: string;
+    status?: string;
+    classType?: string;
+    page?: number;
+    pageSize?: number;
+    audit?: boolean;
+  } = {}) =>
+    apiRequest<{
+      privateClasses: PrivateClassSession[];
+      pagination: {
+        page: number;
+        pageSize: number;
+        total: number;
+        totalPages: number;
+      };
+    }>(`/api/scheduling/private-classes${toQuery(params)}`),
 
   createPrivateClasses: (payload: {
     memberId: string;

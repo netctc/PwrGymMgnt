@@ -810,7 +810,7 @@ export function registerSchedulingRoutes(app: Express, poolProvider: PoolProvide
     }
   });
 
-  app.get("/api/scheduling/private-classes", async (req, res, next) => {
+  app.get("/api/scheduling/private-classes", async (req: AuthenticatedRequest, res, next) => {
     try {
       const pool = await getReadyPool();
       const from = parseDateTime(req.query.from) || new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
@@ -821,6 +821,18 @@ export function registerSchedulingRoutes(app: Express, poolProvider: PoolProvide
       const trainerId = normalizeString(req.query.trainerId);
       const memberId = normalizeString(req.query.memberId);
       const status = normalizeString(req.query.status);
+      const classType = normalizeString(req.query.classType);
+      const requestedPage = Math.max(
+        1,
+        Number.parseInt(normalizeString(req.query.page) || "1", 10) || 1,
+      );
+      const requestedPageSize = Number.parseInt(
+        normalizeString(req.query.pageSize) || "25",
+        10,
+      );
+      const pageSize = [10, 25, 50, 100, 200].includes(requestedPageSize)
+        ? requestedPageSize
+        : 25;
       if (trainerId) {
         filters.push("trainer_id = ?");
         values.push(trainerId);
@@ -833,12 +845,55 @@ export function registerSchedulingRoutes(app: Express, poolProvider: PoolProvide
         filters.push("status = ?");
         values.push(status);
       }
+      if (classType) {
+        filters.push(
+          "(LOWER(TRIM(level)) = ? OR LOWER(TRIM(JSON_UNQUOTE(JSON_EXTRACT(data, '$.classType')))) = ?)",
+        );
+        values.push(classType.toLowerCase(), classType.toLowerCase());
+      }
 
-      const [rows]: any = await pool.query(
-        `SELECT * FROM private_sessions WHERE ${filters.join(" AND ")} ORDER BY start_time ASC LIMIT 1000`,
+      const [countRows]: any = await pool.query(
+        `SELECT COUNT(*) AS total FROM private_sessions WHERE ${filters.join(" AND ")}`,
         values,
       );
-      res.json({ privateClasses: rows.map(mapPrivateSession) });
+      const total = Number(countRows[0]?.total || 0);
+      const totalPages = Math.max(1, Math.ceil(total / pageSize));
+      const page = Math.min(requestedPage, totalPages);
+      const offset = (page - 1) * pageSize;
+      const [rows]: any = await pool.query(
+        `SELECT * FROM private_sessions
+          WHERE ${filters.join(" AND ")}
+          ORDER BY start_time ASC
+          LIMIT ? OFFSET ?`,
+        [...values, pageSize, offset],
+      );
+      if (
+        normalizeString(req.query.audit).toLowerCase() === "true" &&
+        (trainerId || memberId || status || classType || req.query.from || req.query.to)
+      ) {
+        await pool.query(
+          `INSERT INTO audit_logs (action, details, performed_by)
+           VALUES ('private_pt_filters_applied', ?, ?)`,
+          [
+            JSON.stringify({
+              from: toMysqlDateTime(from),
+              to: toMysqlDateTime(to),
+              trainerId: trainerId || null,
+              memberId: memberId || null,
+              status: status || null,
+              classType: classType || null,
+              page,
+              pageSize,
+              results: total,
+            }),
+            req.user?.email || req.user?.uid || "system",
+          ],
+        );
+      }
+      res.json({
+        privateClasses: rows.map(mapPrivateSession),
+        pagination: { page, pageSize, total, totalPages },
+      });
     } catch (error) {
       next(error);
     }
