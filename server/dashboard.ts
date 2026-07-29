@@ -212,6 +212,11 @@ async function loadHrProfiles(pool: Pool) {
   return selectRows(pool, "hr_profiles", "id, data, created_at, updated_at");
 }
 
+async function loadActiveEmployeeCount(pool: Pool) {
+  const rows = await selectRows(pool, "employees", "id, employment_status");
+  return rows.filter((row) => lower(row.employment_status || "active") === "active").length;
+}
+
 async function loadActiveSubscriptions(pool: Pool) {
   // Canonical source: member_subscriptions only (legacy `subscriptions` migrated in 023)
   const typedRows = await selectRows(pool, "member_subscriptions", "id, member_id, plan_name, status, end_date, data");
@@ -222,13 +227,14 @@ async function loadActiveSubscriptions(pool: Pool) {
 }
 
 async function buildDashboardSummary(pool: Pool) {
-  const [members, users, classes, shifts, hrProfiles, activeSubscriptions] = await Promise.all([
+  const [members, users, classes, shifts, hrProfiles, activeSubscriptions, totalEmployees] = await Promise.all([
     loadMembers(pool),
     loadUsers(pool),
     loadClasses(pool),
     loadShifts(pool),
     loadHrProfiles(pool),
     loadActiveSubscriptions(pool),
+    loadActiveEmployeeCount(pool),
   ]);
 
   const today = startOfLocalDay();
@@ -301,6 +307,7 @@ async function buildDashboardSummary(pool: Pool) {
   const response = {
     kpis: {
       totalMembers: members.length,
+      totalEmployees,
       activeSubscriptions: activeSubscriptions.length || Array.from(planCounts.values()).reduce((sum, value) => sum + value, 0),
       classesToday: todayClasses.length,
       occupancyRate: totalCapacity > 0 ? Math.round((totalEnrolled / totalCapacity) * 100) : 0,

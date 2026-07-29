@@ -102,12 +102,16 @@ export const trainerCommissionsApi = {
     }>(
       `/api/v2/trainer-commissions?${query(filters)}`,
     ),
-  markPaid: (id: string) =>
+  markPaid: (id: string, confirmPendingCustomerPayment = false) =>
     request<{ ok: boolean; paymentStatus: string }>(
       `/api/v2/trainer-commissions/${encodeURIComponent(id)}/pay`,
-      { method: "PATCH" },
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ confirmPendingCustomerPayment }),
+      },
     ),
-  markPartialPaid: (id: string) =>
+  markPartialPaid: (id: string, confirmPendingCustomerPayment = false) =>
     request<{
       ok: boolean;
       paymentStatus: string;
@@ -118,7 +122,11 @@ export const trainerCommissionsApi = {
       sessionsContracted: number;
     }>(
       `/api/v2/trainer-commissions/${encodeURIComponent(id)}/pay-partial`,
-      { method: "PATCH" },
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ confirmPendingCustomerPayment }),
+      },
     ),
   exportCsv: (filters: TrainerCommissionFilters) =>
     download(`/api/v2/trainer-commissions/export.csv?${query(filters)}`, "trainer-commissions.csv"),

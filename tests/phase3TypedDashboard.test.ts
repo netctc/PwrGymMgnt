@@ -11,6 +11,7 @@ test('Phase 3 dashboard API contracts validate expected summary payload shape', 
   const parsed = dashboardSummaryResponseSchema.parse({
     kpis: {
       totalMembers: 12,
+      totalEmployees: 7,
       activeSubscriptions: 10,
       classesToday: 3,
       occupancyRate: 75,

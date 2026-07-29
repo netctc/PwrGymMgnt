@@ -4,6 +4,7 @@ export const isoDateTimeStringSchema = z.string().trim().min(1).max(80);
 
 export const dashboardKpiSchema = z.object({
   totalMembers: z.number().int().nonnegative(),
+  totalEmployees: z.number().int().nonnegative(),
   activeSubscriptions: z.number().int().nonnegative(),
   classesToday: z.number().int().nonnegative(),
   occupancyRate: z.number().min(0).max(100),

@@ -77,7 +77,11 @@ export default function HumanResources() {
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedTab = searchParams.get('tab') || 'employees';
   const activeTab = ['employees', 'attendance', 'payroll'].includes(requestedTab) ? requestedTab : 'employees';
-  const updateActiveTab = (value: string) => setSearchParams({ tab: value });
+  const updateActiveTab = (value: string) => {
+    const nextParams = new URLSearchParams(searchParams);
+    nextParams.set('tab', value);
+    setSearchParams(nextParams);
+  };
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [employees, setEmployees] = useState<Employee[]>([]);
@@ -85,7 +89,9 @@ export default function HumanResources() {
   const [payrollItems, setPayrollItems] = useState<PayrollItem[]>([]);
   const [selectedRun, setSelectedRun] = useState<PayrollRun | null>(null);
   const [search, setSearch] = useState('');
-  const [statusFilter, setStatusFilter] = useState('active');
+  const requestedStatus = searchParams.get('status');
+  const initialStatus = ['active', 'inactive', 'terminated', 'all'].includes(requestedStatus || '') ? requestedStatus! : 'active';
+  const [statusFilter, setStatusFilter] = useState(initialStatus);
   const [showEmployeeDialog, setShowEmployeeDialog] = useState(false);
   const [editingEmployeeId, setEditingEmployeeId] = useState<string | null>(null);
   const [employeeForm, setEmployeeForm] = useState<Partial<Employee>>(emptyEmployeeForm);
@@ -151,6 +157,24 @@ export default function HumanResources() {
     loadData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!requestedStatus || !['active', 'inactive', 'terminated', 'all'].includes(requestedStatus)) return;
+    if (requestedStatus === statusFilter) return;
+    setStatusFilter(requestedStatus);
+    // The explicit Apply action remains available for free-text searches.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [requestedStatus]);
+
+  useEffect(() => {
+    if (statusFilter !== requestedStatus) {
+      const nextParams = new URLSearchParams(searchParams);
+      nextParams.set('tab', activeTab);
+      nextParams.set('status', statusFilter);
+      setSearchParams(nextParams, { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [statusFilter]);
 
   const openCreateEmployee = () => {
     setEditingEmployeeId(null);

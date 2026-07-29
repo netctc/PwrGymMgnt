@@ -44,10 +44,17 @@ export function isAdminSetupEnabled() {
   return isTruthy(process.env.ADMIN_SETUP_ENABLED);
 }
 
+function useSecureSessionCookies() {
+  if (process.env.SESSION_COOKIE_SECURE !== undefined) {
+    return isTruthy(process.env.SESSION_COOKIE_SECURE);
+  }
+  return isProductionEnvironment();
+}
+
 export function getSessionCookieOptions(maxAgeMs = 8 * 60 * 60 * 1000) {
   return {
     httpOnly: true,
-    secure: isProductionEnvironment(),
+    secure: useSecureSessionCookies(),
     sameSite: isProductionEnvironment() ? "strict" as const : "lax" as const,
     maxAge: maxAgeMs,
     path: "/",
@@ -57,7 +64,7 @@ export function getSessionCookieOptions(maxAgeMs = 8 * 60 * 60 * 1000) {
 export function clearSessionCookie(res: Response) {
   res.clearCookie(SESSION_COOKIE_NAME, {
     httpOnly: true,
-    secure: isProductionEnvironment(),
+    secure: useSecureSessionCookies(),
     sameSite: isProductionEnvironment() ? "strict" as const : "lax" as const,
     path: "/",
   });
@@ -90,7 +97,12 @@ export function isAllowedApplicationOrigin(origin: string) {
 }
 
 export function resolveOAuthRedirectUri(candidate: unknown) {
-  const fallback = process.env.GOOGLE_OAUTH_REDIRECT_URI || "http://localhost:3000/api/auth/google/callback";
+  const configuredBaseUrl = process.env.PUBLIC_APP_ORIGIN
+    || process.env.API_PUBLIC_BASE_URL
+    || process.env.DEPLOY_BASE_URL
+    || `http://localhost:${process.env.PORT || 3000}`;
+  const fallback = process.env.GOOGLE_OAUTH_REDIRECT_URI
+    || `${String(configuredBaseUrl).replace(/\/+$/, "")}/api/auth/google/callback`;
   const raw = String(candidate || fallback).trim();
   let parsed: URL;
   try {
@@ -104,7 +116,7 @@ export function resolveOAuthRedirectUri(candidate: unknown) {
   if (!isCallbackPath || !isAllowedOrigin) {
     const fallbackUrl = new URL(fallback);
     if (fallbackUrl.pathname === "/api/auth/google/callback") return fallbackUrl.toString();
-    return "http://localhost:3000/api/auth/google/callback";
+    return fallbackUrl.toString();
   }
 
   return parsed.toString();

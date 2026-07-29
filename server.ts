@@ -388,6 +388,12 @@ async function startServer() {
   app.use(createApiAuditMiddleware(() => pool));
 
   // Swagger configuration
+  const publicBaseUrl = String(
+    process.env.API_PUBLIC_BASE_URL
+      || process.env.DEPLOY_BASE_URL
+      || process.env.PUBLIC_APP_ORIGIN
+      || "/",
+  ).replace(/\/+$/, "") || "/";
   const swaggerOptions = {
     definition: {
       openapi: "3.0.0",
@@ -398,7 +404,7 @@ async function startServer() {
       },
       servers: [
         {
-          url: `http://localhost:${PORT}`,
+          url: publicBaseUrl,
         },
       ],
     },
@@ -1155,7 +1161,8 @@ async function startServer() {
   });
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+    console.log(`Server listening on 0.0.0.0:${PORT}`);
+    if (publicBaseUrl !== "/") console.log(`Public application URL: ${publicBaseUrl}`);
   });
 }
 

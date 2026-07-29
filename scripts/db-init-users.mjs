@@ -19,14 +19,8 @@ function hashPassword(password) {
 }
 
 const SEED_USERS = [
-  { email: 'superadmin@powergym.local', name: 'Super Admin', username: 'superadmin', role: 'super_admin', password: 'Abc.654321' },
-  { email: 'admin@powergym.local', name: 'Admin', username: 'admin', role: 'admin', password: 'Abc.654321' },
-  { email: 'manager@powergym.local', name: 'Manager', username: 'manager', role: 'manager', password: 'Abc.123456' },
-  { email: 'accounting@powergym.local', name: 'Accounting', username: 'accounting', role: 'accounting', password: 'Abc.123456' },
-  { email: 'warehouse@powergym.local', name: 'Warehouse Manager', username: 'warehouse', role: 'warehouse_manager', password: 'Abc.123456' },
-  { email: 'cashier@powergym.local', name: 'Cashier', username: 'cashier', role: 'cashier', password: 'Abc.123456' },
-  { email: 'reception@powergym.local', name: 'Reception', username: 'reception', role: 'reception', password: 'Abc.123456' },
-  { email: 'trainer@powergym.local', name: 'Trainer', username: 'trainer', role: 'trainer', password: 'Abc.123456' },
+  { email: 'super_admin@powergym.local', name: 'Super Admin', username: 'super_admin', role: 'super_admin', password: 'Ab.654321' },
+  { email: 'admin@powergym.local', name: 'Admin', username: 'admin', role: 'admin', password: 'Ab.654321' },
 ];
 
 async function main() {

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
-import { Users, CreditCard, Calendar, Activity, QrCode, AlertTriangle, ArrowRight, CheckCircle2 } from 'lucide-react';
+import { Users, CreditCard, Calendar, TrendingUp, QrCode, AlertTriangle, ArrowRight, CheckCircle2 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { Link } from 'react-router-dom';
 import { dashboardApi } from '../lib/dashboardApi';
@@ -26,9 +26,9 @@ function moduleLabel(moduleName: string) {
 export default function Dashboard() {
   const { profile } = useAuth();
   const [totalMembers, setTotalMembers] = useState(0);
+  const [totalEmployees, setTotalEmployees] = useState(0);
   const [activeSubscriptions, setActiveSubscriptions] = useState(0);
   const [classesToday, setClassesToday] = useState(0);
-  const [occupancyRate, setOccupancyRate] = useState(0);
   const [chartData, setChartData] = useState<any[]>([]);
   const [pieData, setPieData] = useState<any[]>([]);
   const [signupsData, setSignupsData] = useState<any[]>([]);
@@ -49,9 +49,9 @@ export default function Dashboard() {
       try {
         const summary = await dashboardApi.getSummary();
         setTotalMembers(summary.kpis.totalMembers);
+        setTotalEmployees(summary.kpis.totalEmployees);
         setActiveSubscriptions(summary.kpis.activeSubscriptions);
         setClassesToday(summary.kpis.classesToday);
-        setOccupancyRate(summary.kpis.occupancyRate);
         setChartData(summary.weeklyClasses);
         setPieData(summary.membershipDistribution);
         setSignupsData(summary.signups);
@@ -73,9 +73,20 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-8">
-      <div>
-        <h1 className="text-3xl font-bold text-slate-900 tracking-tight">Welcome back, {profile.firstName}</h1>
-        <p className="text-slate-500 mt-2">Here's what's happening today.</p>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h1 className="text-3xl font-bold text-slate-900 tracking-tight">Welcome back, {profile.firstName}</h1>
+          <p className="text-slate-500 mt-2">Here's what's happening today.</p>
+        </div>
+        {canUseOperationalDashboard && (
+          <Link
+            to="/evolution"
+            className="inline-flex items-center gap-2 self-start rounded-md border border-indigo-200 bg-white px-4 py-2 text-sm font-medium text-indigo-700 shadow-sm transition-colors hover:bg-indigo-50"
+          >
+            <TrendingUp className="h-4 w-4" />
+            Dashboard Evolution
+          </Link>
+        )}
       </div>
 
       {/* Session Balance Widget — visible to members with limited plans */}
@@ -122,13 +133,13 @@ export default function Dashboard() {
 
             <Card className="border-slate-200 shadow-sm border-t-4 border-t-rose-500">
               <CardHeader className="flex flex-row items-center justify-between pb-2">
-                <Link to="/classes?date=today" className="text-sm font-medium text-slate-600 hover:text-rose-600 hover:underline transition-colors">
-                  Occupancy Rate
+                <Link to="/hr?tab=employees&status=active" className="text-sm font-medium text-slate-600 hover:text-rose-600 hover:underline transition-colors">
+                  Total Employees
                 </Link>
-                <Activity className="h-4 w-4 text-rose-500" />
+                <Users className="h-4 w-4 text-rose-500" />
               </CardHeader>
               <CardContent>
-                <div className="text-3xl font-bold text-slate-800">{occupancyRate}%</div>
+                <div className="text-3xl font-bold text-slate-800">{totalEmployees}</div>
               </CardContent>
             </Card>
           </div>
