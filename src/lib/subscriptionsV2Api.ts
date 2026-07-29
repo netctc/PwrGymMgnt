@@ -37,6 +37,8 @@ export type SubscriptionV2 = {
   planVersionId: string;
   planName: string;
   planType: string;
+  trainerId?: string | null;
+  trainerName?: string | null;
   holderMemberId: string;
   holderFirstName?: string;
   holderLastName?: string;
@@ -192,6 +194,22 @@ function toQuery(params: Record<string, string | undefined | null>) {
   return suffix ? `?${suffix}` : '';
 }
 
+async function downloadFile(url: string, filename: string) {
+  const response = await fetch(url, { credentials: 'include' });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error || `Download failed with ${response.status}`);
+  }
+  const href = URL.createObjectURL(await response.blob());
+  const anchor = document.createElement('a');
+  anchor.href = href;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(href);
+}
+
 export const subscriptionsV2Api = {
   // Plan Versions
   listPlanVersions: (params: { planId?: string } = {}) =>
@@ -207,12 +225,19 @@ export const subscriptionsV2Api = {
     memberStatus?: string;
     paymentStatus?: string;
     planId?: string;
+    planType?: string;
+    trainerId?: string;
+    from?: string;
+    to?: string;
     sessions?: string;
     search?: string;
   } = {}) =>
     apiRequest<{
       subscriptions: SubscriptionV2[];
-      filterOptions?: { plans: Array<{ id: string; name: string }> };
+      filterOptions?: {
+        plans: Array<{ id: string; name: string }>;
+        trainers: Array<{ id: string; name: string }>;
+      };
     }>(`/api/v2/subscriptions${toQuery(params)}`),
 
   createSubscription: (payload: { planVersionId: string; holderMemberId: string; startDate?: string; endDate?: string; paymentStatus?: string; paymentDate?: string }) =>
@@ -231,6 +256,12 @@ export const subscriptionsV2Api = {
   getSessionSummary: (id: string) =>
     apiRequest<{ summary: SessionSummary }>(
       `/api/v2/subscriptions/${encodeURIComponent(id)}/session-summary`,
+    ),
+
+  downloadSessionHistoryPdf: (id: string) =>
+    downloadFile(
+      `/api/v2/subscriptions/${encodeURIComponent(id)}/session-history.pdf`,
+      `subscription-session-history-${id}.pdf`,
     ),
 
   // Subscription Members
