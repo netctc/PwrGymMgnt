@@ -223,6 +223,7 @@ async function settleCommission(
   commissionId: string,
   paymentType: "partial" | "full",
   authorizedBy: string,
+  confirmPendingCustomerPayment = false,
 ) {
   const connection = await pool.getConnection();
   try {
@@ -235,10 +236,17 @@ async function settleCommission(
     if (!commission) {
       throw Object.assign(new Error("Commission not found"), { status: 404 });
     }
-    if (!["earned", "partially_paid"].includes(commission.payment_status)) {
+    if (!["pending", "earned", "partially_paid"].includes(commission.payment_status)) {
       throw Object.assign(
-        new Error("Only earned or partially paid commissions can be settled"),
+        new Error("Only pending, earned or partially paid commissions can be settled"),
         { status: 409, code: "COMMISSION_NOT_PAYABLE" },
+      );
+    }
+    const customerPaymentOverride = commission.payment_status === "pending";
+    if (customerPaymentOverride && !confirmPendingCustomerPayment) {
+      throw Object.assign(
+        new Error("Customer payment is still pending. Explicit confirmation is required to pay this commission under the operator's responsibility."),
+        { status: 409, code: "PENDING_CUSTOMER_PAYMENT_CONFIRMATION_REQUIRED" },
       );
     }
 
@@ -298,6 +306,53 @@ async function settleCommission(
       ? `trainer_commission_partial:${commissionId}:${sessionsConsumed}:${Math.round(amountPaid * 100)}`
       : `trainer_commission_full:${commissionId}`;
 
+    if (customerPaymentOverride) {
+      await connection.query(
+        `INSERT INTO finance_transactions
+          (id, type, category, amount, transaction_date, source, reference_type,
+           reference_id, description, status, created_by, approved_by, data)
+         VALUES (?, 'expense', 'Trainer Plan Commission', ?, CURDATE(),
+                 'trainer_commission', 'trainer_plan_commission', ?, ?, 'posted', ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+           amount = VALUES(amount),
+           status = 'posted',
+           approved_by = VALUES(approved_by),
+           data = VALUES(data),
+           updated_at = CURRENT_TIMESTAMP`,
+        [
+          createId("ftx"),
+          commissionTotal,
+          commissionId,
+          `Trainer commission ${commission.invoice_number} - ${commission.trainer_name} - ${commission.plan_name}`,
+          authorizedBy,
+          authorizedBy,
+          JSON.stringify({
+            source: "trainer_plan_commission",
+            subscriptionId: commission.subscription_id,
+            invoiceId: commission.invoice_id,
+            invoiceNumber: commission.invoice_number,
+            trainerId: commission.trainer_id,
+            customerPaymentPendingOverride: true,
+            authorizedBy,
+            separateFromPayroll: true,
+          }),
+        ],
+      );
+      await connection.query(
+        "INSERT INTO audit_logs (action, details, performed_by) VALUES ('trainer_commission_paid_before_customer_collection', ?, ?)",
+        [
+          JSON.stringify({
+            commissionId,
+            invoiceNumber: commission.invoice_number,
+            subscriptionId: commission.subscription_id,
+            paymentType,
+            acknowledgedResponsibility: true,
+          }),
+          authorizedBy,
+        ],
+      );
+    }
+
     await connection.query(
       `INSERT INTO trainer_commission_payments
         (id, commission_id, payment_type, amount, commission_total,
@@ -316,6 +371,7 @@ async function settleCommission(
           invoiceNumber: commission.invoice_number,
           subscriptionId: commission.subscription_id,
           proportionalToConsumedSessions: paymentType === "partial",
+          customerPaymentPendingOverride: customerPaymentOverride,
         }),
       ],
     );
@@ -330,12 +386,13 @@ async function settleCommission(
               data = JSON_SET(
                 COALESCE(data, JSON_OBJECT()),
                 '$.lastSettlementBy', ?,
-                '$.lastSettlementType', ?
+                '$.lastSettlementType', ?,
+                '$.customerPaymentPendingOverride', ?
               )
         WHERE id = ?`,
       [
         paymentStatus, newAmountPaid, balanceAfter, sessionsPaidAfter,
-        paymentStatus, authorizedBy, paymentType, commissionId,
+        paymentStatus, authorizedBy, paymentType, customerPaymentOverride, commissionId,
       ],
     );
 
@@ -368,6 +425,7 @@ async function settleCommission(
           balanceAfter,
           accountingTreatment: "commission_liability_settlement_no_duplicate_expense",
           separateFromPayroll: true,
+          customerPaymentPendingOverride: customerPaymentOverride,
         }),
       ],
     );
@@ -389,6 +447,7 @@ async function settleCommission(
           sessionsConsumed,
           sessionsContracted,
           invoiceNumber: commission.invoice_number,
+          customerPaymentPendingOverride: customerPaymentOverride,
         }),
         authorizedBy,
       ],
@@ -645,6 +704,7 @@ export function registerTrainerCommissionRoutes(app: Express, provider: PoolProv
         req.params.id,
         "full",
         req.user?.email || req.user?.uid || "system",
+        req.body.confirmPendingCustomerPayment === true,
       );
       res.json(result);
     } catch (error) { next(error); }
@@ -657,6 +717,7 @@ export function registerTrainerCommissionRoutes(app: Express, provider: PoolProv
         req.params.id,
         "partial",
         req.user?.email || req.user?.uid || "system",
+        req.body.confirmPendingCustomerPayment === true,
       );
       res.json(result);
     } catch (error) { next(error); }
