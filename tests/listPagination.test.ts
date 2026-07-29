@@ -46,9 +46,14 @@ test('warehouse lists do not truncate products or recent sales with fixed slices
 
 test('member report exposes requested plan, subscription and payment filters', () => {
   const reports = source('server/reports.ts');
-  assert.match(reports, /id: "currentPlan", label: "Current Plan"/);
+  assert.match(reports, /id: "currentPlan", label: "Current Plan", type: "select"/);
   assert.match(reports, /id: "subscriptionStatus", label: "Subscription Status"/);
   assert.match(reports, /id: "paymentStatus", label: "Payment Status"/);
+  assert.match(reports, /loadMembersDirectoryFilterOptions/);
+  assert.match(reports, /maintenance_list_items/);
+  assert.match(reports, /GROUP_CONCAT\(DISTINCT active_plans\.plan_name/);
+  assert.match(reports, /customFilters:[\s\S]*currentPlan:[\s\S]*filter_affiliation/);
+  assert.doesNotMatch(reports, /id: "currentPlan", label: "Current Plan", type: "text"/);
 });
 
 test('member and payment statuses are loaded from maintenance lists', () => {

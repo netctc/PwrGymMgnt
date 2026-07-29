@@ -64,6 +64,7 @@ type ScreenReportDefinition = {
   dateColumn?: string;
   filters: ReportFilterDefinition[];
   exactFilters?: Record<string, string>;
+  customFilters?: Record<string, string>;
   likeFilters?: Record<string, string[]>;
   numericFilters?: Record<string, string>;
   limit?: number;
@@ -188,7 +189,7 @@ const SCREEN_REPORTS: ScreenReportDefinition[] = [
     title: "Members Directory Report",
     subtitle: "Member records filtered by date, status, member and search text",
     tableTitle: "Members",
-    columns: ["ID", "Name", "Email", "Phone", "Status", "Plan", "Expiry", "Join Date", "Subscription", "Subscription Status", "Payment Status", "Open Invoices"],
+    columns: ["Name", "Email", "Phone", "Current Plan", "Expiry", "Join Date", "Status", "Payment Status", "Open Invoices"],
     baseSql: `SELECT
        m.id,
        CONCAT_WS(' ', m.first_name, m.last_name) AS name,
@@ -196,27 +197,74 @@ const SCREEN_REPORTS: ScreenReportDefinition[] = [
        m.phone,
        CASE
          WHEN LOWER(TRIM(m.status)) = 'active'
-          AND current_subscription.valid_until IS NOT NULL
-          AND DATE(current_subscription.valid_until) < CURDATE()
+          AND member_expiry.valid_until IS NOT NULL
+          AND DATE(member_expiry.valid_until) < CURDATE()
          THEN 'expired'
          ELSE m.status
        END AS effective_status,
-       COALESCE(m.plan, '') AS plan,
-       current_subscription.valid_until AS expiry,
+       COALESCE(current_subscription.current_plans, m.plan, '') AS current_plan,
+       COALESCE(current_subscription.valid_until, member_expiry.valid_until) AS expiry,
        DATE(m.join_date) AS join_date,
-       current_subscription.subscription_plan,
-       current_subscription.subscription_status,
-       current_invoice.payment_status,
+       CASE
+         WHEN current_subscription.payment_status = 'paid' THEN 'paid'
+         WHEN current_subscription.member_id IS NOT NULL THEN 'pending'
+         WHEN current_invoice.payment_status = 'paid' THEN 'paid'
+         WHEN current_invoice.payment_status IS NOT NULL THEN 'pending'
+         ELSE NULL
+       END AS payment_status,
        (SELECT COUNT(*) FROM invoices inv WHERE inv.member_id = m.id AND inv.status IN ('issued','overdue','unpaid')) AS open_invoices
      FROM members m
      LEFT JOIN (
-       SELECT ranked.member_id, ranked.plan_name AS subscription_plan, ranked.status AS subscription_status, ranked.end_date AS valid_until
+       SELECT active_plans.member_id,
+              GROUP_CONCAT(DISTINCT active_plans.plan_name ORDER BY active_plans.plan_name SEPARATOR '\n') AS current_plans,
+              MAX(active_plans.end_date) AS valid_until,
+              CASE
+                WHEN SUM(active_plans.payment_status <> 'paid' OR active_plans.payment_status IS NULL) > 0 THEN 'pending'
+                ELSE 'paid'
+              END AS payment_status
        FROM (
-         SELECT ms.member_id, ms.plan_name, ms.status, ms.end_date, ROW_NUMBER() OVER (PARTITION BY ms.member_id ORDER BY ms.end_date DESC, ms.updated_at DESC) AS rn
+         SELECT a.member_id, pv.name AS plan_name, a.end_date, s.payment_status
+         FROM affiliations a
+         JOIN subscriptions s ON s.id = a.subscription_id
+         JOIN plan_versions pv ON pv.id = a.plan_version_id
+         WHERE a.status IN ('active', 'suspended')
+           AND s.status IN ('active', 'suspended', 'frozen')
+           AND a.end_date >= CURDATE()
+         UNION ALL
+         SELECT ms.member_id, ms.plan_name, ms.end_date,
+                CASE WHEN latest_invoice.status = 'paid' THEN 'paid' ELSE 'pending' END AS payment_status
          FROM member_subscriptions ms
-       ) ranked
-       WHERE ranked.rn = 1
+         LEFT JOIN invoices latest_invoice ON latest_invoice.id = (
+           SELECT inv.id
+           FROM invoices inv
+           WHERE inv.subscription_id = ms.id
+           ORDER BY inv.created_at DESC
+           LIMIT 1
+         )
+         WHERE LOWER(TRIM(ms.status)) = 'active'
+           AND ms.end_date >= CURDATE()
+           AND NOT EXISTS (
+             SELECT 1 FROM subscriptions migrated
+             WHERE migrated.legacy_subscription_id = ms.id
+           )
+       ) active_plans
+       GROUP BY active_plans.member_id
      ) current_subscription ON current_subscription.member_id = m.id
+     LEFT JOIN (
+       SELECT membership_dates.member_id, MAX(membership_dates.end_date) AS valid_until
+       FROM (
+         SELECT a.member_id, a.end_date
+         FROM affiliations a
+         JOIN subscriptions s ON s.id = a.subscription_id
+         WHERE a.status IN ('active', 'suspended')
+           AND s.status IN ('active', 'suspended', 'frozen')
+         UNION ALL
+         SELECT ms.member_id, ms.end_date
+         FROM member_subscriptions ms
+         WHERE LOWER(TRIM(ms.status)) = 'active'
+       ) membership_dates
+       GROUP BY membership_dates.member_id
+     ) member_expiry ON member_expiry.member_id = m.id
      LEFT JOIN (
        SELECT ranked.member_id, ranked.status AS payment_status
        FROM (
@@ -227,9 +275,37 @@ const SCREEN_REPORTS: ScreenReportDefinition[] = [
      ) current_invoice ON current_invoice.member_id = m.id`,
     orderBy: "ORDER BY m.created_at DESC, m.last_name ASC",
     dateColumn: "m.join_date",
-    filters: [...COMMON_DATE_FILTERS, { id: "status", label: "Status", type: "select", options: STATUS_OPTIONS }, { id: "currentPlan", label: "Current Plan", type: "text", placeholder: "Plan name" }, { id: "subscriptionStatus", label: "Subscription Status", type: "select", options: STATUS_OPTIONS }, { id: "paymentStatus", label: "Payment Status", type: "select", options: STATUS_OPTIONS }, { id: "memberId", label: "Member ID", type: "text", placeholder: "Exact member ID" }, { id: "q", label: "Search", type: "text", placeholder: "Name, email or phone" }],
-    exactFilters: { status: "CASE WHEN LOWER(TRIM(m.status)) = 'active' AND current_subscription.valid_until IS NOT NULL AND DATE(current_subscription.valid_until) < CURDATE() THEN 'expired' ELSE m.status END", subscriptionStatus: "current_subscription.subscription_status", paymentStatus: "current_invoice.payment_status", memberId: "m.id" },
-    likeFilters: { currentPlan: ["current_subscription.subscription_plan", "m.plan"], q: ["m.first_name", "m.last_name", "m.email", "m.phone", "m.plan"] },
+    filters: [...COMMON_DATE_FILTERS, { id: "currentPlan", label: "Current Plan", type: "select", options: [] }, { id: "subscriptionStatus", label: "Subscription Status", type: "select", options: [] }, { id: "paymentStatus", label: "Payment Status", type: "select", options: [] }, { id: "memberId", label: "Member ID", type: "text", placeholder: "Exact member ID" }, { id: "q", label: "Search", type: "text", placeholder: "Name, email or phone" }],
+    exactFilters: {
+      subscriptionStatus: "CASE WHEN LOWER(TRIM(m.status)) = 'active' AND member_expiry.valid_until IS NOT NULL AND DATE(member_expiry.valid_until) < CURDATE() THEN 'expired' ELSE LOWER(TRIM(m.status)) END",
+      paymentStatus: "CASE WHEN current_subscription.payment_status = 'paid' THEN 'paid' WHEN current_subscription.member_id IS NOT NULL THEN 'pending' WHEN current_invoice.payment_status = 'paid' THEN 'paid' WHEN current_invoice.payment_status IS NOT NULL THEN 'pending' ELSE NULL END",
+      memberId: "m.id",
+    },
+    customFilters: {
+      currentPlan: `(EXISTS (
+        SELECT 1
+        FROM affiliations filter_affiliation
+        JOIN subscriptions filter_subscription ON filter_subscription.id = filter_affiliation.subscription_id
+        JOIN plan_versions filter_plan ON filter_plan.id = filter_affiliation.plan_version_id
+        WHERE filter_affiliation.member_id = m.id
+          AND filter_affiliation.status IN ('active', 'suspended')
+          AND filter_subscription.status IN ('active', 'suspended', 'frozen')
+          AND filter_affiliation.end_date >= CURDATE()
+          AND LOWER(TRIM(filter_plan.name)) = LOWER(TRIM(?))
+      ) OR EXISTS (
+        SELECT 1
+        FROM member_subscriptions filter_legacy
+        WHERE filter_legacy.member_id = m.id
+          AND LOWER(TRIM(filter_legacy.status)) = 'active'
+          AND filter_legacy.end_date >= CURDATE()
+          AND LOWER(TRIM(filter_legacy.plan_name)) = LOWER(TRIM(?))
+          AND NOT EXISTS (
+            SELECT 1 FROM subscriptions filter_migrated
+            WHERE filter_migrated.legacy_subscription_id = filter_legacy.id
+          )
+      ))`,
+    },
+    likeFilters: { q: ["m.first_name", "m.last_name", "m.email", "m.phone", "m.plan", "current_subscription.current_plans"] },
   },
   {
     id: "subscriptions-validity",
@@ -1531,6 +1607,15 @@ function addScreenReportWhere(definition: ScreenReportDefinition, filters: Parse
     }
   }
 
+  for (const [filterId, condition] of Object.entries(definition.customFilters || {})) {
+    const value = sanitizeTextFilter(filters.values[filterId]);
+    if (value) {
+      where.push(condition);
+      const placeholderCount = (condition.match(/\?/g) || []).length;
+      params.push(...Array.from({ length: placeholderCount }, () => value));
+    }
+  }
+
   for (const [filterId, column] of Object.entries(definition.numericFilters || {})) {
     const value = sanitizeNumericFilter(filters.values[filterId]);
     if (value) {
@@ -1549,6 +1634,149 @@ function addScreenReportWhere(definition: ScreenReportDefinition, filters: Parse
 
   const whereSql = where.length > 0 ? ` WHERE ${where.join(" AND ")}` : "";
   return { whereSql, params };
+}
+
+function optionLabel(value: string) {
+  return value
+    .split(/[_-]+/)
+    .filter(Boolean)
+    .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+    .join(" ");
+}
+
+function mergeFilterOptions(
+  referenceRows: Array<{ value?: unknown; label?: unknown }>,
+  actualRows: Array<{ value?: unknown }>,
+  fallback: Array<{ value: string; label: string }>,
+) {
+  const options = new Map<string, { value: string; label: string }>();
+  const append = (rawValue: unknown, rawLabel?: unknown) => {
+    const value = sanitizeTextFilter(rawValue, 120).toLowerCase();
+    if (!value || options.has(value)) return;
+    const label = sanitizeTextFilter(rawLabel, 120) || optionLabel(value);
+    options.set(value, { value, label });
+  };
+  referenceRows.forEach((row) => append(row.value, row.label));
+  actualRows.forEach((row) => append(row.value));
+  if (!options.size) fallback.forEach((option) => append(option.value, option.label));
+  return Array.from(options.values());
+}
+
+async function loadMembersDirectoryFilterOptions(pool: Pool) {
+  const [planRows, maintenanceRows, actualStatusRows, actualPaymentRows] = await Promise.all([
+    queryRows(
+      pool,
+      `SELECT DISTINCT active_plans.plan_name AS value
+       FROM (
+         SELECT pv.name AS plan_name
+         FROM affiliations a
+         JOIN subscriptions s ON s.id = a.subscription_id
+         JOIN plan_versions pv ON pv.id = a.plan_version_id
+         WHERE a.status IN ('active', 'suspended')
+           AND s.status IN ('active', 'suspended', 'frozen')
+           AND a.end_date >= CURDATE()
+         UNION ALL
+         SELECT ms.plan_name
+         FROM member_subscriptions ms
+         WHERE LOWER(TRIM(ms.status)) = 'active'
+           AND ms.end_date >= CURDATE()
+           AND NOT EXISTS (
+             SELECT 1 FROM subscriptions migrated
+             WHERE migrated.legacy_subscription_id = ms.id
+           )
+       ) active_plans
+       WHERE TRIM(COALESCE(active_plans.plan_name, '')) <> ''
+       ORDER BY active_plans.plan_name`,
+    ),
+    queryRows(
+      pool,
+      `SELECT ml.list_key, mli.item_code AS value, mli.label_en AS label
+       FROM maintenance_lists ml
+       JOIN maintenance_list_items mli ON mli.list_id = ml.id
+       WHERE ml.status = 'active'
+         AND mli.status = 'active'
+         AND ml.list_key IN ('member_status', 'member_statuses', 'payment_status', 'payment_statuses')
+       ORDER BY ml.list_key, mli.sort_order, mli.label_en`,
+    ),
+    queryRows(
+      pool,
+      `SELECT DISTINCT effective_status AS value
+       FROM (
+         SELECT CASE
+           WHEN LOWER(TRIM(m.status)) = 'active'
+            AND current_subscription.valid_until IS NOT NULL
+            AND DATE(current_subscription.valid_until) < CURDATE()
+           THEN 'expired'
+           ELSE LOWER(TRIM(m.status))
+         END AS effective_status
+         FROM members m
+         LEFT JOIN (
+           SELECT member_id, MAX(end_date) AS valid_until
+           FROM (
+             SELECT a.member_id, a.end_date
+             FROM affiliations a
+             JOIN subscriptions s ON s.id = a.subscription_id
+             WHERE a.status IN ('active', 'suspended')
+               AND s.status IN ('active', 'suspended', 'frozen')
+             UNION ALL
+             SELECT ms.member_id, ms.end_date
+             FROM member_subscriptions ms
+             WHERE LOWER(TRIM(ms.status)) = 'active'
+           ) membership_dates
+           GROUP BY member_id
+         ) current_subscription ON current_subscription.member_id = m.id
+       ) member_statuses
+       WHERE TRIM(COALESCE(effective_status, '')) <> ''
+       ORDER BY effective_status`,
+    ),
+    queryRows(
+      pool,
+      `SELECT DISTINCT visible_status AS value
+       FROM (
+         SELECT CASE WHEN s.payment_status = 'paid' THEN 'paid' ELSE 'pending' END AS visible_status
+         FROM affiliations a
+         JOIN subscriptions s ON s.id = a.subscription_id
+         WHERE a.status IN ('active', 'suspended')
+           AND s.status IN ('active', 'suspended', 'frozen')
+           AND a.end_date >= CURDATE()
+         UNION ALL
+         SELECT CASE WHEN i.status = 'paid' THEN 'paid' ELSE 'pending' END
+         FROM member_subscriptions ms
+         LEFT JOIN invoices i ON i.id = (
+           SELECT latest.id
+           FROM invoices latest
+           WHERE latest.subscription_id = ms.id
+           ORDER BY latest.created_at DESC
+           LIMIT 1
+         )
+         WHERE LOWER(TRIM(ms.status)) = 'active'
+           AND ms.end_date >= CURDATE()
+       ) payment_statuses
+       ORDER BY visible_status`,
+    ),
+  ]);
+
+  const memberReference = maintenanceRows.filter((row) =>
+    ["member_status", "member_statuses"].includes(String(row.list_key || "")),
+  );
+  const paymentReference = maintenanceRows.filter((row) =>
+    ["payment_status", "payment_statuses"].includes(String(row.list_key || "")),
+  );
+  return {
+    currentPlan: planRows
+      .map((row) => sanitizeTextFilter(row.value, 120))
+      .filter(Boolean)
+      .map((value) => ({ value, label: value })),
+    subscriptionStatus: mergeFilterOptions(memberReference, actualStatusRows, [
+      { value: "active", label: "Active" },
+      { value: "inactive", label: "Inactive" },
+      { value: "expired", label: "Expired" },
+    ]),
+    paymentStatus: mergeFilterOptions(paymentReference, actualPaymentRows, [
+      { value: "paid", label: "Paid" },
+      { value: "pending", label: "Pending" },
+    ]),
+  };
 }
 
 function appliedFilterSummary(definition: ScreenReportDefinition, filters: ParsedReportFilters) {
@@ -1614,6 +1842,7 @@ export const __reportsForTests = {
   sanitizeTextFilter,
   parseScreenReportFilters,
   addScreenReportWhere,
+  loadMembersDirectoryFilterOptions,
   appliedFilterSummary,
   screenReportFilename,
   buildScreenReport,
@@ -1779,19 +2008,33 @@ export function registerReportsRoutes(app: Express, poolProvider: PoolProvider) 
     res.json({ sections });
   });
 
-  app.get("/api/reports/screen-catalog", (req: AuthenticatedRequest, res: Response) => {
-    const role = req.user?.role || "";
-    const reports = SCREEN_REPORTS
-      .filter((report) => canAccessScreenReport(report, role))
-      .map(({ id, sectionId, label, description, screen, filters }) => ({
-        id,
-        sectionId,
-        label,
-        description,
-        screen,
-        filters: filters.filter((filter) => !isTechnicalIdentifierLabel(filter.label)),
-      }));
-    res.json({ reports });
+  app.get("/api/reports/screen-catalog", async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const role = req.user?.role || "";
+      const pool = requirePool(poolProvider);
+      const memberFilterOptions = await loadMembersDirectoryFilterOptions(pool);
+      const reports = SCREEN_REPORTS
+        .filter((report) => canAccessScreenReport(report, role))
+        .map(({ id, sectionId, label, description, screen, filters }) => ({
+          id,
+          sectionId,
+          label,
+          description,
+          screen,
+          filters: filters
+            .filter((filter) => !isTechnicalIdentifierLabel(filter.label))
+            .map((filter) => {
+              if (id !== "members-directory") return filter;
+              const options = memberFilterOptions[
+                filter.id as keyof typeof memberFilterOptions
+              ];
+              return options ? { ...filter, options } : filter;
+            }),
+        }));
+      res.json({ reports });
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.get("/api/reports/screen/:reportId.pdf", async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
