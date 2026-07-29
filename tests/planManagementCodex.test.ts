@@ -256,6 +256,8 @@ test("limited multi-user plans expose distribution, cycles, immutable movements 
   const privateClassesPage = read("src/pages/PrivateClasses.tsx");
   const schedulingApi = read("src/lib/schedulingApi.ts");
   const reports = read("server/reports.ts");
+  const commissions = read("server/trainerCommissions.ts");
+  const commissionsPage = read("src/pages/TrainerCommissions.tsx");
 
   assert.match(management, /holderSessionsPerCycle/);
   assert.match(management, /beneficiarySessionsPerCycle/);
@@ -376,6 +378,22 @@ test("limited multi-user plans expose distribution, cycles, immutable movements 
   assert.match(subscriptionsPage, /multi_user/);
   assert.match(subscriptionsPage, /adjustSessions/);
   assert.match(subscriptionsPage, /returnLatestSession/);
+  assert.match(subscriptions, /subscription_session_history_pdf_exported/);
+  assert.match(subscriptions, /session-history\.pdf/);
+  assert.match(subscriptions, /subscription_session_deducted/);
+  assert.match(subscriptions, /subscription_session_returned/);
+  assert.match(subscriptions, /reversal\.related_movement_id = movement\.id/);
+  assert.match(subscriptions, /pv\.trainer_id, pv\.trainer_name/);
+  assert.match(subscriptions, /s\.end_date >= \?/);
+  assert.match(subscriptions, /s\.start_date <= \?/);
+  assert.match(subscriptionsPage, /downloadSessionHistoryPdf/);
+  assert.match(subscriptionsPage, /subscription\.trainerName \|\| 'N\/A'/);
+  assert.match(subscriptionsPage, /trainerOptions/);
+  assert.match(subscriptionsPage, /planType/);
+  assert.match(subscriptionsPage, /DateInput/);
+  assert.match(commissions, /PENDING_CUSTOMER_PAYMENT_CONFIRMATION_REQUIRED/);
+  assert.match(commissions, /trainer_commission_paid_before_customer_collection/);
+  assert.match(commissionsPage, /pendingPaymentWarning/);
   assert.match(membersPage, /String\(qrMember\.status\)\.toLowerCase\(\) !== 'active'/);
   assert.match(layout, /'nav\.subscriptions', path: '\/subscriptions'/);
   assert.match(ledger, /DUPLICATE_ACTIVITY/);
