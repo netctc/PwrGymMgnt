@@ -39,6 +39,7 @@ const copy = {
     loadError: "Unable to load trainer commissions.",
     pendingInvoice: "Pending customer payment", earnedStatus: "Earned / payable", paidStatus: "Paid to trainer",
     partialSuccess: "The proportional commission for consumed sessions was paid.",
+    pendingPaymentWarning: "Warning: the customer has not paid this subscription. You are authorizing a trainer commission payment under your responsibility before collecting from the customer. Continue?",
   },
   ar: {
     title: "عمولات المدربين",
@@ -60,6 +61,7 @@ const copy = {
     loadError: "تعذر تحميل عمولات المدربين.",
     pendingInvoice: "بانتظار دفع العميل", earnedStatus: "مستحقة / واجبة الدفع", paidStatus: "مدفوعة للمدرب",
     partialSuccess: "تم دفع العمولة النسبية للجلسات المستهلكة.",
+    pendingPaymentWarning: "تحذير: لم يدفع العميل قيمة هذا الاشتراك بعد. أنت توافق على دفع عمولة المدرب على مسؤوليتك قبل تحصيل المبلغ من العميل. هل تريد المتابعة؟",
   },
 } as const;
 
@@ -109,9 +111,13 @@ export default function TrainerCommissions() {
           ? c.earnedStatus
           : c.pendingInvoice;
 
-  const markPaid = async (id: string) => {
+  const confirmPendingPaymentOverride = (item: TrainerCommissionHistory) =>
+    item.paymentStatus !== "pending" || window.confirm(c.pendingPaymentWarning);
+
+  const markPaid = async (item: TrainerCommissionHistory) => {
+    if (!confirmPendingPaymentOverride(item)) return;
     try {
-      await trainerCommissionsApi.markPaid(id);
+      await trainerCommissionsApi.markPaid(item.id, item.paymentStatus === "pending");
       toast.success(c.paidStatus);
       await load();
     } catch (payError: any) {
@@ -119,9 +125,10 @@ export default function TrainerCommissions() {
     }
   };
 
-  const markPartialPaid = async (id: string) => {
+  const markPartialPaid = async (item: TrainerCommissionHistory) => {
+    if (!confirmPendingPaymentOverride(item)) return;
     try {
-      await trainerCommissionsApi.markPartialPaid(id);
+      await trainerCommissionsApi.markPartialPaid(item.id, item.paymentStatus === "pending");
       toast.success(c.partialSuccess);
       await load();
     } catch (payError: any) {
@@ -176,12 +183,12 @@ export default function TrainerCommissions() {
             <TableHeader><TableRow><TableHead>{c.trainer}</TableHead><TableHead>{c.plan}</TableHead><TableHead>{c.invoice}</TableHead><TableHead>{c.gross}</TableHead><TableHead>{c.percentage}</TableHead><TableHead>{c.commission}</TableHead><TableHead>{c.amountPaid}</TableHead><TableHead>{c.amountPending}</TableHead><TableHead>{c.sessionProgress}</TableHead><TableHead>{c.gym}</TableHead><TableHead>{c.status}</TableHead><TableHead>{c.due}</TableHead><TableHead>{c.actions}</TableHead></TableRow></TableHeader>
             <TableBody>
               {history.map((item) => {
-                const payable = item.paymentStatus === "earned" || item.paymentStatus === "partially_paid";
+                const payable = item.paymentStatus === "pending" || item.paymentStatus === "earned" || item.paymentStatus === "partially_paid";
                 const canPayPartial = payable
                   && item.sessionsContracted > 0
                   && item.sessionsConsumed > item.sessionsPaid
                   && item.amountPending > 0;
-                return <TableRow key={item.id}><TableCell>{item.trainerName}</TableCell><TableCell><div className="font-medium">{item.planName}</div><div className="text-xs text-slate-500">{item.planType}</div></TableCell><TableCell>{item.invoiceNumber}</TableCell><TableCell>{formatCurrency(item.grossAmount, item.currency)}</TableCell><TableCell>{item.commissionPercent}%</TableCell><TableCell>{formatCurrency(item.trainerAmount, item.currency)}</TableCell><TableCell>{formatCurrency(item.amountPaid, item.currency)}</TableCell><TableCell>{formatCurrency(item.amountPending, item.currency)}</TableCell><TableCell>{item.sessionsContracted > 0 ? `${item.sessionsConsumed} / ${item.sessionsRemaining} (${item.sessionsContracted})` : "—"}</TableCell><TableCell>{formatCurrency(item.gymAmount, item.currency)}</TableCell><TableCell><Badge variant={item.paymentStatus === "paid" ? "default" : "secondary"}>{statusLabel(item.paymentStatus)}</Badge></TableCell><TableCell>{item.dueDate ? formatDateTime(item.dueDate) : "—"}</TableCell><TableCell><div className="flex min-w-max gap-2">{payable ? <Button size="sm" onClick={() => markPaid(item.id)}>{c.markPaid}</Button> : null}{payable ? <Button size="sm" variant="outline" disabled={!canPayPartial} onClick={() => markPartialPaid(item.id)}>{c.partialPaid}</Button> : null}{!payable ? "—" : null}</div></TableCell></TableRow>;
+                return <TableRow key={item.id}><TableCell>{item.trainerName}</TableCell><TableCell><div className="font-medium">{item.planName}</div><div className="text-xs text-slate-500">{item.planType}</div></TableCell><TableCell>{item.invoiceNumber}</TableCell><TableCell>{formatCurrency(item.grossAmount, item.currency)}</TableCell><TableCell>{item.commissionPercent}%</TableCell><TableCell>{formatCurrency(item.trainerAmount, item.currency)}</TableCell><TableCell>{formatCurrency(item.amountPaid, item.currency)}</TableCell><TableCell>{formatCurrency(item.amountPending, item.currency)}</TableCell><TableCell>{item.sessionsContracted > 0 ? `${item.sessionsConsumed} / ${item.sessionsRemaining} (${item.sessionsContracted})` : "—"}</TableCell><TableCell>{formatCurrency(item.gymAmount, item.currency)}</TableCell><TableCell><Badge variant={item.paymentStatus === "paid" ? "default" : "secondary"}>{statusLabel(item.paymentStatus)}</Badge></TableCell><TableCell>{item.dueDate ? formatDateTime(item.dueDate) : "—"}</TableCell><TableCell><div className="flex min-w-max gap-2">{payable ? <Button size="sm" onClick={() => markPaid(item)}>{c.markPaid}</Button> : null}{payable ? <Button size="sm" variant="outline" disabled={!canPayPartial} onClick={() => markPartialPaid(item)}>{c.partialPaid}</Button> : null}{!payable ? "—" : null}</div></TableCell></TableRow>;
               })}
               {!loading && history.length === 0 && <TableRow><TableCell colSpan={13}><EmptyState compact title={c.none} description={c.noneDescription} /></TableCell></TableRow>}
             </TableBody>
