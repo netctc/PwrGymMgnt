@@ -408,7 +408,17 @@ test("limited multi-user plans expose distribution, cycles, immutable movements 
   assert.match(privateClassesPage, /Class type \/ level/);
   assert.match(privateClassesPage, /Classes per page/);
   assert.match(privateClassesPage, /listPagination/);
+  assert.match(privateClassesPage, /max-h-\[70vh\] overflow-auto/);
+  assert.match(privateClassesPage, /Duration/);
+  assert.match(privateClassesPage, /session\.notes/);
   assert.match(scheduling, /private_pt_filters_applied/);
+  assert.doesNotMatch(
+    scheduling.slice(
+      scheduling.indexOf('app.get("/api/scheduling/private-classes"'),
+      scheduling.indexOf('app.post("/api/scheduling/private-classes"'),
+    ),
+    /Date\.now\(\) [-+] .*24 \* 60 \* 60 \* 1000/,
+  );
   assert.match(lifecycle, /confirmOutstandingPayment/);
   assert.match(lifecycle, /subscription_renewed_with_outstanding_payment/);
   assert.match(membership, /member_directory_filters_applied/);

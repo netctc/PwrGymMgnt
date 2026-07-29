@@ -813,10 +813,18 @@ export function registerSchedulingRoutes(app: Express, poolProvider: PoolProvide
   app.get("/api/scheduling/private-classes", async (req: AuthenticatedRequest, res, next) => {
     try {
       const pool = await getReadyPool();
-      const from = parseDateTime(req.query.from) || new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
-      const to = parseDateTime(req.query.to) || new Date(Date.now() + 90 * 24 * 60 * 60 * 1000);
-      const filters = ["start_time >= ?", "start_time <= ?", "status <> 'deleted'"];
-      const values: any[] = [toMysqlDateTime(from), toMysqlDateTime(to)];
+      const from = parseDateTime(req.query.from);
+      const to = parseDateTime(req.query.to);
+      const filters = ["status <> 'deleted'"];
+      const values: any[] = [];
+      if (from) {
+        filters.push("start_time >= ?");
+        values.push(toMysqlDateTime(from));
+      }
+      if (to) {
+        filters.push("start_time <= ?");
+        values.push(toMysqlDateTime(to));
+      }
 
       const trainerId = normalizeString(req.query.trainerId);
       const memberId = normalizeString(req.query.memberId);
@@ -876,8 +884,8 @@ export function registerSchedulingRoutes(app: Express, poolProvider: PoolProvide
            VALUES ('private_pt_filters_applied', ?, ?)`,
           [
             JSON.stringify({
-              from: toMysqlDateTime(from),
-              to: toMysqlDateTime(to),
+              from: from ? toMysqlDateTime(from) : null,
+              to: to ? toMysqlDateTime(to) : null,
               trainerId: trainerId || null,
               memberId: memberId || null,
               status: status || null,

@@ -314,7 +314,7 @@ export default function PrivateClasses() {
   }, [classes]);
 
   return (
-    <div className="flex flex-col lg:flex-row gap-6 h-full p-2">
+    <div className="flex min-h-full flex-col items-start gap-6 p-2 lg:flex-row">
       {isScheduler && (
         <div className="w-full lg:w-[360px] shrink-0">
           <Card className="border border-slate-100 shadow-sm bg-white rounded-2xl">
@@ -421,7 +421,7 @@ export default function PrivateClasses() {
         </div>
       )}
 
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col self-stretch">
         <div className="bg-white rounded-2xl p-4 mb-4 shadow-sm border border-slate-100">
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div className="flex items-center gap-2">
@@ -613,25 +613,28 @@ export default function PrivateClasses() {
         )}
 
         {viewMode === 'list' && (
-          <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
-            <div className="overflow-x-auto">
-            <table className="w-full min-w-[960px] text-sm">
-              <thead className="bg-slate-50 border-b">
+          <div className="overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-sm">
+            <div className="max-h-[70vh] overflow-auto [scrollbar-gutter:stable]">
+            <table className="w-full min-w-[1320px] text-sm">
+              <thead className="sticky top-0 z-10 border-b bg-slate-50 shadow-sm">
                 <tr>
                   <th className="text-left px-4 py-3 font-semibold text-slate-600">Member</th>
                   <th className="text-left px-4 py-3 font-semibold text-slate-600">Trainer</th>
                   <th className="text-left px-4 py-3 font-semibold text-slate-600">Date & Time</th>
+                  <th className="text-center px-4 py-3 font-semibold text-slate-600">Duration</th>
                   <th className="text-left px-4 py-3 font-semibold text-slate-600">Room</th>
                   <th className="text-center px-4 py-3 font-semibold text-slate-600">Level</th>
+                  <th className="text-left px-4 py-3 font-semibold text-slate-600">Branch</th>
+                  <th className="text-left px-4 py-3 font-semibold text-slate-600">Notes</th>
                   <th className="text-center px-4 py-3 font-semibold text-slate-600">Status</th>
                   <th className="text-right px-4 py-3 font-semibold text-slate-600">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {loading ? (
-                  <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-500">Loading...</td></tr>
+                  <tr><td colSpan={10} className="px-4 py-8 text-center text-slate-500">Loading...</td></tr>
                 ) : classes.length === 0 ? (
-                  <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-400">No private sessions match the selected filters</td></tr>
+                  <tr><td colSpan={10} className="px-4 py-8 text-center text-slate-400">No private sessions match the selected filters</td></tr>
                 ) : (
                   classes.map((session) => (
                     <tr key={session.id} className="hover:bg-slate-50/60">
@@ -644,8 +647,15 @@ export default function PrivateClasses() {
                         <br />
                         <span className="text-xs text-slate-500">{session.startTime && format(new Date(session.startTime), 'hh:mm a')} – {session.endTime && format(new Date(session.endTime), 'hh:mm a')}</span>
                       </td>
+                      <td className="px-4 py-3 text-center text-slate-700">
+                        {session.startTime && session.endTime
+                          ? `${Math.max(0, Math.round((new Date(session.endTime).getTime() - new Date(session.startTime).getTime()) / 60000))} min`
+                          : '—'}
+                      </td>
                       <td className="px-4 py-3 text-slate-700">{session.room}</td>
                       <td className="px-4 py-3 text-center text-slate-700">{session.level}</td>
+                      <td className="px-4 py-3 text-slate-700">{session.branch || '—'}</td>
+                      <td className="max-w-[260px] whitespace-normal px-4 py-3 text-slate-600">{session.notes || '—'}</td>
                       <td className="px-4 py-3 text-center">
                         <Badge variant={session.status === 'cancelled' ? 'destructive' : session.status === 'inactive' ? 'outline' : 'secondary'}>{session.status}</Badge>
                       </td>
