@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import {
   CreditCard,
+  Download,
   Layers,
   MinusCircle,
   RefreshCw,
@@ -15,6 +16,7 @@ import { Button } from '../components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
+import DateInput from '../components/DateInput';
 import { formatDate } from '../lib/formatDate';
 import {
   subscriptionsV2Api,
@@ -64,6 +66,10 @@ export default function Subscriptions() {
           subscriptionStatus: 'حالة الاشتراك',
           paymentStatus: 'حالة الدفع',
           plan: 'الخطة',
+          planType: 'نوع الخطة',
+          trainer: 'المدرب',
+          from: 'من تاريخ',
+          to: 'إلى تاريخ',
           sessionType: 'نوع الجلسات',
           all: 'الكل',
           active: 'نشط',
@@ -87,6 +93,7 @@ export default function Subscriptions() {
           actions: 'الإجراءات',
           deduct: 'خصم جلسة',
           return: 'إرجاع جلسة',
+          sessionPdf: 'تقرير PDF',
           noRows: 'لا توجد اشتراكات مطابقة للفلاتر المحددة.',
           reason: 'السبب',
           reasonPlaceholder: 'أدخل سبب التعديل للتدقيق',
@@ -111,6 +118,10 @@ export default function Subscriptions() {
           subscriptionStatus: 'Subscription status',
           paymentStatus: 'Payment status',
           plan: 'Plan',
+          planType: 'Plan type',
+          trainer: 'Trainer',
+          from: 'From',
+          to: 'To',
           sessionType: 'Session type',
           all: 'All',
           active: 'Active',
@@ -134,6 +145,7 @@ export default function Subscriptions() {
           actions: 'Actions',
           deduct: 'Deduct session',
           return: 'Return session',
+          sessionPdf: 'Session PDF',
           noRows: 'No subscriptions match the selected filters.',
           reason: 'Reason',
           reasonPlaceholder: 'Enter an audit reason for this adjustment',
@@ -151,12 +163,17 @@ export default function Subscriptions() {
   const [view, setView] = useState<DirectoryView>('individual_unlimited');
   const [subscriptions, setSubscriptions] = useState<SubscriptionV2[]>([]);
   const [planOptions, setPlanOptions] = useState<Array<{ id: string; name: string }>>([]);
+  const [trainerOptions, setTrainerOptions] = useState<Array<{ id: string; name: string }>>([]);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
   const [memberStatus, setMemberStatus] = useState('all');
   const [subscriptionStatus, setSubscriptionStatus] = useState('active');
   const [paymentStatus, setPaymentStatus] = useState('all');
   const [planId, setPlanId] = useState('all');
+  const [planType, setPlanType] = useState('all');
+  const [trainerId, setTrainerId] = useState('all');
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
   const [sessionType, setSessionType] = useState('all');
   const [actionState, setActionState] = useState<SessionActionState | null>(null);
   const [actionAffiliationId, setActionAffiliationId] = useState('');
@@ -172,11 +189,16 @@ export default function Subscriptions() {
         memberStatus,
         paymentStatus,
         planId,
+        planType,
+        trainerId,
+        from: from || undefined,
+        to: to || undefined,
         sessions: sessionType,
         search: search.trim() || undefined,
       });
       setSubscriptions(response.subscriptions);
       setPlanOptions(response.filterOptions?.plans || []);
+      setTrainerOptions(response.filterOptions?.trainers || []);
     } catch (error: any) {
       setSubscriptions([]);
       toast.error(error.message || 'Failed to load subscriptions');
@@ -190,7 +212,7 @@ export default function Subscriptions() {
       void loadSubscriptions();
     }, 250);
     return () => window.clearTimeout(timeout);
-  }, [search, memberStatus, subscriptionStatus, paymentStatus, planId, sessionType]);
+  }, [search, memberStatus, subscriptionStatus, paymentStatus, planId, planType, trainerId, from, to, sessionType]);
 
   const categorized = useMemo(
     () => ({
@@ -281,6 +303,15 @@ export default function Subscriptions() {
     }
   };
 
+  const downloadSessionHistory = async (subscription: SubscriptionV2) => {
+    try {
+      await subscriptionsV2Api.downloadSessionHistoryPdf(subscription.id);
+      toast.success(copy.sessionPdf);
+    } catch (error: any) {
+      toast.error(error.message || 'Unable to download session history');
+    }
+  };
+
   const renderCommonCells = (subscription: SubscriptionV2) => (
     <>
       <td className="px-4 py-3">
@@ -299,6 +330,11 @@ export default function Subscriptions() {
           <Badge variant="outline" className="mt-1">{copy.legacy}</Badge>
         )}
       </td>
+      {view === 'individual_limited' && (
+        <td className="px-4 py-3 text-sm text-slate-700">
+          {subscription.trainerName || 'N/A'}
+        </td>
+      )}
       <td className="whitespace-nowrap px-4 py-3 text-sm text-slate-600">
         <p>{formatDate(subscription.startDate)}</p>
         <p>{formatDate(subscription.endDate)}</p>
@@ -356,7 +392,7 @@ export default function Subscriptions() {
 
       <Card>
         <CardContent className="space-y-4 p-4">
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-9">
             <div className="relative md:col-span-2 xl:col-span-1">
               <Label htmlFor="subscription-search">{copy.search}</Label>
               <Search className="absolute bottom-2.5 left-3 h-4 w-4 text-slate-400" />
@@ -366,6 +402,10 @@ export default function Subscriptions() {
             <div><Label>{copy.subscriptionStatus}</Label><select className={selectClassName} value={subscriptionStatus} onChange={(event) => setSubscriptionStatus(event.target.value)}><option value="active">{copy.active}</option><option value="all">{copy.all}</option><option value="suspended">{copy.suspended}</option><option value="frozen">Frozen</option><option value="cancelled">{copy.cancelled}</option><option value="expired">{copy.expired}</option></select></div>
             <div><Label>{copy.paymentStatus}</Label><select className={selectClassName} value={paymentStatus} onChange={(event) => setPaymentStatus(event.target.value)}><option value="all">{copy.all}</option><option value="paid">{copy.paid}</option><option value="pending">{copy.pending}</option><option value="partial">Partial</option><option value="overdue">Overdue</option></select></div>
             <div><Label>{copy.plan}</Label><select className={selectClassName} value={planId} onChange={(event) => setPlanId(event.target.value)}><option value="all">{copy.all}</option>{planOptions.map((plan) => <option key={plan.id} value={plan.id}>{plan.name}</option>)}</select></div>
+            <div><Label>{copy.planType}</Label><select className={selectClassName} value={planType} onChange={(event) => setPlanType(event.target.value)}><option value="all">{copy.all}</option><option value="individual">Individual</option><option value="family">Family</option><option value="group">Group</option><option value="corporate">Corporate</option></select></div>
+            <div><Label>{copy.trainer}</Label><select className={selectClassName} value={trainerId} onChange={(event) => setTrainerId(event.target.value)}><option value="all">{copy.all}</option>{trainerOptions.map((trainer) => <option key={trainer.id} value={trainer.id}>{trainer.name}</option>)}</select></div>
+            <div><Label>{copy.from}</Label><DateInput value={from} onChange={setFrom} /></div>
+            <div><Label>{copy.to}</Label><DateInput value={to} onChange={setTo} /></div>
             <div><Label>{copy.sessionType}</Label><div className="flex gap-2"><select className={selectClassName} value={sessionType} onChange={(event) => setSessionType(event.target.value)}><option value="all">{copy.all}</option><option value="limited">{copy.limitedSessions}</option><option value="unlimited">{copy.unlimitedSessions}</option></select><Button variant="outline" size="icon" onClick={() => void loadSubscriptions()} title={copy.refresh}><RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} /></Button></div></div>
           </div>
         </CardContent>
@@ -402,11 +442,12 @@ export default function Subscriptions() {
                   <tr>
                     <th className="px-4 py-3">{view === 'multi_user' ? copy.holder : copy.member}</th>
                     <th className="px-4 py-3">{copy.plan}</th>
+                    {view === 'individual_limited' && <th className="px-4 py-3">{copy.trainer}</th>}
                     <th className="px-4 py-3">{copy.dates}</th>
                     <th className="px-4 py-3">{copy.paymentStatus}</th>
                     <th className="px-4 py-3">{copy.subscriptionStatus}</th>
                     {view === 'individual_limited' && <><th className="px-4 py-3 text-center">{copy.contracted}</th><th className="px-4 py-3 text-center">{copy.consumed}</th><th className="px-4 py-3 text-center">{copy.remaining}</th><th className="px-4 py-3 text-right">{copy.actions}</th></>}
-                    {view === 'multi_user' && <><th className="px-4 py-3 text-center">{copy.members}</th><th className="px-4 py-3 text-center">{copy.sessions}</th><th className="px-4 py-3 text-right">{copy.actions}</th></>}
+                    {view === 'multi_user' && <><th className="px-4 py-3 text-center">{copy.members}</th><th className="px-4 py-3 text-center">{copy.contracted}</th><th className="px-4 py-3 text-center">{copy.consumed}</th><th className="px-4 py-3 text-center">{copy.remaining}</th><th className="px-4 py-3 text-right">{copy.actions}</th></>}
                   </tr>
                 </thead>
                 <tbody className="divide-y">
@@ -418,14 +459,16 @@ export default function Subscriptions() {
                           <td className="px-4 py-3 text-center font-semibold">{subscription.sessionsContracted ?? subscription.sessionsPerCycle ?? 0}</td>
                           <td className="px-4 py-3 text-center font-semibold text-rose-600">{subscription.sessionsConsumed ?? 0}</td>
                           <td className="px-4 py-3 text-center font-semibold text-emerald-600">{subscription.sessionsRemaining ?? 0}</td>
-                          <td className="px-4 py-3"><div className="flex justify-end gap-2"><Button size="sm" variant="outline" onClick={() => void openSessionAction(subscription, 'deduct')}><MinusCircle className="mr-1 h-4 w-4" />{copy.deduct}</Button><Button size="sm" variant="outline" onClick={() => void openSessionAction(subscription, 'return')}><RotateCcw className="mr-1 h-4 w-4" />{copy.return}</Button></div></td>
+                          <td className="px-4 py-3"><div className="flex justify-end gap-2"><Button size="sm" variant="outline" onClick={() => void openSessionAction(subscription, 'deduct')}><MinusCircle className="mr-1 h-4 w-4" />{copy.deduct}</Button><Button size="sm" variant="outline" onClick={() => void openSessionAction(subscription, 'return')}><RotateCcw className="mr-1 h-4 w-4" />{copy.return}</Button><Button size="sm" variant="outline" onClick={() => void downloadSessionHistory(subscription)}><Download className="mr-1 h-4 w-4" />{copy.sessionPdf}</Button></div></td>
                         </>
                       )}
                       {view === 'multi_user' && (
                         <>
                           <td className="px-4 py-3 text-center">{subscription.activeMembers || 1}/{subscription.maxMembers}</td>
-                          <td className="px-4 py-3 text-center">{subscription.sessionsUnlimited ? '∞' : `${subscription.sessionsConsumed || 0} / ${subscription.sessionsRemaining || 0}`}</td>
-                          <td className="px-4 py-3"><div className="flex justify-end gap-2">{!subscription.sessionsUnlimited && <><Button size="sm" variant="outline" onClick={() => void openSessionAction(subscription, 'deduct')}>{copy.deduct}</Button><Button size="sm" variant="outline" onClick={() => void openSessionAction(subscription, 'return')}>{copy.return}</Button></>}</div></td>
+                          <td className="px-4 py-3 text-center font-semibold">{subscription.sessionsUnlimited ? '∞' : subscription.sessionsContracted ?? subscription.sessionsPerCycle ?? 0}</td>
+                          <td className="px-4 py-3 text-center font-semibold text-rose-600">{subscription.sessionsUnlimited ? '—' : subscription.sessionsConsumed ?? 0}</td>
+                          <td className="px-4 py-3 text-center font-semibold text-emerald-600">{subscription.sessionsUnlimited ? '∞' : subscription.sessionsRemaining ?? 0}</td>
+                          <td className="px-4 py-3"><div className="flex justify-end gap-2">{!subscription.sessionsUnlimited && <><Button size="sm" variant="outline" onClick={() => void openSessionAction(subscription, 'deduct')}>{copy.deduct}</Button><Button size="sm" variant="outline" onClick={() => void openSessionAction(subscription, 'return')}>{copy.return}</Button><Button size="sm" variant="outline" onClick={() => void downloadSessionHistory(subscription)}><Download className="mr-1 h-4 w-4" />{copy.sessionPdf}</Button></>}</div></td>
                         </>
                       )}
                     </tr>
