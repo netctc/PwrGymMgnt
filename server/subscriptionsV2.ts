@@ -8,6 +8,8 @@
 import crypto from "crypto";
 import type { Express, Request, Response, NextFunction } from "express";
 import type { Pool } from "mysql2/promise";
+import { jsPDF } from "jspdf";
+import { autoTable } from "jspdf-autotable";
 import { requirePermission } from "./rbac";
 import { isFeatureEnabled } from "./featureFlags";
 import { getSessionBalanceContext, mapBalance } from "./sessionLedger";
@@ -138,6 +140,10 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
       const memberStatus = normalizeString(req.query.memberStatus);
       const paymentStatus = normalizeString(req.query.paymentStatus);
       const planId = normalizeString(req.query.planId);
+      const planType = normalizeString(req.query.planType);
+      const trainerId = normalizeString(req.query.trainerId);
+      const from = normalizeDate(req.query.from);
+      const to = normalizeDate(req.query.to);
       const sessions = normalizeString(req.query.sessions);
       const search = normalizeString(req.query.search).toLowerCase();
       const where: string[] = [];
@@ -168,6 +174,22 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
         where.push("s.plan_id = ?");
         params.push(planId);
       }
+      if (planType && planType !== "all") {
+        where.push("pv.plan_type = ?");
+        params.push(planType);
+      }
+      if (trainerId && trainerId !== "all") {
+        where.push("pv.trainer_id = ?");
+        params.push(trainerId);
+      }
+      if (from) {
+        where.push("s.end_date >= ?");
+        params.push(from);
+      }
+      if (to) {
+        where.push("s.start_date <= ?");
+        params.push(to);
+      }
       if (sessions === "limited") where.push("pv.sessions_unlimited = 0");
       if (sessions === "unlimited") where.push("pv.sessions_unlimited = 1");
       if (search) {
@@ -175,15 +197,17 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
           LOWER(CONCAT(COALESCE(holder.first_name, ''), ' ', COALESCE(holder.last_name, ''))) LIKE ?
           OR LOWER(COALESCE(holder.email, '')) LIKE ?
           OR LOWER(COALESCE(pv.name, '')) LIKE ?
+          OR LOWER(COALESCE(pv.trainer_name, '')) LIKE ?
           OR LOWER(s.id) LIKE ?
         )`);
         const pattern = `%${search}%`;
-        params.push(pattern, pattern, pattern, pattern);
+        params.push(pattern, pattern, pattern, pattern, pattern);
       }
       const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
       const [rows]: any = await pool.query(
         `SELECT s.*, pv.name AS plan_name, pv.plan_type, pv.sessions_unlimited,
                 pv.sessions_per_cycle, pv.distribution_model, pv.cycle_frequency,
+                pv.trainer_id, pv.trainer_name,
                 holder.first_name AS holder_first_name,
                 holder.last_name AS holder_last_name,
                 holder.email AS holder_email,
@@ -210,11 +234,23 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
                      AND sc_summary.status = 'active'
                 ) AS sessions_contracted,
                 (
-                  SELECT COALESCE(SUM(sb_summary.consumed), 0)
-                    FROM subscription_cycles sc_summary
-                    JOIN session_balances sb_summary ON sb_summary.cycle_id = sc_summary.id
-                   WHERE sc_summary.subscription_id = s.id
-                     AND sc_summary.status = 'active'
+                  SELECT COALESCE(SUM(movement.quantity), 0)
+                    FROM session_movements movement
+                    JOIN affiliations movement_affiliation
+                      ON movement_affiliation.id = movement.affiliation_id
+                    JOIN subscription_cycles movement_cycle
+                      ON movement_cycle.id = movement.cycle_id
+                   WHERE movement_affiliation.subscription_id = s.id
+                     AND movement_cycle.status = 'active'
+                     AND movement.direction = '-'
+                     AND movement.movement_type IN ('consumption', 'adjustment_negative')
+                     AND NOT EXISTS (
+                       SELECT 1
+                         FROM session_movements reversal
+                        WHERE reversal.related_movement_id = movement.id
+                          AND reversal.direction = '+'
+                          AND reversal.movement_type IN ('refund', 'compensation', 'adjustment_positive')
+                     )
                 ) AS sessions_consumed,
                 (
                   SELECT COALESCE(SUM(sb_summary.available), 0)
@@ -264,6 +300,8 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
           planVersionId: null,
           planName: row.plan_name || "",
           planType: "individual",
+          trainerId: null,
+          trainerName: null,
           holderMemberId: row.member_id,
           holderFirstName: row.holder_first_name || "",
           holderLastName: row.holder_last_name || "",
@@ -309,6 +347,10 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
             subscription.paymentStatus !== paymentStatus
           ) return false;
           if (planId && planId !== "all" && subscription.planId !== planId) return false;
+          if (planType && planType !== "all" && subscription.planType !== planType) return false;
+          if (trainerId && trainerId !== "all") return false;
+          if (from && subscription.endDate < from) return false;
+          if (to && subscription.startDate > to) return false;
           if (sessions === "limited") return false;
           if (
             normalizedSearch &&
@@ -340,10 +382,19 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
           WHERE id IS NOT NULL
           ORDER BY name`,
       );
+      const [trainerRows]: any = await pool.query(
+        `SELECT DISTINCT pv.trainer_id AS id, pv.trainer_name AS name
+           FROM subscriptions s
+           JOIN plan_versions pv ON pv.id = s.plan_version_id
+          WHERE pv.trainer_id IS NOT NULL
+            AND TRIM(COALESCE(pv.trainer_name, '')) <> ''
+          ORDER BY pv.trainer_name`,
+      );
       res.json({
         subscriptions,
         filterOptions: {
           plans: planRows.map((row: any) => ({ id: row.id, name: row.name })),
+          trainers: trainerRows.map((row: any) => ({ id: row.id, name: row.name })),
         },
       });
     } catch (error) { next(error); }
@@ -1020,6 +1071,169 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
     } catch (error) { next(error); }
   });
 
+  app.get("/api/v2/subscriptions/:id/session-history.pdf", requirePermission("membership.read"), async (req: AuthenticatedRequest, res, next) => {
+    try {
+      const pool = requirePool(poolProvider);
+      const [subscriptionRows]: any = await pool.query(
+        `SELECT s.id, s.start_date, s.end_date, s.payment_status,
+                pv.name AS plan_name, pv.plan_type, pv.sessions_unlimited,
+                pv.trainer_name AS responsible_trainer,
+                CONCAT_WS(' ', holder.first_name, holder.last_name) AS holder_name
+           FROM subscriptions s
+           JOIN plan_versions pv ON pv.id = s.plan_version_id
+           JOIN members holder ON holder.id = s.holder_member_id
+          WHERE s.id = ?
+          LIMIT 1`,
+        [req.params.id],
+      );
+      if (!subscriptionRows.length) {
+        return res.status(404).json({ error: "Subscription not found" });
+      }
+      const subscription = subscriptionRows[0];
+      if (Boolean(subscription.sessions_unlimited)) {
+        return res.status(409).json({
+          error: "Session history PDF is available only for limited-session subscriptions",
+        });
+      }
+
+      const [movementRows]: any = await pool.query(
+        `SELECT CONCAT_WS(' ', member.first_name, member.last_name) AS member_name,
+                pv.name AS plan_name,
+                COALESCE(
+                  NULLIF(private_session.trainer_name, ''),
+                  NULLIF(class_session.trainer_name, ''),
+                  NULLIF(pv.trainer_name, ''),
+                  NULLIF(JSON_UNQUOTE(JSON_EXTRACT(movement.data, '$.trainerName')), ''),
+                  'N/A'
+                ) AS trainer_name,
+                COALESCE(
+                  private_session.start_time,
+                  class_session.start_time,
+                  movement.created_at
+                ) AS session_datetime,
+                CASE
+                  WHEN private_session.id IS NOT NULL
+                    THEN TIMESTAMPDIFF(MINUTE, private_session.start_time, private_session.end_time)
+                  WHEN class_session.id IS NOT NULL
+                    THEN TIMESTAMPDIFF(MINUTE, class_session.start_time, class_session.end_time)
+                  ELSE CAST(JSON_UNQUOTE(JSON_EXTRACT(movement.data, '$.durationMinutes')) AS UNSIGNED)
+                END AS duration_minutes,
+                movement.quantity,
+                movement.reason,
+                reversal.created_at AS returned_at,
+                CASE WHEN reversal.id IS NULL THEN 'Consumed' ELSE 'Returned' END AS movement_status
+           FROM session_movements movement
+           JOIN affiliations affiliation ON affiliation.id = movement.affiliation_id
+           JOIN members member ON member.id = affiliation.member_id
+           JOIN plan_versions pv ON pv.id = affiliation.plan_version_id
+           LEFT JOIN private_sessions private_session
+             ON movement.reference_id = private_session.id
+            AND movement.reference_type IN ('private_session', 'private_pt', 'private_class')
+           LEFT JOIN class_bookings booking
+             ON movement.reference_id = booking.id
+            AND movement.reference_type IN ('class_booking', 'booking')
+           LEFT JOIN class_sessions class_session ON class_session.id = booking.class_id
+           LEFT JOIN session_movements reversal
+             ON reversal.id = (
+               SELECT reversal_pick.id
+                 FROM session_movements reversal_pick
+                WHERE reversal_pick.related_movement_id = movement.id
+                  AND reversal_pick.direction = '+'
+                  AND reversal_pick.movement_type IN ('refund', 'compensation', 'adjustment_positive')
+                ORDER BY reversal_pick.created_at DESC, reversal_pick.id DESC
+                LIMIT 1
+             )
+          WHERE affiliation.subscription_id = ?
+            AND movement.direction = '-'
+            AND movement.movement_type IN ('consumption', 'adjustment_negative')
+          ORDER BY session_datetime ASC, movement.id ASC`,
+        [req.params.id],
+      );
+
+      const [cycleRows]: any = await pool.query(
+        `SELECT cycle.cycle_number, cycle.start_date, cycle.end_date, cycle.status,
+                COALESCE(SUM(balance.included), 0) AS contracted,
+                COALESCE(SUM(balance.available), 0) AS remaining,
+                COALESCE(SUM(balance.reserved), 0) AS reserved
+           FROM subscription_cycles cycle
+           LEFT JOIN session_balances balance ON balance.cycle_id = cycle.id
+          WHERE cycle.subscription_id = ?
+          GROUP BY cycle.id
+          ORDER BY cycle.cycle_number`,
+        [req.params.id],
+      );
+
+      const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
+      doc.setFontSize(18);
+      doc.text("Subscription session history", 36, 36);
+      doc.setFontSize(10);
+      doc.text(`Holder: ${subscription.holder_name || "N/A"}`, 36, 54);
+      doc.text(`Plan: ${subscription.plan_name || "N/A"}`, 36, 68);
+      doc.text(
+        `Validity: ${String(subscription.start_date).slice(0, 10)} - ${String(subscription.end_date).slice(0, 10)} | Payment: ${subscription.payment_status}`,
+        36,
+        82,
+      );
+      doc.text(`Generated: ${new Date().toISOString()}`, 36, 96);
+
+      autoTable(doc, {
+        startY: 112,
+        head: [["Member", "Trainer", "Plan", "Session date & time", "Duration", "Quantity", "Status", "Returned at"]],
+        body: movementRows.map((row: any) => [
+          row.member_name || "N/A",
+          row.trainer_name || subscription.responsible_trainer || "N/A",
+          row.plan_name || subscription.plan_name,
+          row.session_datetime ? new Date(row.session_datetime).toISOString().replace("T", " ").slice(0, 16) : "N/A",
+          row.duration_minutes === null ? "N/A" : `${Number(row.duration_minutes)} min`,
+          Number(row.quantity || 0),
+          row.movement_status,
+          row.returned_at ? new Date(row.returned_at).toISOString().replace("T", " ").slice(0, 16) : "",
+        ]),
+        styles: { fontSize: 7 },
+        headStyles: { fillColor: [43, 43, 43] },
+      });
+
+      const cycleStartY = Math.min((doc as any).lastAutoTable?.finalY + 30 || 150, 520);
+      doc.setFontSize(13);
+      doc.text("Unconsumed sessions by cycle", 36, cycleStartY);
+      autoTable(doc, {
+        startY: cycleStartY + 10,
+        head: [["Cycle", "Start", "End", "Status", "Contracted", "Reserved", "Not consumed"]],
+        body: cycleRows.map((row: any) => [
+          Number(row.cycle_number || 0),
+          String(row.start_date || "").slice(0, 10),
+          String(row.end_date || "").slice(0, 10),
+          row.status,
+          Number(row.contracted || 0),
+          Number(row.reserved || 0),
+          Number(row.remaining || 0),
+        ]),
+        styles: { fontSize: 8 },
+        headStyles: { fillColor: [62, 74, 89] },
+      });
+
+      await pool.query(
+        "INSERT INTO audit_logs (action, details, performed_by) VALUES ('subscription_session_history_pdf_exported', ?, ?)",
+        [
+          JSON.stringify({
+            subscriptionId: req.params.id,
+            planName: subscription.plan_name,
+            movementCount: movementRows.length,
+            cycleCount: cycleRows.length,
+          }),
+          req.user?.email || req.user?.uid || "system",
+        ],
+      );
+      res.setHeader("Content-Type", "application/pdf");
+      const safeSubscriptionId = String(req.params.id).replace(/[^a-zA-Z0-9_-]/g, "");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="subscription-session-history-${safeSubscriptionId || "report"}.pdf"`,
+      );
+      res.send(Buffer.from(doc.output("arraybuffer")));
+    } catch (error) { next(error); }
+  });
+
   app.post("/api/v2/affiliations/:id/primary", requirePermission("membership.write"), async (req, res, next) => {
     let connection: any = null;
     try {
@@ -1289,6 +1503,21 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
           performedBy: req.user?.email || "system",
           idempotencyKey: req.headers["idempotency-key"] as string || normalizeString(req.body.idempotencyKey) || null,
         });
+        await connection.query(
+          "INSERT INTO audit_logs (action, details, performed_by) VALUES (?, ?, ?)",
+          [
+            "subscription_session_consumed",
+            JSON.stringify({
+              subscriptionId: affRows[0].subscription_id,
+              affiliationId,
+              movementId: movement.id,
+              quantity: numberOrDefault(req.body.quantity, 1),
+              reason: normalizeString(req.body.reason) || "Manual consumption",
+              balanceAfter: movement.balanceAfter,
+            }),
+            req.user?.email || req.user?.uid || "system",
+          ],
+        );
         await connection.commit();
         res.status(201).json({ movement: { id: movement.id, balanceAfter: movement.balanceAfter, type: movement.movementType } });
       } catch (error: any) {
@@ -1466,6 +1695,24 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
           performedBy: req.user?.email || "system",
           idempotencyKey: req.headers["idempotency-key"] as string || normalizeString(req.body.idempotencyKey) || null,
         });
+        await connection.query(
+          "INSERT INTO audit_logs (action, details, performed_by) VALUES (?, ?, ?)",
+          [
+            direction === "negative"
+              ? "subscription_session_deducted"
+              : "subscription_session_adjusted_positive",
+            JSON.stringify({
+              subscriptionId: affRows[0].subscription_id,
+              affiliationId,
+              movementId: movement.id,
+              quantity,
+              direction,
+              reason,
+              balanceAfter: movement.balanceAfter,
+            }),
+            req.user?.email || req.user?.uid || "system",
+          ],
+        );
         await connection.commit();
         res.status(201).json({ movement: { id: movement.id, balanceAfter: movement.balanceAfter, type: movement.movementType } });
       } catch (error: any) {
@@ -1664,6 +1911,21 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
         performedBy: req.user?.email || req.user?.uid || "system",
         idempotencyKey: requestedIdempotencyKey || `return_${original.id}`,
       });
+      await connection.query(
+        "INSERT INTO audit_logs (action, details, performed_by) VALUES ('subscription_session_returned', ?, ?)",
+        [
+          JSON.stringify({
+            subscriptionId: affRows[0].subscription_id,
+            affiliationId,
+            movementId: movement.id,
+            originalMovementId: original.id,
+            quantity: Number(original.quantity || 1),
+            reason,
+            balanceAfter: movement.balanceAfter,
+          }),
+          req.user?.email || req.user?.uid || "system",
+        ],
+      );
       await connection.commit();
       res.status(201).json({
         movement: {
@@ -1766,6 +2028,8 @@ function mapSubscription(row: any) {
     planVersionId: row.plan_version_id,
     planName: row.plan_name || "",
     planType: row.plan_type || "individual",
+    trainerId: row.trainer_id || null,
+    trainerName: row.trainer_name || null,
     holderMemberId: row.holder_member_id,
     holderFirstName,
     holderLastName,
