@@ -45,6 +45,7 @@ import {
 } from '../lib/subscriptionsV2Api';
 import {
   planManagementApi,
+  type MaintenanceList,
   type ManagedPlan,
 } from '../lib/planManagementApi';
 
@@ -64,7 +65,7 @@ type MemberDetail = {
   invoices: MembershipInvoice[];
 };
 
-const MEMBER_STATUSES = [
+const DEFAULT_MEMBER_STATUSES = [
   { value: 'active', label: 'Active' },
   { value: 'inactive', label: 'Inactive' },
   { value: 'suspended', label: 'Suspended' },
@@ -73,6 +74,10 @@ const MEMBER_STATUSES = [
   { value: 'paused', label: 'Paused' },
   { value: 'expired', label: 'Expired' },
   { value: 'archived', label: 'Archived' },
+];
+const DEFAULT_PAYMENT_STATUSES = [
+  { value: 'paid', label: 'Paid' },
+  { value: 'pending', label: 'Pending' },
 ];
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -327,6 +332,8 @@ export default function Members() {
     archived: 0,
   });
   const [currentPlanOptions, setCurrentPlanOptions] = useState<string[]>([]);
+  const [memberStatusOptions, setMemberStatusOptions] = useState(DEFAULT_MEMBER_STATUSES);
+  const [paymentStatusOptions, setPaymentStatusOptions] = useState(DEFAULT_PAYMENT_STATUSES);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -467,9 +474,10 @@ export default function Members() {
   );
 
   const loadPlans = async () => {
-    const [legacyResult, managedResult] = await Promise.allSettled([
+    const [legacyResult, managedResult, maintenanceResult] = await Promise.allSettled([
       membershipApi.listPlans(),
       planManagementApi.listPlans(),
+      planManagementApi.listMaintenance(),
     ]);
     if (legacyResult.status === 'fulfilled') {
       setPlans(
@@ -489,6 +497,18 @@ export default function Members() {
         managedResult.reason?.message ||
           'Failed to load active individual plans',
       );
+    }
+    if (maintenanceResult.status === 'fulfilled') {
+      const localizedOptions = (keys: string[], fallback: Array<{ value: string; label: string }>) => {
+        const list = maintenanceResult.value.lists.find((item: MaintenanceList) => keys.includes(item.key));
+        const options = list?.items
+          .filter((item) => item.status === 'active')
+          .sort((a, b) => a.sortOrder - b.sortOrder)
+          .map((item) => ({ value: item.code, label: locale === 'ar' ? item.labelAr : item.labelEn })) || [];
+        return options.length > 0 ? options : fallback;
+      };
+      setMemberStatusOptions(localizedOptions(['member_status', 'member_statuses'], DEFAULT_MEMBER_STATUSES));
+      setPaymentStatusOptions(localizedOptions(['payment_status', 'payment_statuses'], DEFAULT_PAYMENT_STATUSES));
     }
   };
 
@@ -1319,7 +1339,7 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                 onChange={(event) => setStatusFilter(event.target.value)}
               >
                 <option value="">All statuses</option>
-                {MEMBER_STATUSES.map((status) => (
+                {memberStatusOptions.map((status) => (
                   <option key={status.value} value={status.value}>{status.label}</option>
                 ))}
               </select>
@@ -1368,8 +1388,7 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                 onChange={(event) => setPaymentStatusFilter(event.target.value)}
               >
                 <option value="">{multiUserCopy.allPaymentStatuses}</option>
-                <option value="paid">{multiUserCopy.paid}</option>
-                <option value="pending">{multiUserCopy.pending}</option>
+                {paymentStatusOptions.map((status) => <option key={status.value} value={status.value}>{status.label}</option>)}
               </select>
             </div>
             <div className="space-y-1">
@@ -1638,8 +1657,7 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                           title={member.paymentStatus === 'paid' ? 'Paid subscriptions are locked' : undefined}
                           onChange={(event) => void changePaymentStatus(member, event.target.value as 'paid' | 'pending')}
                         >
-                          <option value="paid">{multiUserCopy.paid}</option>
-                          <option value="pending">{multiUserCopy.pending}</option>
+                          {paymentStatusOptions.map((status) => <option key={status.value} value={status.value}>{status.label}</option>)}
                         </select>
                       )}
                     </TableCell>
@@ -1786,7 +1804,7 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                     value={memberForm.status}
                     onChange={(event) => updateMemberForm('status', event.target.value)}
                   >
-                    {MEMBER_STATUSES.map((status) => (
+                    {memberStatusOptions.map((status) => (
                       <option
                         key={status.value}
                         value={status.value}
@@ -2000,8 +2018,7 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                   }}
                 >
                   <option value="">Select payment status</option>
-                  <option value="paid">{multiUserCopy.paid}</option>
-                  <option value="pending">{multiUserCopy.pending}</option>
+                  {paymentStatusOptions.map((status) => <option key={status.value} value={status.value}>{status.label}</option>)}
                 </select>
               </div>
               <div className="space-y-2">

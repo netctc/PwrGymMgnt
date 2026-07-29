@@ -188,7 +188,7 @@ const SCREEN_REPORTS: ScreenReportDefinition[] = [
     title: "Members Directory Report",
     subtitle: "Member records filtered by date, status, member and search text",
     tableTitle: "Members",
-    columns: ["ID", "Name", "Email", "Phone", "Status", "Plan", "Expiry", "Join Date", "Subscription", "Subscription Status", "Open Invoices"],
+    columns: ["ID", "Name", "Email", "Phone", "Status", "Plan", "Expiry", "Join Date", "Subscription", "Subscription Status", "Payment Status", "Open Invoices"],
     baseSql: `SELECT
        m.id,
        CONCAT_WS(' ', m.first_name, m.last_name) AS name,
@@ -206,6 +206,7 @@ const SCREEN_REPORTS: ScreenReportDefinition[] = [
        DATE(m.join_date) AS join_date,
        current_subscription.subscription_plan,
        current_subscription.subscription_status,
+       current_invoice.payment_status,
        (SELECT COUNT(*) FROM invoices inv WHERE inv.member_id = m.id AND inv.status IN ('issued','overdue','unpaid')) AS open_invoices
      FROM members m
      LEFT JOIN (
@@ -215,12 +216,20 @@ const SCREEN_REPORTS: ScreenReportDefinition[] = [
          FROM member_subscriptions ms
        ) ranked
        WHERE ranked.rn = 1
-     ) current_subscription ON current_subscription.member_id = m.id`,
+     ) current_subscription ON current_subscription.member_id = m.id
+     LEFT JOIN (
+       SELECT ranked.member_id, ranked.status AS payment_status
+       FROM (
+         SELECT i.member_id, i.status, ROW_NUMBER() OVER (PARTITION BY i.member_id ORDER BY i.created_at DESC) AS rn
+         FROM invoices i
+       ) ranked
+       WHERE ranked.rn = 1
+     ) current_invoice ON current_invoice.member_id = m.id`,
     orderBy: "ORDER BY m.created_at DESC, m.last_name ASC",
     dateColumn: "m.join_date",
-    filters: [...COMMON_DATE_FILTERS, { id: "status", label: "Status", type: "select", options: STATUS_OPTIONS }, { id: "memberId", label: "Member ID", type: "text", placeholder: "Exact member ID" }, { id: "q", label: "Search", type: "text", placeholder: "Name, email or phone" }],
-    exactFilters: { status: "CASE WHEN LOWER(TRIM(m.status)) = 'active' AND current_subscription.valid_until IS NOT NULL AND DATE(current_subscription.valid_until) < CURDATE() THEN 'expired' ELSE m.status END", memberId: "m.id" },
-    likeFilters: { q: ["m.first_name", "m.last_name", "m.email", "m.phone", "m.plan"] },
+    filters: [...COMMON_DATE_FILTERS, { id: "status", label: "Status", type: "select", options: STATUS_OPTIONS }, { id: "currentPlan", label: "Current Plan", type: "text", placeholder: "Plan name" }, { id: "subscriptionStatus", label: "Subscription Status", type: "select", options: STATUS_OPTIONS }, { id: "paymentStatus", label: "Payment Status", type: "select", options: STATUS_OPTIONS }, { id: "memberId", label: "Member ID", type: "text", placeholder: "Exact member ID" }, { id: "q", label: "Search", type: "text", placeholder: "Name, email or phone" }],
+    exactFilters: { status: "CASE WHEN LOWER(TRIM(m.status)) = 'active' AND current_subscription.valid_until IS NOT NULL AND DATE(current_subscription.valid_until) < CURDATE() THEN 'expired' ELSE m.status END", subscriptionStatus: "current_subscription.subscription_status", paymentStatus: "current_invoice.payment_status", memberId: "m.id" },
+    likeFilters: { currentPlan: ["current_subscription.subscription_plan", "m.plan"], q: ["m.first_name", "m.last_name", "m.email", "m.phone", "m.plan"] },
   },
   {
     id: "subscriptions-validity",

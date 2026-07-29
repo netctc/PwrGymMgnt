@@ -16,6 +16,7 @@ import ConfirmActionDialog from "../components/ConfirmActionDialog";
 import EmptyState from "../components/EmptyState";
 import InlineAlert from "../components/InlineAlert";
 import ScreenReportActions from "../components/ScreenReportActions";
+import ListPagination from "../components/ListPagination";
 import { usePersistentState } from "../hooks/usePersistentState";
 import { validateDateRange } from "../lib/dateRange";
 
@@ -151,6 +152,8 @@ export default function Accounting() {
   const [budgets, setBudgets] = useState<FinanceBudget[]>([]);
   const [payrollRuns, setPayrollRuns] = useState<PayrollRun[]>([]);
   const [selectedPayrollRun, setSelectedPayrollRun] = useState("");
+  const [ledgerPage, setLedgerPage] = useState(1);
+  const [ledgerPageSize, setLedgerPageSize] = useState(25);
 
   const [transactionForm, setTransactionForm] = useState<TransactionForm>(emptyTransaction);
   const [loanForm, setLoanForm] = useState<LoanForm>(emptyLoan);
@@ -163,6 +166,13 @@ export default function Accounting() {
     ["Subscription", "Membership Renewal", "POS Sales", "Cost of Goods Sold", "Inventory Purchase", "Class", "Payroll", "Rent", "Utilities", "Maintenance", "Equipment", "Loan", "Other"].forEach((item) => set.add(item));
     return Array.from(set).sort();
   }, [transactions, warehouseCategories]);
+  const ledgerTotalPages = Math.max(1, Math.ceil(transactions.length / ledgerPageSize));
+  const safeLedgerPage = Math.min(ledgerPage, ledgerTotalPages);
+  const pagedTransactions = transactions.slice((safeLedgerPage - 1) * ledgerPageSize, safeLedgerPage * ledgerPageSize);
+
+  useEffect(() => {
+    setLedgerPage(1);
+  }, [filterFrom, filterTo, typeFilter, categoryFilter, statusFilter, minAmountFilter, maxAmountFilter, exactAmountFilter, ledgerPageSize]);
 
   const dateRangeValidation = useMemo(
     () => validateDateRange(filterFrom, filterTo, { maxDays: 366 }),
@@ -553,7 +563,7 @@ export default function Accounting() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {transactions.map((tx) => (
+                  {pagedTransactions.map((tx) => (
                     <TableRow key={tx.id}>
                       <TableCell>{displayDate(tx.date)}</TableCell>
                       <TableCell className="capitalize">{tx.type}</TableCell>
@@ -582,6 +592,7 @@ export default function Accounting() {
                 </TableBody>
               </Table>
             </CardContent>
+            {transactions.length > 0 && <ListPagination page={safeLedgerPage} pageSize={ledgerPageSize} total={transactions.length} onPageChange={setLedgerPage} onPageSizeChange={setLedgerPageSize} />}
           </Card>
         </TabsContent>
 

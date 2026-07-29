@@ -11,6 +11,7 @@ import { Badge } from '../components/ui/badge';
 import { schedulingApi, SchedulingApiError, type ClassSession, type SchedulingPerson } from '../lib/schedulingApi';
 import { reportsApi } from '../lib/reportsApi';
 import ScreenReportActions from '../components/ScreenReportActions';
+import ListPagination from '../components/ListPagination';
 import { hasClientPermission } from '../lib/permissions';
 
 function fullName(person?: SchedulingPerson) {
@@ -47,6 +48,13 @@ export default function Classes() {
   const [branch, setBranch] = useState('General');
   const [trainerId, setTrainerId] = useState('');
   const [printTrainerId, setPrintTrainerId] = useState('all');
+  const [viewMode, setViewMode] = useState<'calendar' | 'list'>('calendar');
+  const [listFrom, setListFrom] = useState('');
+  const [listTo, setListTo] = useState('');
+  const [listType, setListType] = useState('all');
+  const [listTrainerId, setListTrainerId] = useState('all');
+  const [listPage, setListPage] = useState(1);
+  const [listPageSize, setListPageSize] = useState(25);
 
   const isScheduler = hasClientPermission(profile?.role, 'scheduling.write');
   const weekStart = useMemo(() => startOfWeek(currentDate, { weekStartsOn: 1 }), [currentDate]);
@@ -63,9 +71,14 @@ export default function Classes() {
   const fetchClasses = async () => {
     setLoading(true);
     try {
-      const from = weekStart.toISOString();
-      const to = addDays(weekStart, 7).toISOString();
-      const response = await schedulingApi.listClasses({ from, to });
+      const response = viewMode === 'calendar'
+        ? await schedulingApi.listClasses({ from: weekStart.toISOString(), to: addDays(weekStart, 7).toISOString() })
+        : await schedulingApi.listClasses({
+            from: listFrom ? new Date(`${listFrom}T00:00:00`).toISOString() : undefined,
+            to: listTo ? new Date(`${listTo}T23:59:59.999`).toISOString() : undefined,
+            trainerId: listTrainerId === 'all' ? undefined : listTrainerId,
+            type: listType === 'all' ? undefined : listType,
+          });
       setClasses(response.classes);
     } catch (error) {
       toast.error(formatConflictMessage(error));
@@ -80,7 +93,7 @@ export default function Classes() {
 
   useEffect(() => {
     fetchClasses();
-  }, [weekStart]);
+  }, [weekStart, viewMode, listFrom, listTo, listType, listTrainerId]);
 
   const handleCreate = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -169,12 +182,16 @@ export default function Classes() {
   };
 
   // --- List/Management view state ---
-  const [viewMode, setViewMode] = useState<'calendar' | 'list'>('calendar');
   const [editingClass, setEditingClass] = useState<ClassSession | null>(null);
   const [editForm, setEditForm] = useState({ title: '', type: '', capacity: '', room: '', level: '', branch: '', trainerId: '', startTime: '', duration: '60' });
   const [participantsClass, setParticipantsClass] = useState<ClassSession | null>(null);
   const [bookings, setBookings] = useState<Array<{ id: string; memberId: string; memberName?: string; status: string; bookedAt?: string }>>([]);
   const [bookingsLoading, setBookingsLoading] = useState(false);
+  const classTotalPages = Math.max(1, Math.ceil(classes.length / listPageSize));
+  const safeListPage = Math.min(listPage, classTotalPages);
+  const pagedClasses = classes.slice((safeListPage - 1) * listPageSize, safeListPage * listPageSize);
+
+  useEffect(() => { setListPage(1); }, [listFrom, listTo, listType, listTrainerId, listPageSize]);
 
   const openEdit = (classSession: ClassSession) => {
     setEditForm({
@@ -448,7 +465,14 @@ export default function Classes() {
 
         {viewMode === 'list' && (
           <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
-            <table className="w-full text-sm">
+            <div className="grid gap-3 border-b border-slate-200 p-4 sm:grid-cols-2 xl:grid-cols-4">
+              <div><Label className="text-xs text-slate-500">From</Label><Input type="date" value={listFrom} onChange={(event) => setListFrom(event.target.value)} /></div>
+              <div><Label className="text-xs text-slate-500">To</Label><Input type="date" value={listTo} onChange={(event) => setListTo(event.target.value)} /></div>
+              <div><Label className="text-xs text-slate-500">Class type</Label><select className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm" value={listType} onChange={(event) => setListType(event.target.value)}><option value="all">All types</option><option value="HIIT">HIIT</option><option value="Yoga">Yoga</option><option value="Crossfit">Crossfit</option><option value="Spinning">Spinning</option><option value="Strength">Strength</option></select></div>
+              <div><Label className="text-xs text-slate-500">Trainer</Label><select className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm" value={listTrainerId} onChange={(event) => setListTrainerId(event.target.value)}><option value="all">All trainers</option>{trainers.map((trainer) => <option key={trainer.id} value={trainer.id}>{fullName(trainer)}</option>)}</select></div>
+            </div>
+            <div className="max-h-[70vh] overflow-auto">
+            <table className="w-full min-w-[980px] text-sm">
               <thead className="bg-slate-50 border-b">
                 <tr>
                   <th className="text-left px-4 py-3 font-semibold text-slate-600">Class</th>
@@ -466,7 +490,7 @@ export default function Classes() {
                 ) : classes.length === 0 ? (
                   <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-400">No classes found for this week</td></tr>
                 ) : (
-                  classes.map((classSession) => {
+                  pagedClasses.map((classSession) => {
                     const freeSpots = classSession.capacity - classSession.enrolledCount;
                     return (
                       <tr key={classSession.id} className="hover:bg-slate-50/60">
@@ -506,6 +530,8 @@ export default function Classes() {
                 )}
               </tbody>
             </table>
+            </div>
+            {!loading && classes.length > 0 && <ListPagination page={safeListPage} pageSize={listPageSize} total={classes.length} onPageChange={setListPage} onPageSizeChange={setListPageSize} />}
           </div>
         )}
       </div>

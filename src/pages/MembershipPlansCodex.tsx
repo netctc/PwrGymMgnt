@@ -12,6 +12,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '.
 import DateInput from '../components/DateInput';
 import InlineAlert from '../components/InlineAlert';
 import EmptyState from '../components/EmptyState';
+import ListPagination from '../components/ListPagination';
 import { useLocalization } from '../contexts/LocalizationContext';
 import { planManagementApi, type MaintenanceList, type ManagedPlan, type TrainerOption } from '../lib/planManagementApi';
 
@@ -231,6 +232,11 @@ export default function MembershipPlansCodex() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [open, setOpen] = useState(false);
+  const [searchFilter, setSearchFilter] = useState('');
+  const [typeFilter, setTypeFilter] = useState('all');
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
   const [form, setForm] = useState<FormState>(emptyForm);
 
   const labels = (key: string, fallback: Array<{ code: string; en: string; ar: string }>) => {
@@ -306,6 +312,19 @@ export default function MembershipPlansCodex() {
 
   const activeCount = useMemo(() => plans.filter((plan) => plan.status === 'active').length, [plans]);
   const multiUserCount = useMemo(() => plans.filter((plan) => plan.planType !== 'individual').length, [plans]);
+  const filteredPlans = useMemo(() => {
+    const search = searchFilter.trim().toLowerCase();
+    return plans.filter((plan) =>
+      (!search || `${plan.name} ${plan.description || ''}`.toLowerCase().includes(search))
+      && (typeFilter === 'all' || plan.planType === typeFilter)
+      && (statusFilter === 'all' || plan.status === statusFilter),
+    );
+  }, [plans, searchFilter, typeFilter, statusFilter]);
+  const totalPages = Math.max(1, Math.ceil(filteredPlans.length / pageSize));
+  const safePage = Math.min(page, totalPages);
+  const pagedPlans = filteredPlans.slice((safePage - 1) * pageSize, safePage * pageSize);
+
+  useEffect(() => { setPage(1); }, [searchFilter, typeFilter, statusFilter, pageSize]);
 
   const openCreate = () => { setForm(emptyForm); setOpen(true); };
   const openEdit = (plan: ManagedPlan) => {
@@ -444,6 +463,29 @@ export default function MembershipPlansCodex() {
       </div>
 
       <Card>
+        <CardContent className="grid gap-3 pt-6 md:grid-cols-3">
+          <div className="space-y-2">
+            <Label>{locale === 'ar' ? 'البحث' : 'Search'}</Label>
+            <Input value={searchFilter} onChange={(event) => setSearchFilter(event.target.value)} placeholder={locale === 'ar' ? 'اسم الخطة أو الوصف' : 'Plan name or description'} />
+          </div>
+          <div className="space-y-2">
+            <Label>{c.type}</Label>
+            <select className="h-10 w-full rounded-md border bg-white px-3" value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}>
+              <option value="all">{locale === 'ar' ? 'كل الأنواع' : 'All types'}</option>
+              {planTypes.map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}
+            </select>
+          </div>
+          <div className="space-y-2">
+            <Label>{c.status}</Label>
+            <select className="h-10 w-full rounded-md border bg-white px-3" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
+              <option value="all">{locale === 'ar' ? 'كل الحالات' : 'All statuses'}</option>
+              {statuses.map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}
+            </select>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
         <CardHeader><CardTitle>{c.title}</CardTitle><CardDescription>{c.individualRule} {c.multiRule}</CardDescription></CardHeader>
         <CardContent>
           <Table>
@@ -453,9 +495,9 @@ export default function MembershipPlansCodex() {
               <TableHead>{c.status}</TableHead><TableHead className="text-end">{c.actions}</TableHead>
             </TableRow></TableHeader>
             <TableBody>
-              {!loading && plans.length === 0 ? (
+              {!loading && filteredPlans.length === 0 ? (
                 <TableRow><TableCell colSpan={8}><EmptyState compact title={c.noPlans} description={c.noPlansDescription} actionLabel={c.create} onAction={openCreate} /></TableCell></TableRow>
-              ) : plans.map((plan) => (
+              ) : pagedPlans.map((plan) => (
                 <TableRow key={plan.id}>
                   <TableCell><div className="font-medium">{plan.name}</div><div className="text-xs text-slate-500">{c.version} {plan.versionNumber}</div></TableCell>
                   <TableCell>{labelFor(planTypes, plan.planType)}</TableCell>
@@ -470,6 +512,9 @@ export default function MembershipPlansCodex() {
             </TableBody>
           </Table>
         </CardContent>
+        {!loading && filteredPlans.length > 0 && (
+          <ListPagination page={safePage} pageSize={pageSize} total={filteredPlans.length} onPageChange={setPage} onPageSizeChange={setPageSize} locale={locale} />
+        )}
       </Card>
 
       <Dialog open={open} onOpenChange={setOpen}>

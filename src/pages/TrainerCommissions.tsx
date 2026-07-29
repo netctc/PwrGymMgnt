@@ -4,12 +4,14 @@ import { toast } from "sonner";
 import DateInput from "../components/DateInput";
 import EmptyState from "../components/EmptyState";
 import InlineAlert from "../components/InlineAlert";
+import ListPagination from "../components/ListPagination";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
 import { Label } from "../components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { useLocalization } from "../contexts/LocalizationContext";
+import { planManagementApi, type TrainerOption } from "../lib/planManagementApi";
 import {
   trainerCommissionsApi,
   type TrainerCommissionFilters,
@@ -77,15 +79,24 @@ export default function TrainerCommissions() {
   const [payments, setPayments] = useState<TrainerCommissionPayment[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [activeEmployees, setActiveEmployees] = useState<TrainerOption[]>([]);
+  const [pageSize, setPageSize] = useState(25);
+  const [performancePage, setPerformancePage] = useState(1);
+  const [historyPage, setHistoryPage] = useState(1);
+  const [paymentsPage, setPaymentsPage] = useState(1);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
-      const response = await trainerCommissionsApi.list(appliedFilters);
+      const [response, employeesResponse] = await Promise.all([
+        trainerCommissionsApi.list(appliedFilters),
+        planManagementApi.listTrainers().catch(() => ({ trainers: [] as TrainerOption[] })),
+      ]);
       setTrainers(response.trainers);
       setHistory(response.history);
       setPayments(response.payments);
+      setActiveEmployees(employeesResponse.trainers);
     } catch (loadError: any) {
       setError(loadError?.message || c.loadError);
     } finally {
@@ -97,10 +108,27 @@ export default function TrainerCommissions() {
 
   const trainerOptions = useMemo(() => {
     const values = new Map<string, string>();
+    activeEmployees.forEach((item) => values.set(item.id, item.name));
     history.forEach((item) => values.set(item.trainerId, item.trainerName));
     trainers.forEach((item) => values.set(item.trainerId, item.trainerName));
     return Array.from(values, ([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name));
-  }, [history, trainers]);
+  }, [activeEmployees, history, trainers]);
+
+  const performanceTotalPages = Math.max(1, Math.ceil(trainers.length / pageSize));
+  const historyTotalPages = Math.max(1, Math.ceil(history.length / pageSize));
+  const paymentsTotalPages = Math.max(1, Math.ceil(payments.length / pageSize));
+  const safePerformancePage = Math.min(performancePage, performanceTotalPages);
+  const safeHistoryPage = Math.min(historyPage, historyTotalPages);
+  const safePaymentsPage = Math.min(paymentsPage, paymentsTotalPages);
+  const pagedTrainers = trainers.slice((safePerformancePage - 1) * pageSize, safePerformancePage * pageSize);
+  const pagedHistory = history.slice((safeHistoryPage - 1) * pageSize, safeHistoryPage * pageSize);
+  const pagedPayments = payments.slice((safePaymentsPage - 1) * pageSize, safePaymentsPage * pageSize);
+
+  useEffect(() => {
+    setPerformancePage(1);
+    setHistoryPage(1);
+    setPaymentsPage(1);
+  }, [appliedFilters, pageSize]);
 
   const statusLabel = (status: string) =>
     status === "paid"
@@ -169,11 +197,12 @@ export default function TrainerCommissions() {
           <Table>
             <TableHeader><TableRow><TableHead>{c.trainer}</TableHead><TableHead>{c.sessions}</TableHead><TableHead>{c.total}</TableHead><TableHead>{c.pending}</TableHead><TableHead>{c.paid}</TableHead></TableRow></TableHeader>
             <TableBody>
-              {trainers.map((item) => <TableRow key={item.trainerId}><TableCell className="font-medium">{item.trainerName}</TableCell><TableCell>{item.sessionsCompleted}</TableCell><TableCell>{formatCurrency(item.totalCommission, item.currency)}</TableCell><TableCell>{formatCurrency(item.pendingCommission, item.currency)}</TableCell><TableCell>{formatCurrency(item.paidCommission, item.currency)}</TableCell></TableRow>)}
+              {pagedTrainers.map((item) => <TableRow key={item.trainerId}><TableCell className="font-medium">{item.trainerName}</TableCell><TableCell>{item.sessionsCompleted}</TableCell><TableCell>{formatCurrency(item.totalCommission, item.currency)}</TableCell><TableCell>{formatCurrency(item.pendingCommission, item.currency)}</TableCell><TableCell>{formatCurrency(item.paidCommission, item.currency)}</TableCell></TableRow>)}
               {!loading && trainers.length === 0 && <TableRow><TableCell colSpan={5}><EmptyState compact title={c.none} description={c.noneDescription} /></TableCell></TableRow>}
             </TableBody>
           </Table>
         </CardContent>
+        {!loading && trainers.length > 0 && <ListPagination page={safePerformancePage} pageSize={pageSize} total={trainers.length} onPageChange={setPerformancePage} onPageSizeChange={setPageSize} locale={locale} />}
       </Card>
 
       <Card>
@@ -182,7 +211,7 @@ export default function TrainerCommissions() {
           <Table>
             <TableHeader><TableRow><TableHead>{c.trainer}</TableHead><TableHead>{c.plan}</TableHead><TableHead>{c.invoice}</TableHead><TableHead>{c.gross}</TableHead><TableHead>{c.percentage}</TableHead><TableHead>{c.commission}</TableHead><TableHead>{c.amountPaid}</TableHead><TableHead>{c.amountPending}</TableHead><TableHead>{c.sessionProgress}</TableHead><TableHead>{c.gym}</TableHead><TableHead>{c.status}</TableHead><TableHead>{c.due}</TableHead><TableHead>{c.actions}</TableHead></TableRow></TableHeader>
             <TableBody>
-              {history.map((item) => {
+              {pagedHistory.map((item) => {
                 const payable = item.paymentStatus === "pending" || item.paymentStatus === "earned" || item.paymentStatus === "partially_paid";
                 const canPayPartial = payable
                   && item.sessionsContracted > 0
@@ -194,6 +223,7 @@ export default function TrainerCommissions() {
             </TableBody>
           </Table>
         </CardContent>
+        {!loading && history.length > 0 && <ListPagination page={safeHistoryPage} pageSize={pageSize} total={history.length} onPageChange={setHistoryPage} onPageSizeChange={setPageSize} locale={locale} />}
       </Card>
 
       <Card>
@@ -202,11 +232,12 @@ export default function TrainerCommissions() {
           <Table>
             <TableHeader><TableRow><TableHead>{c.paidAt}</TableHead><TableHead>{c.trainer}</TableHead><TableHead>{c.plan}</TableHead><TableHead>{c.invoice}</TableHead><TableHead>{c.paymentType}</TableHead><TableHead>{c.amount}</TableHead><TableHead>{c.sessionProgress}</TableHead><TableHead>{c.balance}</TableHead><TableHead>{c.authorizedBy}</TableHead></TableRow></TableHeader>
             <TableBody>
-              {payments.map((payment) => <TableRow key={payment.id}><TableCell>{formatDateTime(payment.paidAt)}</TableCell><TableCell>{payment.trainerName}</TableCell><TableCell>{payment.planName}</TableCell><TableCell>{payment.invoiceNumber}</TableCell><TableCell><Badge variant="outline">{payment.paymentType === "partial" ? c.partialType : c.fullType}</Badge></TableCell><TableCell>{formatCurrency(payment.amount, payment.currency)}</TableCell><TableCell>{payment.sessionsContracted > 0 ? `${payment.sessionsConsumed} / ${Math.max(0, payment.sessionsContracted - payment.sessionsConsumed)} (${payment.sessionsContracted})` : "—"}</TableCell><TableCell>{formatCurrency(payment.balanceAfter, payment.currency)}</TableCell><TableCell>{payment.authorizedBy}</TableCell></TableRow>)}
+              {pagedPayments.map((payment) => <TableRow key={payment.id}><TableCell>{formatDateTime(payment.paidAt)}</TableCell><TableCell>{payment.trainerName}</TableCell><TableCell>{payment.planName}</TableCell><TableCell>{payment.invoiceNumber}</TableCell><TableCell><Badge variant="outline">{payment.paymentType === "partial" ? c.partialType : c.fullType}</Badge></TableCell><TableCell>{formatCurrency(payment.amount, payment.currency)}</TableCell><TableCell>{payment.sessionsContracted > 0 ? `${payment.sessionsConsumed} / ${Math.max(0, payment.sessionsContracted - payment.sessionsConsumed)} (${payment.sessionsContracted})` : "—"}</TableCell><TableCell>{formatCurrency(payment.balanceAfter, payment.currency)}</TableCell><TableCell>{payment.authorizedBy}</TableCell></TableRow>)}
               {!loading && payments.length === 0 && <TableRow><TableCell colSpan={9} className="py-8 text-center text-sm text-slate-500">{c.noPayments}</TableCell></TableRow>}
             </TableBody>
           </Table>
         </CardContent>
+        {!loading && payments.length > 0 && <ListPagination page={safePaymentsPage} pageSize={pageSize} total={payments.length} onPageChange={setPaymentsPage} onPageSizeChange={setPageSize} locale={locale} />}
       </Card>
     </div>
   );

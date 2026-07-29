@@ -36,6 +36,7 @@ import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import DateInput from '../components/DateInput';
+import ListPagination from '../components/ListPagination';
 import { Label } from '../components/ui/label';
 import {
   warehouseApi,
@@ -254,6 +255,20 @@ export default function Warehouse() {
   const [stockStatus, setStockStatus] = useState('all');
   const [category, setCategory] = useState('all');
   const [poStatusFilter, setPoStatusFilter] = useState('all');
+  const [poSupplierFilter, setPoSupplierFilter] = useState('all');
+  const [poFrom, setPoFrom] = useState('');
+  const [poTo, setPoTo] = useState('');
+  const [salesPaymentFilter, setSalesPaymentFilter] = useState('all');
+  const [salesFrom, setSalesFrom] = useState('');
+  const [salesTo, setSalesTo] = useState('');
+  const [inventoryPage, setInventoryPage] = useState(1);
+  const [inventoryPageSize, setInventoryPageSize] = useState(25);
+  const [posPage, setPosPage] = useState(1);
+  const [posPageSize, setPosPageSize] = useState(25);
+  const [poPage, setPoPage] = useState(1);
+  const [poPageSize, setPoPageSize] = useState(25);
+  const [salesPage, setSalesPage] = useState(1);
+  const [salesPageSize, setSalesPageSize] = useState(25);
   const [reportFilters, setReportFilters] = useState({ from: '', to: '', category: 'all' });
 
   const [productForm, setProductForm] = useState<ProductForm>(initialProductForm);
@@ -330,8 +345,7 @@ export default function Warehouse() {
     return products
       .filter((product) => product.status !== 'archived')
       .filter((product) => category === 'all' || product.category === category || product.categoryId === category)
-      .filter((product) => !q || [product.sku, product.barcode, product.name, product.category].some((value) => String(value || '').toLowerCase().includes(q)))
-      .slice(0, 36);
+      .filter((product) => !q || [product.sku, product.barcode, product.name, product.category].some((value) => String(value || '').toLowerCase().includes(q)));
   }, [products, globalSearch, category]);
 
   const cartTotals = useMemo(() => {
@@ -375,9 +389,34 @@ export default function Warehouse() {
     return purchaseOrders.filter((po) => {
       const matchesSearch = !q || [po.poNumber, po.supplierName, po.status].some((value) => String(value || '').toLowerCase().includes(q));
       const matchesStatus = poStatusFilter === 'all' || normalizedStatus(po.status) === poStatusFilter;
-      return matchesSearch && matchesStatus;
+      const matchesSupplier = poSupplierFilter === 'all' || po.supplierId === poSupplierFilter;
+      const orderDate = String(po.orderDate || '').slice(0, 10);
+      const matchesFrom = !poFrom || orderDate >= poFrom;
+      const matchesTo = !poTo || orderDate <= poTo;
+      return matchesSearch && matchesStatus && matchesSupplier && matchesFrom && matchesTo;
     });
-  }, [purchaseOrders, globalSearch, poStatusFilter]);
+  }, [purchaseOrders, globalSearch, poStatusFilter, poSupplierFilter, poFrom, poTo]);
+
+  const filteredSales = useMemo(() => sales.filter((sale) => {
+    const date = String(sale.saleDate || '').slice(0, 10);
+    return (salesPaymentFilter === 'all' || sale.paymentMethod === salesPaymentFilter)
+      && (!salesFrom || date >= salesFrom)
+      && (!salesTo || date <= salesTo);
+  }), [sales, salesPaymentFilter, salesFrom, salesTo]);
+
+  const safeInventoryPage = Math.min(inventoryPage, Math.max(1, Math.ceil(filteredProducts.length / inventoryPageSize)));
+  const safePosPage = Math.min(posPage, Math.max(1, Math.ceil(posProducts.length / posPageSize)));
+  const safePoPage = Math.min(poPage, Math.max(1, Math.ceil(filteredPurchaseOrders.length / poPageSize)));
+  const safeSalesPage = Math.min(salesPage, Math.max(1, Math.ceil(filteredSales.length / salesPageSize)));
+  const pagedProducts = filteredProducts.slice((safeInventoryPage - 1) * inventoryPageSize, safeInventoryPage * inventoryPageSize);
+  const pagedPosProducts = posProducts.slice((safePosPage - 1) * posPageSize, safePosPage * posPageSize);
+  const pagedPurchaseOrders = filteredPurchaseOrders.slice((safePoPage - 1) * poPageSize, safePoPage * poPageSize);
+  const pagedSales = filteredSales.slice((safeSalesPage - 1) * salesPageSize, safeSalesPage * salesPageSize);
+
+  useEffect(() => { setInventoryPage(1); }, [globalSearch, stockStatus, category, inventoryPageSize]);
+  useEffect(() => { setPosPage(1); }, [globalSearch, category, posPageSize]);
+  useEffect(() => { setPoPage(1); }, [globalSearch, poStatusFilter, poSupplierFilter, poFrom, poTo, poPageSize]);
+  useEffect(() => { setSalesPage(1); }, [salesPaymentFilter, salesFrom, salesTo, salesPageSize]);
 
   const beginCreateProduct = () => {
     setProductForm(initialProductForm);
@@ -824,7 +863,7 @@ export default function Warehouse() {
                 <table className="w-full min-w-[1040px] text-left text-sm">
                   <thead className="bg-slate-100 text-xs uppercase tracking-wider text-slate-600"><tr><th className="px-4 py-3">Image</th><th className="px-4 py-3">SKU</th><th className="px-4 py-3">Product Name</th><th className="px-4 py-3">Category</th><th className="px-4 py-3 text-right">Stock</th><th className="px-4 py-3">Status</th><th className="px-4 py-3 text-right">Cost</th><th className="px-4 py-3 text-right">Retail</th><th className="px-4 py-3">Actions</th></tr></thead>
                   <tbody className="divide-y divide-slate-200">
-                    {filteredProducts.slice(0, 100).map((product) => (
+                    {pagedProducts.map((product) => (
                       <tr key={product.id} className={`${normalizedStatus(product.stockStatus) === 'out_of_stock' ? 'bg-red-500/5' : normalizedStatus(product.stockStatus) === 'low_stock' ? 'bg-yellow-500/5' : 'bg-white'} hover:bg-slate-50`}>
                         <td className="px-4 py-4 align-top"><ProductThumb product={product} /></td><td className="px-4 py-4 align-top"><button className="font-black text-[#169b45] hover:underline" onClick={() => void loadProductDetail(product.id)}>{product.sku}</button><div className="text-xs text-slate-500">{product.barcode || 'No barcode'}</div></td>
                         <td className="px-4 py-4 align-top"><div className="font-bold text-slate-900">{product.name}</div><div className="text-xs text-slate-500">{product.supplierName || 'No supplier'}</div></td>
@@ -840,6 +879,7 @@ export default function Warehouse() {
                 </table>
               </div>
             )}
+            {filteredProducts.length > 0 && <ListPagination page={safeInventoryPage} pageSize={inventoryPageSize} total={filteredProducts.length} onPageChange={setInventoryPage} onPageSizeChange={setInventoryPageSize} />}
           </Panel>
 
           <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_380px]">
@@ -896,7 +936,7 @@ export default function Warehouse() {
           <div className="flex min-w-0 flex-col bg-transparent">
             <div className="flex flex-wrap gap-3 border-b border-slate-200 p-4"><button onClick={() => setCategory('all')} className={`rounded-xl px-6 py-3 text-sm font-black uppercase tracking-wide ${category === 'all' ? 'bg-[#44e878] text-[#04130b]' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>All Products</button>{categoryOptions.slice(0, 8).map((item) => <button key={item.id} onClick={() => setCategory(item.id)} className={`rounded-xl px-6 py-3 text-sm font-black uppercase tracking-wide ${category === item.id ? 'bg-[#44e878] text-[#04130b]' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>{categoryLabel(categories, item.id, item.name)}</button>)}</div>
             <div className="grid flex-1 gap-4 overflow-y-auto p-6 md:grid-cols-2 xl:grid-cols-4">
-              {posProducts.map((product) => (
+              {pagedPosProducts.map((product) => (
                 <div key={product.id} className={`group min-h-64 rounded-xl border border-slate-200 bg-white p-3 text-left transition hover:border-[#44e878] ${product.stockQuantity <= 0 ? 'opacity-55' : ''}`}>
                   <button type="button" className="w-full text-left" disabled={product.stockQuantity <= 0} onClick={() => addToCart(product)}>
                     <div className="relative mb-3 flex h-28 items-center justify-center overflow-hidden rounded-lg bg-gradient-to-br from-slate-100 to-slate-200">{product.imageUrl ? <img src={product.imageUrl} alt={product.name} className="h-full w-full object-cover" /> : <span className="text-4xl font-black text-[#44e878]/70">{product.name.slice(0, 1)}</span>}<span className={`absolute right-2 top-2 rounded px-2 py-1 text-[10px] font-black uppercase ${product.stockQuantity <= 0 ? 'bg-red-100 text-red-700' : 'bg-[#44e878] text-[#04130b]'}`}>{product.stockQuantity <= 0 ? 'Out of stock' : `Stock: ${product.stockQuantity}`}</span></div>
@@ -906,6 +946,7 @@ export default function Warehouse() {
                 </div>
               ))}
             </div>
+            {posProducts.length > 0 && <ListPagination page={safePosPage} pageSize={posPageSize} total={posProducts.length} onPageChange={setPosPage} onPageSizeChange={setPosPageSize} />}
             <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 bg-white p-4"><Toggle checked={autoPrintReceipt} onChange={setAutoPrintReceipt} label="Auto-print receipt" icon={<Printer className="h-4 w-4" />} /><div className="flex flex-wrap gap-3"><Button variant="outline" onClick={() => { searchInputRef.current?.focus(); toast.success('Scanner ready. Scan barcode and press Enter.'); }}><Barcode className="mr-2 h-4 w-4" /> Barcode Scanner</Button><Button variant="outline" onClick={holdCurrentOrder}><Pause className="mr-2 h-4 w-4" /> Hold Order</Button><div className="flex gap-2"><Input value={promoCode} onChange={(event) => setPromoCode(event.target.value)} placeholder="Promo code" className="h-10 w-36" /><Button variant="outline" onClick={applyPromoCode}>Apply Promo</Button></div></div></div>
             {heldCarts.length > 0 && <div className="border-t border-slate-200 bg-white p-4"><p className="mb-2 text-xs font-black uppercase tracking-wider text-slate-500">Held Orders</p><div className="flex flex-wrap gap-2">{heldCarts.map((hold, index) => <Button key={hold.id} size="sm" variant="outline" onClick={() => resumeHeldOrder(hold.id)}>Resume #{heldCarts.length - index}</Button>)}</div></div>}
           </div>
@@ -914,10 +955,17 @@ export default function Warehouse() {
 
       {section === 'suppliers' && (
         <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_350px]">
-          <Panel title="Purchase Orders" eyebrow="Click an order number to view full details" action={<div className="flex flex-wrap gap-2"><label className="inline-flex items-center gap-2 text-sm font-medium text-slate-700"><Filter className="h-4 w-4" /><select className="h-9 rounded-md border border-slate-300 bg-white px-3 text-sm" value={poStatusFilter} onChange={(event) => setPoStatusFilter(event.target.value)}><option value="all">All statuses</option><option value="pending">Pending</option><option value="shipped">Shipped</option><option value="received">Received</option><option value="invoiced">Invoiced</option></select></label><Button variant="outline" onClick={() => exportReport('purchases', 'csv')}><Download className="mr-2 h-4 w-4" /> Export</Button></div>}>
+          <Panel title="Purchase Orders" eyebrow="Click an order number to view full details" action={<Button variant="outline" onClick={() => exportReport('purchases', 'csv')}><Download className="mr-2 h-4 w-4" /> Export</Button>}>
+            <div className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              <label className="block text-sm font-medium text-slate-700"><span className="mb-1 block">Status</span><select className="h-9 w-full rounded-md border border-slate-300 bg-white px-3 text-sm" value={poStatusFilter} onChange={(event) => setPoStatusFilter(event.target.value)}><option value="all">All statuses</option><option value="pending">Pending</option><option value="shipped">Shipped</option><option value="received">Received</option><option value="invoiced">Invoiced</option></select></label>
+              <label className="block text-sm font-medium text-slate-700"><span className="mb-1 block">Supplier</span><select className="h-9 w-full rounded-md border border-slate-300 bg-white px-3 text-sm" value={poSupplierFilter} onChange={(event) => setPoSupplierFilter(event.target.value)}><option value="all">All suppliers</option>{suppliers.map((supplier) => <option key={supplier.id} value={supplier.id}>{supplier.name}</option>)}</select></label>
+              <label className="block text-sm font-medium text-slate-700"><span className="mb-1 block">From</span><Input type="date" value={poFrom} onChange={(event) => setPoFrom(event.target.value)} /></label>
+              <label className="block text-sm font-medium text-slate-700"><span className="mb-1 block">To</span><Input type="date" value={poTo} onChange={(event) => setPoTo(event.target.value)} /></label>
+            </div>
             {filteredPurchaseOrders.length === 0 ? <EmptyState title="No purchase orders" description="Create a PO or adjust the filters to see supplier replenishment cycles." /> : (
-              <div className="overflow-x-auto"><table className="w-full min-w-[780px] text-left text-sm"><thead className="bg-slate-100 text-xs uppercase tracking-wider text-slate-600"><tr><th className="px-4 py-3">Order ID</th><th className="px-4 py-3">Supplier</th><th className="px-4 py-3">Date Issued</th><th className="px-4 py-3 text-right">Total Value</th><th className="px-4 py-3">Status</th><th className="px-4 py-3">Actions</th></tr></thead><tbody className="divide-y divide-slate-200">{filteredPurchaseOrders.map((po) => <tr key={po.id} className="bg-white hover:bg-slate-50"><td className="px-4 py-4"><button className="font-black text-[#169b45] hover:underline" onClick={() => void loadPurchaseOrderDetail(po.id)}>#{po.poNumber}</button></td><td className="px-4 py-4 font-bold text-slate-900">{po.supplierName || 'Unknown Supplier'}</td><td className="px-4 py-4 text-slate-600">{dateShort(po.orderDate)}</td><td className="px-4 py-4 text-right font-bold text-slate-900">{money(po.total)}</td><td className="px-4 py-4"><span className={`rounded-full border px-3 py-1 text-[10px] font-black uppercase ${poStatusClass(po.status)}`}>{po.status}</span></td><td className="px-4 py-4"><div className="flex gap-1"><Button size="sm" variant="outline" onClick={() => void loadPurchaseOrderDetail(po.id)}><Eye className="h-4 w-4" /></Button>{normalizedStatus(po.status) === 'pending' && <Button size="sm" className="bg-[#44e878] text-[#04130b] hover:bg-[#32d967]" onClick={() => updatePurchaseOrderStatus(po.id, 'shipped')}>Ship</Button>}{normalizedStatus(po.status) === 'shipped' && <Button size="sm" className="bg-[#44e878] text-[#04130b] hover:bg-[#32d967]" onClick={() => updatePurchaseOrderStatus(po.id, 'received')}>Receive</Button>}{normalizedStatus(po.status) === 'received' && <Button size="sm" className="bg-[#44e878] text-[#04130b] hover:bg-[#32d967]" onClick={() => updatePurchaseOrderStatus(po.id, 'invoiced')}>Invoice</Button>}</div></td></tr>)}</tbody></table></div>
+              <div className="overflow-x-auto"><table className="w-full min-w-[780px] text-left text-sm"><thead className="bg-slate-100 text-xs uppercase tracking-wider text-slate-600"><tr><th className="px-4 py-3">Order ID</th><th className="px-4 py-3">Supplier</th><th className="px-4 py-3">Date Issued</th><th className="px-4 py-3 text-right">Total Value</th><th className="px-4 py-3">Status</th><th className="px-4 py-3">Actions</th></tr></thead><tbody className="divide-y divide-slate-200">{pagedPurchaseOrders.map((po) => <tr key={po.id} className="bg-white hover:bg-slate-50"><td className="px-4 py-4"><button className="font-black text-[#169b45] hover:underline" onClick={() => void loadPurchaseOrderDetail(po.id)}>#{po.poNumber}</button></td><td className="px-4 py-4 font-bold text-slate-900">{po.supplierName || 'Unknown Supplier'}</td><td className="px-4 py-4 text-slate-600">{dateShort(po.orderDate)}</td><td className="px-4 py-4 text-right font-bold text-slate-900">{money(po.total)}</td><td className="px-4 py-4"><span className={`rounded-full border px-3 py-1 text-[10px] font-black uppercase ${poStatusClass(po.status)}`}>{po.status}</span></td><td className="px-4 py-4"><div className="flex gap-1"><Button size="sm" variant="outline" onClick={() => void loadPurchaseOrderDetail(po.id)}><Eye className="h-4 w-4" /></Button>{normalizedStatus(po.status) === 'pending' && <Button size="sm" className="bg-[#44e878] text-[#04130b] hover:bg-[#32d967]" onClick={() => updatePurchaseOrderStatus(po.id, 'shipped')}>Ship</Button>}{normalizedStatus(po.status) === 'shipped' && <Button size="sm" className="bg-[#44e878] text-[#04130b] hover:bg-[#32d967]" onClick={() => updatePurchaseOrderStatus(po.id, 'received')}>Receive</Button>}{normalizedStatus(po.status) === 'received' && <Button size="sm" className="bg-[#44e878] text-[#04130b] hover:bg-[#32d967]" onClick={() => updatePurchaseOrderStatus(po.id, 'invoiced')}>Invoice</Button>}</div></td></tr>)}</tbody></table></div>
             )}
+            {filteredPurchaseOrders.length > 0 && <ListPagination page={safePoPage} pageSize={poPageSize} total={filteredPurchaseOrders.length} onPageChange={setPoPage} onPageSizeChange={setPoPageSize} />}
           </Panel>
           <div className="space-y-4">
             <Panel title="Supplier Performance" eyebrow="Primary KPIs"><MiniBar label="Avg. Fulfillment Time" value={Number(supplierPerformance.fulfillmentDays) ? Math.max(0, 100 - Number(supplierPerformance.fulfillmentDays) * 10) : 0} suffix="%" /><MiniBar label="Order Accuracy" value={Number(supplierPerformance.accuracy)} suffix="%" /><div className="mt-3 rounded-lg bg-slate-50 p-3 text-sm text-slate-600">Open purchase exposure: <strong className="text-slate-900">{money(supplierPerformance.pendingValue)}</strong></div></Panel>
@@ -934,7 +982,15 @@ export default function Warehouse() {
             <div className="grid gap-3 md:grid-cols-3"><TextInput label="From" type="date" value={reportFilters.from} onChange={(value) => setReportFilters((filters) => ({ ...filters, from: value }))} /><TextInput label="To" type="date" value={reportFilters.to} onChange={(value) => setReportFilters((filters) => ({ ...filters, to: value }))} /><label className="block"><span className="mb-1 block text-xs font-bold uppercase tracking-wider text-slate-500">Category</span><select className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-700" value={reportFilters.category} onChange={(event) => setReportFilters((filters) => ({ ...filters, category: event.target.value }))}><option value="all">All categories</option>{categoryOptions.map((item) => <option key={item.id} value={item.id}>{categoryLabel(categories, item.id, item.name)}</option>)}</select></label></div>
             <div className="mt-5 grid gap-3 md:grid-cols-3"><ReportTile title="Inventory Valuation" description="Stock valuation, aging and reorder status." onPdf={() => exportReport('inventory', 'pdf')} onCsv={() => exportReport('inventory', 'csv')} /><ReportTile title="POS Sales" description="Sales trends with category filters." onPdf={() => exportReport('sales', 'pdf')} onCsv={() => exportReport('sales', 'csv')} /><ReportTile title="Purchases" description="Supplier spend, POs and receiving history." onPdf={() => exportReport('purchases', 'pdf')} onCsv={() => exportReport('purchases', 'csv')} /></div>
           </Panel>
-          <Panel title="Recent POS Sales" eyebrow="Revenue / COGS / margin"><div className="overflow-x-auto"><table className="w-full min-w-[760px] text-left text-sm"><thead className="bg-slate-100 text-xs uppercase tracking-wider text-slate-600"><tr><th className="px-4 py-3">Receipt</th><th className="px-4 py-3">Date</th><th className="px-4 py-3">Payment</th><th className="px-4 py-3 text-right">Total</th><th className="px-4 py-3 text-right">COGS</th><th className="px-4 py-3 text-right">Margin</th></tr></thead><tbody className="divide-y divide-slate-200">{sales.slice(0, 15).map((sale) => <tr key={sale.id} className="bg-white"><td className="px-4 py-4 font-bold text-[#169b45]">{sale.receiptNumber}</td><td className="px-4 py-4">{sale.saleDate ? new Date(sale.saleDate).toLocaleString() : '-'}</td><td className="px-4 py-4 capitalize">{sale.paymentMethod}</td><td className="px-4 py-4 text-right font-bold">{money(sale.total)}</td><td className="px-4 py-4 text-right">{money(sale.cogsTotal)}</td><td className="px-4 py-4 text-right text-[#169b45]">{money((sale.total || 0) - (sale.cogsTotal || 0))}</td></tr>)}</tbody></table></div></Panel>
+          <Panel title="Recent POS Sales" eyebrow="Revenue / COGS / margin">
+            <div className="mb-4 grid gap-3 sm:grid-cols-3">
+              <label className="block"><span className="mb-1 block text-xs font-bold uppercase text-slate-500">From</span><Input type="date" value={salesFrom} onChange={(event) => setSalesFrom(event.target.value)} /></label>
+              <label className="block"><span className="mb-1 block text-xs font-bold uppercase text-slate-500">To</span><Input type="date" value={salesTo} onChange={(event) => setSalesTo(event.target.value)} /></label>
+              <label className="block"><span className="mb-1 block text-xs font-bold uppercase text-slate-500">Payment</span><select className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm" value={salesPaymentFilter} onChange={(event) => setSalesPaymentFilter(event.target.value)}><option value="all">All methods</option><option value="cash">Cash</option><option value="card">Card</option><option value="wallet">Digital wallet</option><option value="bank_transfer">Bank transfer</option></select></label>
+            </div>
+            <div className="overflow-x-auto"><table className="w-full min-w-[760px] text-left text-sm"><thead className="bg-slate-100 text-xs uppercase tracking-wider text-slate-600"><tr><th className="px-4 py-3">Receipt</th><th className="px-4 py-3">Date</th><th className="px-4 py-3">Payment</th><th className="px-4 py-3 text-right">Total</th><th className="px-4 py-3 text-right">COGS</th><th className="px-4 py-3 text-right">Margin</th></tr></thead><tbody className="divide-y divide-slate-200">{pagedSales.map((sale) => <tr key={sale.id} className="bg-white"><td className="px-4 py-4 font-bold text-[#169b45]">{sale.receiptNumber}</td><td className="px-4 py-4">{sale.saleDate ? new Date(sale.saleDate).toLocaleString() : '-'}</td><td className="px-4 py-4 capitalize">{sale.paymentMethod}</td><td className="px-4 py-4 text-right font-bold">{money(sale.total)}</td><td className="px-4 py-4 text-right">{money(sale.cogsTotal)}</td><td className="px-4 py-4 text-right text-[#169b45]">{money((sale.total || 0) - (sale.cogsTotal || 0))}</td></tr>)}</tbody></table></div>
+            {filteredSales.length > 0 && <ListPagination page={safeSalesPage} pageSize={salesPageSize} total={filteredSales.length} onPageChange={setSalesPage} onPageSizeChange={setSalesPageSize} />}
+          </Panel>
         </div>
       )}
 

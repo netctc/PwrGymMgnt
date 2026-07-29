@@ -15,6 +15,7 @@ import { Textarea } from '../components/ui/textarea';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 import { Employee, PayrollItem, PayrollRun, hrPayrollApi } from '../lib/hrPayrollApi';
 import ScreenReportActions from '../components/ScreenReportActions';
+import ListPagination from '../components/ListPagination';
 
 const EMPLOYEE_USER_ROLES = ['admin', 'manager', 'warehouse_manager', 'accounting', 'cashier', 'reception', 'trainer'];
 
@@ -92,6 +93,8 @@ export default function HumanResources() {
   const requestedStatus = searchParams.get('status');
   const initialStatus = ['active', 'inactive', 'terminated', 'all'].includes(requestedStatus || '') ? requestedStatus! : 'active';
   const [statusFilter, setStatusFilter] = useState(initialStatus);
+  const [employeePage, setEmployeePage] = useState(1);
+  const [employeePageSize, setEmployeePageSize] = useState(25);
   const [showEmployeeDialog, setShowEmployeeDialog] = useState(false);
   const [editingEmployeeId, setEditingEmployeeId] = useState<string | null>(null);
   const [employeeForm, setEmployeeForm] = useState<Partial<Employee>>(emptyEmployeeForm);
@@ -119,6 +122,11 @@ export default function HumanResources() {
     if (activeEmployees.length === 0) return 0;
     return activeEmployees.reduce((sum, employee) => sum + Number(employee.baseSalary || 0), 0) / activeEmployees.length;
   }, [activeEmployees]);
+  const employeeTotalPages = Math.max(1, Math.ceil(employees.length / employeePageSize));
+  const safeEmployeePage = Math.min(employeePage, employeeTotalPages);
+  const pagedEmployees = employees.slice((safeEmployeePage - 1) * employeePageSize, safeEmployeePage * employeePageSize);
+
+  useEffect(() => { setEmployeePage(1); }, [search, statusFilter, employeePageSize]);
 
   const loadData = async () => {
     setLoading(true);
@@ -420,7 +428,7 @@ export default function HumanResources() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {employees.map((employee) => (
+                    {pagedEmployees.map((employee) => (
                       <TableRow key={employee.id}>
                         <TableCell>
                           <div className="font-medium">{employeeName(employee)}</div>
@@ -450,6 +458,9 @@ export default function HumanResources() {
                 </Table>
               )}
             </CardContent>
+            {!loading && employees.length > 0 && (
+              <ListPagination page={safeEmployeePage} pageSize={employeePageSize} total={employees.length} onPageChange={setEmployeePage} onPageSizeChange={setEmployeePageSize} />
+            )}
           </Card>
         </TabsContent>
 

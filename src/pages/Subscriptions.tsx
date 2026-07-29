@@ -17,11 +17,13 @@ import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import DateInput from '../components/DateInput';
+import ListPagination from '../components/ListPagination';
 import { formatDate } from '../lib/formatDate';
 import {
   subscriptionsV2Api,
   type SubscriptionV2,
 } from '../lib/subscriptionsV2Api';
+import { planManagementApi, type MaintenanceList } from '../lib/planManagementApi';
 import { useLocalization } from '../contexts/LocalizationContext';
 
 type DirectoryView = 'individual_unlimited' | 'individual_limited' | 'multi_user';
@@ -164,6 +166,7 @@ export default function Subscriptions() {
   const [subscriptions, setSubscriptions] = useState<SubscriptionV2[]>([]);
   const [planOptions, setPlanOptions] = useState<Array<{ id: string; name: string }>>([]);
   const [trainerOptions, setTrainerOptions] = useState<Array<{ id: string; name: string }>>([]);
+  const [maintenanceLists, setMaintenanceLists] = useState<MaintenanceList[]>([]);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
   const [memberStatus, setMemberStatus] = useState('all');
@@ -180,6 +183,8 @@ export default function Subscriptions() {
   const [actionReason, setActionReason] = useState('');
   const [actionQuantity, setActionQuantity] = useState('1');
   const [savingAction, setSavingAction] = useState(false);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
 
   const loadSubscriptions = async () => {
     setLoading(true);
@@ -208,6 +213,32 @@ export default function Subscriptions() {
   };
 
   useEffect(() => {
+    planManagementApi.listMaintenance()
+      .then((response) => setMaintenanceLists(response.lists))
+      .catch(() => setMaintenanceLists([]));
+  }, []);
+
+  const listOptions = (keys: string[], fallback: Array<{ value: string; label: string }>) => {
+    const list = maintenanceLists.find((item) => keys.includes(item.key));
+    const options = list?.items
+      .filter((item) => item.status === 'active')
+      .sort((a, b) => a.sortOrder - b.sortOrder)
+      .map((item) => ({ value: item.code, label: locale === 'ar' ? item.labelAr : item.labelEn })) || [];
+    return options.length > 0 ? options : fallback;
+  };
+  const memberStatusOptions = listOptions(['member_status', 'member_statuses'], [
+    { value: 'active', label: copy.active },
+    { value: 'suspended', label: copy.suspended },
+    { value: 'archived', label: copy.archived },
+  ]);
+  const paymentStatusOptions = listOptions(['payment_status', 'payment_statuses'], [
+    { value: 'paid', label: copy.paid },
+    { value: 'pending', label: copy.pending },
+    { value: 'partial', label: 'Partial' },
+    { value: 'overdue', label: 'Overdue' },
+  ]);
+
+  useEffect(() => {
     const timeout = window.setTimeout(() => {
       void loadSubscriptions();
     }, 250);
@@ -231,6 +262,13 @@ export default function Subscriptions() {
     [subscriptions],
   );
   const visibleSubscriptions = categorized[view];
+  const totalPages = Math.max(1, Math.ceil(visibleSubscriptions.length / pageSize));
+  const safePage = Math.min(page, totalPages);
+  const pagedSubscriptions = visibleSubscriptions.slice((safePage - 1) * pageSize, safePage * pageSize);
+
+  useEffect(() => {
+    setPage(1);
+  }, [view, search, memberStatus, subscriptionStatus, paymentStatus, planId, planType, trainerId, from, to, sessionType, pageSize]);
 
   const openSessionAction = async (
     subscription: SubscriptionV2,
@@ -392,15 +430,15 @@ export default function Subscriptions() {
 
       <Card>
         <CardContent className="space-y-4 p-4">
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-9">
-            <div className="relative md:col-span-2 xl:col-span-1">
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+            <div className="relative md:col-span-2">
               <Label htmlFor="subscription-search">{copy.search}</Label>
               <Search className="absolute bottom-2.5 left-3 h-4 w-4 text-slate-400" />
               <Input id="subscription-search" value={search} onChange={(event) => setSearch(event.target.value)} className="pl-9" />
             </div>
-            <div><Label>{copy.memberStatus}</Label><select className={selectClassName} value={memberStatus} onChange={(event) => setMemberStatus(event.target.value)}><option value="all">{copy.all}</option><option value="active">{copy.active}</option><option value="suspended">{copy.suspended}</option><option value="archived">{copy.archived}</option></select></div>
+            <div><Label>{copy.memberStatus}</Label><select className={selectClassName} value={memberStatus} onChange={(event) => setMemberStatus(event.target.value)}><option value="all">{copy.all}</option>{memberStatusOptions.map((status) => <option key={status.value} value={status.value}>{status.label}</option>)}</select></div>
             <div><Label>{copy.subscriptionStatus}</Label><select className={selectClassName} value={subscriptionStatus} onChange={(event) => setSubscriptionStatus(event.target.value)}><option value="active">{copy.active}</option><option value="all">{copy.all}</option><option value="suspended">{copy.suspended}</option><option value="frozen">Frozen</option><option value="cancelled">{copy.cancelled}</option><option value="expired">{copy.expired}</option></select></div>
-            <div><Label>{copy.paymentStatus}</Label><select className={selectClassName} value={paymentStatus} onChange={(event) => setPaymentStatus(event.target.value)}><option value="all">{copy.all}</option><option value="paid">{copy.paid}</option><option value="pending">{copy.pending}</option><option value="partial">Partial</option><option value="overdue">Overdue</option></select></div>
+            <div><Label>{copy.paymentStatus}</Label><select className={selectClassName} value={paymentStatus} onChange={(event) => setPaymentStatus(event.target.value)}><option value="all">{copy.all}</option>{paymentStatusOptions.map((status) => <option key={status.value} value={status.value}>{status.label}</option>)}</select></div>
             <div><Label>{copy.plan}</Label><select className={selectClassName} value={planId} onChange={(event) => setPlanId(event.target.value)}><option value="all">{copy.all}</option>{planOptions.map((plan) => <option key={plan.id} value={plan.id}>{plan.name}</option>)}</select></div>
             <div><Label>{copy.planType}</Label><select className={selectClassName} value={planType} onChange={(event) => setPlanType(event.target.value)}><option value="all">{copy.all}</option><option value="individual">Individual</option><option value="family">Family</option><option value="group">Group</option><option value="corporate">Corporate</option></select></div>
             <div><Label>{copy.trainer}</Label><select className={selectClassName} value={trainerId} onChange={(event) => setTrainerId(event.target.value)}><option value="all">{copy.all}</option>{trainerOptions.map((trainer) => <option key={trainer.id} value={trainer.id}>{trainer.name}</option>)}</select></div>
@@ -451,7 +489,7 @@ export default function Subscriptions() {
                   </tr>
                 </thead>
                 <tbody className="divide-y">
-                  {visibleSubscriptions.map((subscription) => (
+                  {pagedSubscriptions.map((subscription) => (
                     <tr key={`${subscription.source}-${subscription.id}`} className="hover:bg-slate-50">
                       {renderCommonCells(subscription)}
                       {view === 'individual_limited' && (
@@ -476,6 +514,16 @@ export default function Subscriptions() {
                 </tbody>
               </table>
             </div>
+          )}
+          {!loading && visibleSubscriptions.length > 0 && (
+            <ListPagination
+              page={safePage}
+              pageSize={pageSize}
+              total={visibleSubscriptions.length}
+              onPageChange={setPage}
+              onPageSizeChange={setPageSize}
+              locale={locale}
+            />
           )}
         </CardContent>
       </Card>
