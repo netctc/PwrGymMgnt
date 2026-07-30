@@ -6,6 +6,7 @@ import path from 'node:path';
 import os from 'node:os';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
+import { resolveNpmInvocation } from './release-gate.mjs';
 
 const SERVICE_NAME = 'PowerGym';
 const PROJECT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -217,14 +218,14 @@ export async function install(argv = process.argv.slice(2)) {
   }
   const publicUrl = buildPublicUrl(args);
   const env = await prepareEnvironment(args, publicUrl);
-  const npmCommand = args.windows ? 'npm.cmd' : 'npm';
+  const npm = resolveNpmInvocation(env, expectedPlatform);
 
   console.log(`Installing PowerGym for ${args.windows ? 'Windows' : 'Linux'} at ${publicUrl}`);
-  await command(npmCommand, ['ci'], { ...args, env });
-  await command(npmCommand, ['run', 'db:migrate'], { ...args, env });
-  await command(npmCommand, ['run', 'db:init-users'], { ...args, env });
-  await command(npmCommand, ['run', 'build'], { ...args, env });
-  await command(npmCommand, ['run', 'deploy:check'], { ...args, env });
+  await command(npm.command, [...npm.prefixArgs, 'ci'], { ...args, env });
+  await command(npm.command, [...npm.prefixArgs, 'run', 'db:migrate'], { ...args, env });
+  await command(npm.command, [...npm.prefixArgs, 'run', 'db:init-users'], { ...args, env });
+  await command(npm.command, [...npm.prefixArgs, 'run', 'build'], { ...args, env });
+  await command(npm.command, [...npm.prefixArgs, 'run', 'deploy:check'], { ...args, env });
 
   if (args.installService) {
     if (args.windows) await installWindowsService(args, env);
