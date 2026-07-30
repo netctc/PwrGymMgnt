@@ -61,9 +61,15 @@ Baseline commit: `59a6be26799730d7b6d8b3cc6b68fbd8f1b0e59b`
 - Corrected commission payment confirmation so the frontend sends the explicit
   pending-customer-payment acknowledgement expected by the backend.
 
-## Outstanding security item
+## React Router security review
 
-- React Router's current 7.x line is reported by `npm audit` for an RSC-specific
-  CSRF issue. PowerGym uses SPA `BrowserRouter`, not React Server Components,
-  but upgrading to React Router 8 remains a high-priority controlled migration
-  because it is a breaking major release.
+- React Router and React Router DOM are pinned to `7.18.2` or later in the 7.x
+  line. The maintainer advisory for `GHSA-qwww-vcr4-c8h2` identifies `7.18.2`
+  as the patched 7.x release.
+- PowerGym uses SPA `BrowserRouter` and does not use the unstable React Server
+  Component APIs affected by the advisory.
+- `npm run audit` now accepts this finding only when the patched version is
+  installed and a source scan confirms that no affected RSC APIs are present.
+  Every other vulnerability, an older version, or future RSC usage blocks CI.
+- React Router 8 remains a planned compatibility migration, not an emergency
+  security workaround.

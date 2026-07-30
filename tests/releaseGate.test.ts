@@ -5,6 +5,7 @@ import {
   normalizeReleaseBaseUrl,
   parseReleaseGateArgs,
   redactEvidenceText,
+  resolveNpmInvocation,
 } from '../scripts/release-gate.mjs';
 
 test('release gate parser supports portable flags and values', () => {
@@ -44,6 +45,19 @@ test('release gate orders critical checks before external smoke', () => {
   const smoke = plan.steps.at(-1);
   assert.ok(smoke?.args.includes('--include-readiness'));
   assert.ok(smoke?.args.includes('--include-db'));
+});
+
+test('Windows npm execution uses node and npm-cli instead of spawning npm.cmd', () => {
+  const invocation = resolveNpmInvocation(
+    { npm_execpath: 'C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js' },
+    'win32',
+    'C:\\Program Files\\nodejs\\node.exe',
+  );
+  assert.equal(invocation.command, 'C:\\Program Files\\nodejs\\node.exe');
+  assert.deepEqual(invocation.prefixArgs, [
+    'C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js',
+  ]);
+  assert.notEqual(invocation.command, 'npm.cmd');
 });
 
 test('release smoke URL is normalized and rejects embedded credentials', () => {

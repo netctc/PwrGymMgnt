@@ -48,24 +48,48 @@ export function normalizeReleaseBaseUrl(input) {
   return url.toString().replace(/\/+$/, '');
 }
 
+export function resolveNpmInvocation(
+  env = process.env,
+  platform = process.platform,
+  nodeExecutable = process.execPath,
+) {
+  const npmExecPath = String(env.npm_execpath || '').trim();
+  if (npmExecPath) {
+    return { command: nodeExecutable, prefixArgs: [npmExecPath] };
+  }
+  if (platform === 'win32') {
+    const bundledNpmCli = path.join(path.dirname(nodeExecutable), 'node_modules', 'npm', 'bin', 'npm-cli.js');
+    if (fs.existsSync(bundledNpmCli)) {
+      return { command: nodeExecutable, prefixArgs: [bundledNpmCli] };
+    }
+    return { command: 'cmd.exe', prefixArgs: ['/d', '/s', '/c', 'npm'] };
+  }
+  return { command: 'npm', prefixArgs: [] };
+}
+
 export function buildReleaseGatePlan(args = {}, env = process.env) {
   const skipCode = boolArg(args['skip-code']);
   const skipDatabase = boolArg(args['skip-database']);
   const skipSmoke = boolArg(args['skip-smoke']);
   const includeDbSmoke = boolArg(args['include-db-smoke']);
   const baseUrl = normalizeReleaseBaseUrl(args['base-url'] || env.DEPLOY_BASE_URL || '');
-  const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+  const npm = resolveNpmInvocation(env);
+  const npmStep = (id, npmArgs) => ({
+    id,
+    command: npm.command,
+    args: [...npm.prefixArgs, ...npmArgs],
+  });
   const steps = [];
 
   if (!skipCode) {
-    steps.push({ id: 'verify-ci', command: npm, args: ['run', 'verify:ci'] });
+    steps.push(npmStep('verify-ci', ['run', 'verify:ci']));
   }
   if (!skipDatabase) {
     steps.push(
-      { id: 'database-backup', command: npm, args: ['run', 'db:backup', '--', '--label=release-gate'] },
-      { id: 'database-migrations', command: npm, args: ['run', 'db:migrate'] },
-      { id: 'database-access', command: npm, args: ['run', 'db:verify'] },
-      { id: 'database-integrity', command: npm, args: ['run', 'db:integrity', '--', '--json'] },
+      npmStep('database-backup', ['run', 'db:backup', '--', '--label=release-gate']),
+      npmStep('database-migrations', ['run', 'db:migrate']),
+      npmStep('database-access', ['run', 'db:verify']),
+      npmStep('database-integrity', ['run', 'db:integrity', '--', '--json']),
     );
   }
   if (!skipSmoke) {
@@ -74,7 +98,7 @@ export function buildReleaseGatePlan(args = {}, env = process.env) {
     }
     const smokeArgs = ['run', 'deploy:smoke', '--', '--base-url', baseUrl, '--include-readiness'];
     if (includeDbSmoke) smokeArgs.push('--include-db');
-    steps.push({ id: 'external-smoke', command: npm, args: smokeArgs });
+    steps.push(npmStep('external-smoke', smokeArgs));
   }
   if (steps.length === 0) throw new Error('Release gate has no enabled steps.');
   return { baseUrl, skipCode, skipDatabase, skipSmoke, includeDbSmoke, steps };
@@ -123,14 +147,31 @@ async function runStep(step, { dryRun = false } = {}) {
     };
   }
   return new Promise((resolve) => {
-    const child = spawn(step.command, step.args, {
-      cwd: PROJECT_ROOT,
-      env: process.env,
-      shell: false,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
     let stdoutTail = '';
     let stderrTail = '';
+    let child;
+    try {
+      child = spawn(step.command, step.args, {
+        cwd: PROJECT_ROOT,
+        env: process.env,
+        shell: false,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch (error) {
+      const completedAt = new Date();
+      resolve({
+        id: step.id,
+        status: 'failed',
+        exitCode: null,
+        error: error instanceof Error ? error.message : String(error),
+        startedAt: startedAt.toISOString(),
+        completedAt: completedAt.toISOString(),
+        durationMs: completedAt.getTime() - startedAt.getTime(),
+        stdoutTail: '',
+        stderrTail: '',
+      });
+      return;
+    }
     child.stdout.on('data', (chunk) => {
       process.stdout.write(chunk);
       stdoutTail = appendTail(stdoutTail, chunk.toString());
