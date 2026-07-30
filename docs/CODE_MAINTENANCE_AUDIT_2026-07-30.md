@@ -116,4 +116,12 @@ The first release-blocker automation pass adds:
 5. A clean-checkout guard and explicit flags for every skipped release phase.
 6. A cross-platform JSON evidence record for each release attempt.
 
-The external environment tasks are not considered completed until the release gate passes against the real database and final domain/IP, followed by an isolated restore rehearsal.
+The release gate passed against the configured database and external IP on
+2026-07-30, including the authenticated database-health smoke check. The final P0
+evidence item is an isolated restore rehearsal.
+
+The next automation pass adds `npm run ops:restore-rehearsal`. It requires
+dedicated rehearsal credentials, blocks the application database, validates the
+managed backup, restores it and runs access and integrity verification in a fixed
+order. Its sanitized JSON evidence must report `posture: pass` before P0 is
+considered complete.

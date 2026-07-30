@@ -83,20 +83,39 @@ There is no implicit smoke-test skip. A final URL is mandatory unless `--skip-sm
 
 ## Restore rehearsal
 
-Restore rehearsal remains a separate controlled operation because it requires an isolated, disposable MySQL database. Never point it at the production database.
+Restore rehearsal remains a separate controlled operation because it requires an
+isolated MySQL database. The automation never creates or drops a database and
+never reads the normal application credentials as its rehearsal target.
 
-1. Create an isolated rehearsal database.
-2. Configure the database variables for that database only.
-3. Inspect the selected backup.
-4. Apply the restore with the existing protected restore command.
-5. Run `db:verify` and `db:integrity`.
-6. Record the backup SHA-256 and evidence in the release record.
+Create the isolated database and a dedicated MySQL account first. Its database
+name must contain `rehearsal`, `restore`, `sandbox`, `staging` or `test`, and it
+must differ from the configured application database.
 
-```bash
-npm run db:restore -- --backup=<backup.sql> --inspect --json
-npm run db:restore -- --backup=<backup.sql> --apply --confirm=RESTORE --allow-destructive
-npm run db:verify
-npm run db:integrity -- --json
+Configure these variables locally:
+
+```txt
+REHEARSAL_DATABASE_HOSTNAME=localhost
+REHEARSAL_DATABASE_PORT=3306
+REHEARSAL_DATABASE_USER_NAME=powergym_rehearsal
+REHEARSAL_DATABASE_PASSWORD=<dedicated-password>
+REHEARSAL_DATABASE_NAME=powergym_restore_test
 ```
 
-The rehearsal is accepted only when the target database is demonstrably different from production and all verification steps pass.
+List managed backups, preview the complete plan and then execute it:
+
+```bash
+npm run db:restore -- --list
+npm run ops:restore-rehearsal -- --backup=<managed-backup.sql> --dry-run
+npm run ops:restore-rehearsal -- --backup=<managed-backup.sql> --confirm=RESTORE_REHEARSAL
+```
+
+The protected workflow executes, in order:
+
+1. Backup inspection and checksum verification.
+2. Restore into the isolated target.
+3. Transactional database-access verification.
+4. Database-integrity verification.
+
+It writes a sanitized JSON file under `release-evidence/`. Passwords are not
+written to evidence. A missing variable, unsafe database name, production target,
+invalid backup, failed restore or failed verification blocks acceptance.
