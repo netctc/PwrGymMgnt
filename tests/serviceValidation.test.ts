@@ -8,6 +8,10 @@ import {
   parseServiceValidationArgs,
   summarizeServiceResults,
 } from '../scripts/service-validation.mjs';
+import {
+  buildPowerShellArgs,
+  parseWindowsServiceArgs,
+} from '../scripts/windows-service-tasks.mjs';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -64,4 +68,35 @@ test('service runner remains alive without a console and records restart diagnos
   assert.match(source, /stdio: \['ignore', logFile, logFile\]/);
   assert.match(source, /scheduleRestart/);
   assert.doesNotMatch(source, /\.unref\(\)/);
+});
+
+test('Windows service repair builds an unambiguous PowerShell invocation', () => {
+  const projectDirectory = 'C:\\PowerGym Management';
+  const nodePath = 'C:\\Program Files\\nodejs\\node.exe';
+  const args = buildPowerShellArgs({ projectDir: projectDirectory, nodePath });
+  assert.deepEqual(args.slice(0, 4), [
+    '-NoProfile',
+    '-NonInteractive',
+    '-ExecutionPolicy',
+    'Bypass',
+  ]);
+  assert.equal(args[args.indexOf('-ProjectDirectory') + 1], projectDirectory);
+  assert.equal(args[args.indexOf('-NodePath') + 1], nodePath);
+  assert.ok(args.includes('-StartService'));
+  assert.deepEqual(parseWindowsServiceArgs(['--dry-run', '--no-start']), {
+    dryRun: true,
+    start: false,
+  });
+});
+
+test('PowerShell task registration sets executable and working directory separately', () => {
+  const source = fs.readFileSync(
+    path.join(projectRoot, 'scripts/register-windows-tasks.ps1'),
+    'utf8',
+  );
+  assert.match(source, /-Execute \$NodePath/);
+  assert.match(source, /-WorkingDirectory \$ProjectDirectory/);
+  assert.match(source, /-LogonType Interactive/);
+  assert.match(source, /-ExecutionTimeLimit \(\[TimeSpan\]::Zero\)/);
+  assert.doesNotMatch(source, /-Execute ["']?\$NodePath["']? ["']?\$runnerPath/);
 });
