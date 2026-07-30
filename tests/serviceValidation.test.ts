@@ -53,3 +53,15 @@ test('scheduled task entry points resolve the project and environment from their
     assert.match(source, /loadDotEnv\(path\.join\(projectDirectory, '\.env'\)\)/);
   }
 });
+
+test('service runner remains alive without a console and records restart diagnostics', () => {
+  const source = fs.readFileSync(
+    path.join(projectRoot, 'scripts/service-runner.mjs'),
+    'utf8',
+  );
+  assert.match(source, /logs/);
+  assert.match(source, /service\.log/);
+  assert.match(source, /stdio: \['ignore', logFile, logFile\]/);
+  assert.match(source, /scheduleRestart/);
+  assert.doesNotMatch(source, /\.unref\(\)/);
+});
