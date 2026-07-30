@@ -48,6 +48,13 @@ function advisoryIds(vulnerability) {
     .filter(Boolean);
 }
 
+/**
+ * Evaluate npm's JSON audit report while enforcing the reviewed React Router
+ * advisory conditions.
+ *
+ * @param {any} report
+ * @param {{ lock?: any, rscUsage?: string[] }} [options]
+ */
 export function evaluateSecurityAudit(report, { lock, rscUsage = [] } = {}) {
   const vulnerabilities = report?.vulnerabilities || {};
   const routerVersion = packageVersion(lock, 'react-router');
