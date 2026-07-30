@@ -99,4 +99,8 @@ test('PowerShell task registration sets executable and working directory separat
   assert.match(source, /-LogonType Interactive/);
   assert.match(source, /-ExecutionTimeLimit \(\[TimeSpan\]::Zero\)/);
   assert.doesNotMatch(source, /-Execute ["']?\$NodePath["']? ["']?\$runnerPath/);
+  const privilegeCheck = source.indexOf('IsInRole($administratorRole)');
+  const firstTaskStop = source.indexOf('Stop-ScheduledTask');
+  assert.ok(privilegeCheck >= 0);
+  assert.ok(firstTaskStop > privilegeCheck);
 });
