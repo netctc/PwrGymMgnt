@@ -35,6 +35,9 @@ export function parseReconciliationArgs(argv = process.argv.slice(2)) {
 
 export function evaluateReconciliation(snapshot, baseline) {
   const findings = [];
+  const stockLedgerMismatches = Array.isArray(snapshot.stockLedgerMismatches)
+    ? snapshot.stockLedgerMismatches
+    : [];
   if (snapshot.negativeStockCount > 0) {
     findings.push({
       severity: 'critical',
@@ -47,6 +50,7 @@ export function evaluateReconciliation(snapshot, baseline) {
       severity: 'critical',
       id: 'stock-ledger-mismatch',
       message: `${snapshot.latestMovementMismatchCount} products differ from their latest stock movement.`,
+      products: stockLedgerMismatches,
     });
   }
   if (!baseline) {
@@ -144,10 +148,14 @@ async function createSnapshot(connection) {
       ORDER BY sku`,
   );
   const [mismatchRows] = await connection.query(
-    `SELECT COUNT(*) AS mismatch_count
+    `SELECT product.sku,
+            product.name,
+            product.stock_quantity AS system_quantity,
+            movement.stock_after AS latest_movement_quantity,
+            movement.created_at AS latest_movement_at
        FROM warehouse_products product
        JOIN (
-         SELECT product_id, stock_after,
+         SELECT product_id, stock_after, created_at,
                 ROW_NUMBER() OVER (PARTITION BY product_id ORDER BY created_at DESC, id DESC) AS row_num
            FROM warehouse_stock_movements
        ) movement
@@ -160,6 +168,13 @@ async function createSnapshot(connection) {
     systemQuantity: Number(row.stock_quantity || 0),
     costPrice: Number(row.cost_price || 0),
   }));
+  const stockLedgerMismatches = mismatchRows.map((row) => ({
+    sku: String(row.sku || ''),
+    name: String(row.name || ''),
+    systemQuantity: Number(row.system_quantity || 0),
+    latestMovementQuantity: Number(row.latest_movement_quantity || 0),
+    latestMovementAt: row.latest_movement_at || null,
+  }));
   return {
     ledgerNetBalance: Number(financeRows[0]?.ledger_net_balance || 0),
     pendingTransactions: Number(financeRows[0]?.pending_transactions || 0),
@@ -170,7 +185,8 @@ async function createSnapshot(connection) {
       products.reduce((total, product) => total + product.systemQuantity * product.costPrice, 0) * 100,
     ) / 100,
     negativeStockCount: products.filter((product) => product.systemQuantity < 0).length,
-    latestMovementMismatchCount: Number(mismatchRows[0]?.mismatch_count || 0),
+    latestMovementMismatchCount: stockLedgerMismatches.length,
+    stockLedgerMismatches,
     products,
   };
 }
@@ -211,7 +227,7 @@ export async function runReconciliation(argv = process.argv.slice(2)) {
       : null;
     const assessment = evaluateReconciliation(snapshot, baseline);
     const evidence = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       generatedAt: new Date().toISOString(),
       database: { host: config.host, port: config.port, name: config.database },
       snapshot,
@@ -230,6 +246,15 @@ export async function runReconciliation(argv = process.argv.slice(2)) {
       console.log(`Active products: ${snapshot.productCount} | Stock value: ${snapshot.stockValue}`);
       for (const finding of assessment.findings) {
         console.log(`[${finding.severity.toUpperCase()}] ${finding.id}: ${finding.message}`);
+        if (finding.id === 'stock-ledger-mismatch') {
+          for (const product of finding.products || []) {
+            console.log(
+              `  ${product.sku} | ${product.name} | system=${product.systemQuantity}`
+              + ` | latest-movement=${product.latestMovementQuantity}`
+              + ` | at=${product.latestMovementAt || 'N/A'}`,
+            );
+          }
+        }
       }
       console.log(`Evidence: ${outputPath}`);
       console.log(`Posture: ${assessment.posture}`);
