@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   buildRestoreRehearsalPlan,
   getRehearsalDatabaseEnv,
+  normalizeManagedBackupName,
 } from '../scripts/db-restore-rehearsal.mjs';
 
 const productionDb = {
@@ -33,6 +34,17 @@ test('rehearsal database configuration only reads dedicated variables', () => {
   });
   assert.equal(config.database, 'powergym_restore_test');
   assert.equal(config.password, 'rehearsal-secret');
+});
+
+test('managed backup references accept Windows and Linux backup paths', () => {
+  assert.equal(
+    normalizeManagedBackupName('backups\\pwrgymdb_release-gate.sql'),
+    'pwrgymdb_release-gate.sql',
+  );
+  assert.equal(
+    normalizeManagedBackupName('backups/pwrgymdb_release-gate.sql'),
+    'pwrgymdb_release-gate.sql',
+  );
 });
 
 test('restore rehearsal blocks the application database and unsafe names', () => {
@@ -77,10 +89,13 @@ test('valid restore rehearsal uses isolated credentials and ordered verification
 
 test('dry-run validates a complete plan without destructive confirmation', () => {
   const plan = buildRestoreRehearsalPlan({
-    args: { backup: 'powergym_release.sql', 'dry-run': true },
+    args: { backup: 'backups\\powergym_release.sql', 'dry-run': true },
     env: rehearsalEnv(),
     productionDb,
   });
   assert.equal(plan.canRun, true);
   assert.equal(plan.dryRun, true);
+  assert.equal(plan.backup, 'powergym_release.sql');
+  assert.equal((plan.steps[0] as { runInDryRun?: boolean }).runInDryRun, true);
+  assert.equal((plan.steps[1] as { runInDryRun?: boolean }).runInDryRun, undefined);
 });

@@ -46,6 +46,12 @@ function isClearlyIsolatedName(name) {
   return /(?:rehearsal|restore|sandbox|staging|test)/i.test(String(name || ''));
 }
 
+export function normalizeManagedBackupName(input) {
+  const normalized = String(input || '').trim().replace(/\\/g, '/');
+  const segments = normalized.split('/').filter(Boolean);
+  return segments.at(-1) || '';
+}
+
 /**
  * @param {{
  *   args?: Record<string, any>,
@@ -59,7 +65,8 @@ export function buildRestoreRehearsalPlan({
   productionDb = getDatabaseEnv(),
 } = {}) {
   const rehearsalDb = getRehearsalDatabaseEnv(env);
-  const backup = String(args.backup || args._?.[0] || '').trim();
+  const requestedBackup = String(args.backup || args._?.[0] || '').trim();
+  const backup = normalizeManagedBackupName(requestedBackup);
   const dryRun = Boolean(args['dry-run']);
   const confirmation = String(args.confirm || '');
   const blockers = [];
@@ -92,14 +99,19 @@ export function buildRestoreRehearsalPlan({
   }
 
   const npm = resolveNpmInvocation(env);
-  const npmStep = (id, npmArgs) => ({
+  const npmStep = (id, npmArgs, options = {}) => ({
     id,
     command: npm.command,
     args: [...npm.prefixArgs, ...npmArgs],
+    ...options,
   });
   const steps = backup
     ? [
-        npmStep('inspect-backup', ['run', 'db:restore', '--', `--backup=${backup}`, '--inspect', '--json']),
+        npmStep(
+          'inspect-backup',
+          ['run', 'db:restore', '--', `--backup=${backup}`, '--inspect', '--json'],
+          { runInDryRun: true },
+        ),
         npmStep('restore-isolated-database', [
           'run',
           'db:restore',
@@ -119,6 +131,7 @@ export function buildRestoreRehearsalPlan({
     canRun: blockers.length === 0,
     blockers,
     confirmationRequired: REHEARSAL_CONFIRMATION,
+    requestedBackup,
     backup,
     target: {
       host: rehearsalDb.host,
@@ -149,7 +162,7 @@ export function buildRestoreRehearsalPlan({
 
 async function runStep(step, childEnv, dryRun) {
   const startedAt = new Date();
-  if (dryRun) {
+  if (dryRun && !step.runInDryRun) {
     return {
       id: step.id,
       status: 'dry-run',

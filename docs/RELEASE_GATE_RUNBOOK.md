@@ -101,13 +101,18 @@ REHEARSAL_DATABASE_PASSWORD=<dedicated-password>
 REHEARSAL_DATABASE_NAME=powergym_restore_test
 ```
 
-List managed backups, preview the complete plan and then execute it:
+List managed backups, preview the complete plan and then execute it. The backup
+argument accepts either the managed filename or a `backups/` / `backups\`
+reference:
 
 ```bash
 npm run db:restore -- --list
 npm run ops:restore-rehearsal -- --backup=<managed-backup.sql> --dry-run
 npm run ops:restore-rehearsal -- --backup=<managed-backup.sql> --confirm=RESTORE_REHEARSAL
 ```
+
+The preview performs the read-only backup inspection and checksum validation. It
+does not restore data or run database verification commands.
 
 The protected workflow executes, in order:
 
