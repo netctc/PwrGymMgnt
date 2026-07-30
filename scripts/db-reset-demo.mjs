@@ -994,6 +994,27 @@ function buildDemoDataset() {
     });
   });
 
+  // Close the generated demo history with an explicit, zero-value
+  // reconciliation checkpoint. Earlier purchase-order and POS movements remain
+  // immutable, while the latest movement now records the authoritative stock
+  // snapshot loaded into warehouse_products.
+  products.forEach((product, index) => {
+    stockMovements.push({
+      id: `zz_demo_stock_baseline_${pad(index + 1)}`,
+      product_id: product.id,
+      movement_type: 'reconciliation',
+      quantity_delta: 0,
+      unit_cost: Number(product.cost_price),
+      stock_before: Number(product.stock_quantity),
+      stock_after: Number(product.stock_quantity),
+      reference_type: 'demo_data_baseline',
+      reference_id: 'complete_demo_reset_v1',
+      reason: 'Final stock checkpoint for the generated demo dataset',
+      performed_by: 'system:db-reset-demo',
+      data: mysqlJson({ demo: true, reconciled: true }),
+    });
+  });
+
   invoices.filter((invoice) => invoice.status === 'paid').forEach((invoice, index) => {
     financeTransactions.push({
       id: `fin_member_${pad(index + 1)}`,
