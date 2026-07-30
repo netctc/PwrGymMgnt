@@ -38,3 +38,28 @@ because no real concurrency behaviour was exercised.
 - Approve and execute the audit-log, notification and backup retention policy.
 
 None of these items should be marked complete from static code review alone.
+
+## Retention policy
+
+The default policy retains application and security audit data for 730 days,
+closed or expired notifications for 90 days and managed backups for 30 days.
+Financial transactions, invoices, commissions, session movements and warehouse
+stock movements are explicitly protected from this cleanup.
+
+Preview candidate rows:
+
+```bash
+npm run ops:retention
+```
+
+After management or compliance approval, apply the configured policy:
+
+```bash
+npm run ops:retention -- --apply --confirm=APPLY_RETENTION
+```
+
+Application is transactional and writes an audit entry. The retention periods can
+be increased with `AUDIT_LOG_RETENTION_DAYS`,
+`SECURITY_AUDIT_RETENTION_DAYS`, `NOTIFICATION_RETENTION_DAYS` and
+`DATABASE_BACKUP_RETENTION_DAYS`. The enforced minimums cannot be reduced by
+configuration.

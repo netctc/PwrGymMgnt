@@ -137,3 +137,9 @@ renewal, subscription payment, trainer commission settlement and session-ledger
 balances. Both transactions are rolled back and sanitized evidence is retained.
 P1 concurrency is accepted only after all four probes report `passed` against
 staging or the restored rehearsal database.
+
+The same P1 pass introduces `npm run ops:retention`. Preview is read-only and
+application requires `--apply --confirm=APPLY_RETENTION`. Financial, invoice,
+commission, session and stock ledgers are excluded from deletion. Retention
+remains pending until its preview is reviewed and the policy is formally
+approved.
