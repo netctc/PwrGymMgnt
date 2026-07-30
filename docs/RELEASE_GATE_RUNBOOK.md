@@ -41,6 +41,27 @@ DEPLOY_BASE_URL=https://your-domain.example npm run ops:release-gate -- --includ
 
 Evidence is written under `release-evidence/`. Keep the JSON file together with the SQL backup checksum, deployment identifier and approval record.
 
+## Authenticated database smoke
+
+The application login uses an HttpOnly session cookie. For an authenticated
+`db-health` check, configure credentials only in the local/host environment:
+
+```txt
+DEPLOY_SMOKE_LOGIN_EMAIL=admin@powergym.local
+DEPLOY_SMOKE_LOGIN_PASSWORD=<current-password>
+```
+
+Then run:
+
+```bash
+npm run ops:release-gate -- --skip-code --skip-database --base-url=https://your-domain.example --include-db-smoke
+```
+
+The smoke process logs in through `/api/auth/login`, keeps the session cookie in
+memory and redacts it from evidence. Never pass the password as a command-line
+argument or commit it to source control. `DEPLOY_SMOKE_AUTH_TOKEN` remains
+supported for environments that issue dedicated bearer tokens.
+
 ## Safe preview
 
 The preview validates the plan without running tests, migrations, backups or HTTP requests:
