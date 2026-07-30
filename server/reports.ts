@@ -65,6 +65,7 @@ type ScreenReportDefinition = {
   filters: ReportFilterDefinition[];
   exactFilters?: Record<string, string>;
   customFilters?: Record<string, string>;
+  filterAliases?: Record<string, string[]>;
   likeFilters?: Record<string, string[]>;
   numericFilters?: Record<string, string>;
   limit?: number;
@@ -304,6 +305,10 @@ const SCREEN_REPORTS: ScreenReportDefinition[] = [
             WHERE filter_migrated.legacy_subscription_id = filter_legacy.id
           )
       ))`,
+    },
+    filterAliases: {
+      currentPlan: ["plan"],
+      subscriptionStatus: ["status"],
     },
     likeFilters: { q: ["m.first_name", "m.last_name", "m.email", "m.phone", "m.plan", "current_subscription.current_plans"] },
   },
@@ -1593,6 +1598,15 @@ function parseScreenReportFilters(query: Request["query"]): ParsedReportFilters 
 function addScreenReportWhere(definition: ScreenReportDefinition, filters: ParsedReportFilters) {
   const where: string[] = [];
   const params: unknown[] = [];
+  const filterValue = (filterId: string) => {
+    const direct = sanitizeTextFilter(filters.values[filterId]);
+    if (direct) return direct;
+    for (const alias of definition.filterAliases?.[filterId] || []) {
+      const aliased = sanitizeTextFilter(filters.values[alias]);
+      if (aliased) return aliased;
+    }
+    return "";
+  };
 
   if (definition.dateColumn) {
     where.push(`DATE(${definition.dateColumn}) BETWEEN ? AND ?`);
@@ -1600,7 +1614,7 @@ function addScreenReportWhere(definition: ScreenReportDefinition, filters: Parse
   }
 
   for (const [filterId, column] of Object.entries(definition.exactFilters || {})) {
-    const value = sanitizeTextFilter(filters.values[filterId]);
+    const value = filterValue(filterId);
     if (value) {
       where.push(`${column} = ?`);
       params.push(value);
@@ -1608,7 +1622,7 @@ function addScreenReportWhere(definition: ScreenReportDefinition, filters: Parse
   }
 
   for (const [filterId, condition] of Object.entries(definition.customFilters || {})) {
-    const value = sanitizeTextFilter(filters.values[filterId]);
+    const value = filterValue(filterId);
     if (value) {
       where.push(condition);
       const placeholderCount = (condition.match(/\?/g) || []).length;
@@ -1617,7 +1631,7 @@ function addScreenReportWhere(definition: ScreenReportDefinition, filters: Parse
   }
 
   for (const [filterId, column] of Object.entries(definition.numericFilters || {})) {
-    const value = sanitizeNumericFilter(filters.values[filterId]);
+    const value = sanitizeNumericFilter(filterValue(filterId));
     if (value) {
       where.push(`${column} = ?`);
       params.push(Number(value));
@@ -1625,7 +1639,7 @@ function addScreenReportWhere(definition: ScreenReportDefinition, filters: Parse
   }
 
   for (const [filterId, columns] of Object.entries(definition.likeFilters || {})) {
-    const value = sanitizeTextFilter(filters.values[filterId], 80);
+    const value = sanitizeTextFilter(filterValue(filterId), 80);
     if (value) {
       where.push(`(${columns.map((column) => `${column} LIKE ?`).join(" OR ")})`);
       params.push(...columns.map(() => `%${value}%`));
@@ -1660,6 +1674,23 @@ function mergeFilterOptions(
   actualRows.forEach((row) => append(row.value));
   if (!options.size) fallback.forEach((option) => append(option.value, option.label));
   return Array.from(options.values());
+}
+
+function defaultMembersDirectoryFilterOptions() {
+  return {
+    currentPlan: [] as Array<{ value: string; label: string }>,
+    subscriptionStatus: [
+      { value: "active", label: "Active" },
+      { value: "inactive", label: "Inactive" },
+      { value: "suspended", label: "Suspended" },
+      { value: "expired", label: "Expired" },
+      { value: "archived", label: "Archived" },
+    ],
+    paymentStatus: [
+      { value: "paid", label: "Paid" },
+      { value: "pending", label: "Pending" },
+    ],
+  };
 }
 
 async function loadMembersDirectoryFilterOptions(pool: Pool) {
@@ -1767,15 +1798,16 @@ async function loadMembersDirectoryFilterOptions(pool: Pool) {
       .map((row) => sanitizeTextFilter(row.value, 120))
       .filter(Boolean)
       .map((value) => ({ value, label: value })),
-    subscriptionStatus: mergeFilterOptions(memberReference, actualStatusRows, [
-      { value: "active", label: "Active" },
-      { value: "inactive", label: "Inactive" },
-      { value: "expired", label: "Expired" },
-    ]),
-    paymentStatus: mergeFilterOptions(paymentReference, actualPaymentRows, [
-      { value: "paid", label: "Paid" },
-      { value: "pending", label: "Pending" },
-    ]),
+    subscriptionStatus: mergeFilterOptions(
+      memberReference,
+      actualStatusRows,
+      defaultMembersDirectoryFilterOptions().subscriptionStatus,
+    ),
+    paymentStatus: mergeFilterOptions(
+      paymentReference,
+      actualPaymentRows,
+      defaultMembersDirectoryFilterOptions().paymentStatus,
+    ),
   };
 }
 
@@ -2011,8 +2043,10 @@ export function registerReportsRoutes(app: Express, poolProvider: PoolProvider) 
   app.get("/api/reports/screen-catalog", async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
       const role = req.user?.role || "";
-      const pool = requirePool(poolProvider);
-      const memberFilterOptions = await loadMembersDirectoryFilterOptions(pool);
+      const pool = poolProvider();
+      const memberFilterOptions = pool
+        ? await loadMembersDirectoryFilterOptions(pool)
+        : defaultMembersDirectoryFilterOptions();
       const reports = SCREEN_REPORTS
         .filter((report) => canAccessScreenReport(report, role))
         .map(({ id, sectionId, label, description, screen, filters }) => ({
