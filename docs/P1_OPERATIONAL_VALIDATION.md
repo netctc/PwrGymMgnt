@@ -108,6 +108,12 @@ closed or expired notifications for 90 days and managed backups for 30 days.
 Financial transactions, invoices, commissions, session movements and warehouse
 stock movements are explicitly protected from this cleanup.
 
+Managed `.sql` backups are inspected in preview mode. Empty files and valid
+backups older than the configured period are candidates. Apply mode moves these
+files into a timestamped `backups/quarantine/` directory instead of deleting
+them, preserving a recoverable trail while removing invalid or expired files
+from the operational backup catalogue.
+
 Preview candidate rows:
 
 ```bash
