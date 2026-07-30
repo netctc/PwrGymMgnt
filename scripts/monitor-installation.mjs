@@ -1,5 +1,13 @@
 #!/usr/bin/env node
-import 'dotenv/config';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { loadDotEnv } from './load-env.mjs';
+
+const projectDirectory = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..',
+);
+loadDotEnv(path.join(projectDirectory, '.env'));
 
 const baseUrl = String(
   process.env.DEPLOY_BASE_URL

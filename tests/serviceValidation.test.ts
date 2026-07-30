@@ -1,10 +1,15 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import {
   buildServiceChecks,
   parseServiceValidationArgs,
   summarizeServiceResults,
 } from '../scripts/service-validation.mjs';
+
+const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 test('service validation requires exactly one operating system', () => {
   assert.throws(() => parseServiceValidationArgs([], {}), /exactly one host/);
@@ -36,4 +41,15 @@ test('service validation rejects credentials in URLs and summarizes failures', (
     summarizeServiceResults([{ status: 'passed' }, { status: 'failed' }]).posture,
     'block',
   );
+});
+
+test('scheduled task entry points resolve the project and environment from their script path', () => {
+  for (const relativePath of [
+    'scripts/service-runner.mjs',
+    'scripts/monitor-installation.mjs',
+  ]) {
+    const source = fs.readFileSync(path.join(projectRoot, relativePath), 'utf8');
+    assert.match(source, /fileURLToPath\(import\.meta\.url\)/);
+    assert.match(source, /loadDotEnv\(path\.join\(projectDirectory, '\.env'\)\)/);
+  }
 });

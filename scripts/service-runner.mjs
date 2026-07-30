@@ -2,8 +2,18 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import process from 'node:process';
+import { fileURLToPath } from 'node:url';
+import { loadDotEnv } from './load-env.mjs';
 
-const projectDirectory = path.resolve(process.env.POWERGYM_INSTALL_DIR || process.cwd());
+const scriptProjectDirectory = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..',
+);
+const projectDirectory = path.resolve(
+  process.env.POWERGYM_INSTALL_DIR || scriptProjectDirectory,
+);
+loadDotEnv(path.join(projectDirectory, '.env'));
+
 let child;
 let stopping = false;
 
