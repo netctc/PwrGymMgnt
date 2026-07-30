@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   CONCURRENCY_PROBES,
+  getConcurrencyDatabaseEnv,
   isExpectedLockContention,
   parseConcurrencyArgs,
   summarizeConcurrencyResults,
@@ -18,9 +19,27 @@ test('concurrency probes cover every critical financial and session domain', () 
 });
 
 test('concurrency arguments enforce a short bounded lock timeout', () => {
-  assert.equal(parseConcurrencyArgs(['--lock-timeout=3', '--json']).timeoutSeconds, 3);
+  const args = parseConcurrencyArgs(['--lock-timeout=3', '--json', '--rehearsal']);
+  assert.equal(args.timeoutSeconds, 3);
+  assert.equal(args.rehearsal, true);
   assert.throws(() => parseConcurrencyArgs(['--lock-timeout=0']), /between 1 and 10/);
   assert.throws(() => parseConcurrencyArgs(['--lock-timeout=30']), /between 1 and 10/);
+});
+
+test('rehearsal mode uses only dedicated database credentials', () => {
+  const config = getConcurrencyDatabaseEnv(
+    { rehearsal: true },
+    {
+      DATABASE_NAME: 'production',
+      REHEARSAL_DATABASE_HOSTNAME: 'localhost',
+      REHEARSAL_DATABASE_PORT: '3306',
+      REHEARSAL_DATABASE_USER_NAME: 'rehearsal',
+      REHEARSAL_DATABASE_PASSWORD: 'private',
+      REHEARSAL_DATABASE_NAME: 'powergym_restore_test',
+    },
+  );
+  assert.equal(config.database, 'powergym_restore_test');
+  assert.equal(config.user, 'rehearsal');
 });
 
 test('only the MySQL row lock timeout is accepted as expected contention', () => {

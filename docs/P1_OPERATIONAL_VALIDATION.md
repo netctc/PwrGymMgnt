@@ -14,7 +14,7 @@ movements. The P1 concurrency command verifies those protections against the
 configured MySQL database without modifying rows:
 
 ```bash
-npm run ops:concurrency-verify
+npm run ops:concurrency-verify -- --rehearsal
 ```
 
 The command:
@@ -29,6 +29,7 @@ The command:
 Run it against staging or a restored rehearsal database, not during a busy
 production window. All four checks must pass. A missing fixture is a blocker
 because no real concurrency behaviour was exercised.
+`--rehearsal` reads only the dedicated `REHEARSAL_DATABASE_*` variables.
 
 ## Remaining P1 evidence
 

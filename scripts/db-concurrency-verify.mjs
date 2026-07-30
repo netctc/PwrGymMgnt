@@ -33,11 +33,20 @@ export const CONCURRENCY_PROBES = Object.freeze([
 ]);
 
 export function parseConcurrencyArgs(argv = process.argv.slice(2)) {
-  const args = { json: false, output: '', timeoutSeconds: DEFAULT_TIMEOUT_SECONDS };
+  const args = {
+    json: false,
+    output: '',
+    rehearsal: false,
+    timeoutSeconds: DEFAULT_TIMEOUT_SECONDS,
+  };
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];
     if (token === '--json') {
       args.json = true;
+      continue;
+    }
+    if (token === '--rehearsal') {
+      args.rehearsal = true;
       continue;
     }
     const [name, inlineValue] = token.startsWith('--')
@@ -56,6 +65,18 @@ export function parseConcurrencyArgs(argv = process.argv.slice(2)) {
     throw new Error('--lock-timeout must be an integer between 1 and 10 seconds.');
   }
   return args;
+}
+
+export function getConcurrencyDatabaseEnv(args, env = process.env) {
+  if (!args.rehearsal) return getDatabaseEnv();
+  return {
+    host: String(env.REHEARSAL_DATABASE_HOSTNAME || '').trim(),
+    port: Number(env.REHEARSAL_DATABASE_PORT || 3306),
+    user: String(env.REHEARSAL_DATABASE_USER_NAME || '').trim(),
+    password: String(env.REHEARSAL_DATABASE_PASSWORD || ''),
+    database: String(env.REHEARSAL_DATABASE_NAME || '').trim(),
+    connectTimeout: Number(env.DATABASE_CONNECT_TIMEOUT_MS || 10000),
+  };
 }
 
 export function isExpectedLockContention(error) {
@@ -168,7 +189,7 @@ async function runProbe(pool, probe, timeoutSeconds) {
 
 export async function runConcurrencyVerification(argv = process.argv.slice(2)) {
   const args = parseConcurrencyArgs(argv);
-  const config = getDatabaseEnv();
+  const config = getConcurrencyDatabaseEnv(args);
   const missing = getMissingDatabaseEnv(config);
   if (missing.length) {
     throw new Error(`Missing database environment variables: ${missing.join(', ')}`);
@@ -191,6 +212,7 @@ export async function runConcurrencyVerification(argv = process.argv.slice(2)) {
       host: config.host,
       port: config.port,
       name: config.database,
+      mode: args.rehearsal ? 'rehearsal' : 'configured',
     },
     timeoutSeconds: args.timeoutSeconds,
     summary: null,
