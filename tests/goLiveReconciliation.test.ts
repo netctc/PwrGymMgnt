@@ -37,6 +37,15 @@ test('reconciliation blocks balance, stock and ledger discrepancies', () => {
       ...snapshot,
       negativeStockCount: 1,
       latestMovementMismatchCount: 2,
+      stockLedgerMismatches: [
+        {
+          sku: 'SKU-1',
+          name: 'Test product',
+          systemQuantity: 3,
+          latestMovementQuantity: 2,
+          latestMovementAt: '2026-07-30T00:00:00.000Z',
+        },
+      ],
     },
     {
       approvedLedgerBalance: 1200,
@@ -46,6 +55,14 @@ test('reconciliation blocks balance, stock and ledger discrepancies', () => {
   assert.equal(result.posture, 'block');
   assert.ok(result.findings.some((finding) => finding.id === 'ledger-balance-difference'));
   assert.ok(result.findings.some((finding) => finding.id === 'physical-count-missing'));
+  const mismatch = result.findings.find((finding) => finding.id === 'stock-ledger-mismatch');
+  assert.deepEqual(mismatch?.products?.[0], {
+    sku: 'SKU-1',
+    name: 'Test product',
+    systemQuantity: 3,
+    latestMovementQuantity: 2,
+    latestMovementAt: '2026-07-30T00:00:00.000Z',
+  });
 });
 
 test('reconciliation input and template modes are mutually exclusive', () => {
