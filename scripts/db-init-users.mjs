@@ -19,11 +19,15 @@ function hashPassword(password) {
 }
 
 const SEED_USERS = [
-  { email: 'super_admin@powergym.local', name: 'Super Admin', username: 'super_admin', role: 'super_admin', password: 'Ab.654321' },
-  { email: 'admin@powergym.local', name: 'Admin', username: 'admin', role: 'admin', password: 'Ab.654321' },
+  { email: 'super_admin@powergym.local', name: 'Super Admin', username: 'super_admin', role: 'super_admin' },
+  { email: 'admin@powergym.local', name: 'Admin', username: 'admin', role: 'admin' },
 ];
 
 async function main() {
+  const initialPassword = String(process.env.POWERGYM_INITIAL_ADMIN_PASSWORD || '').trim();
+  if (!initialPassword || /^replace_/i.test(initialPassword) || initialPassword.length < 10) {
+    throw new Error('Set POWERGYM_INITIAL_ADMIN_PASSWORD to a unique password of at least 10 characters.');
+  }
   const dbConfig = getDatabaseEnv();
   const missing = getMissingDatabaseEnv(dbConfig);
 
@@ -42,31 +46,15 @@ async function main() {
   });
 
   console.log(`Connected to ${dbConfig.database}@${dbConfig.host}:${dbConfig.port}`);
-
-  // Ensure admin_users table exists
-  await connection.query(`
-    CREATE TABLE IF NOT EXISTS admin_users (
-      id INT AUTO_INCREMENT PRIMARY KEY,
-      name VARCHAR(255) NULL,
-      email VARCHAR(255) NOT NULL,
-      username VARCHAR(100) NULL,
-      employee_id VARCHAR(64) NULL,
-      password_hash VARCHAR(255) NOT NULL,
-      role VARCHAR(50) NOT NULL DEFAULT 'admin',
-      status VARCHAR(50) NOT NULL DEFAULT 'active',
-      reset_phone VARCHAR(32) NULL,
-      reset_delivery_channel VARCHAR(32) NULL,
-      last_login_at DATETIME NULL,
-      password_changed_at DATETIME NULL,
-      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-      UNIQUE KEY uq_admin_users_email (email),
-      UNIQUE KEY uq_admin_users_username (username),
-      UNIQUE KEY uq_admin_users_employee_id (employee_id),
-      INDEX idx_admin_users_role (role),
-      INDEX idx_admin_users_status (status)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-  `);
+  const [adminUserTables] = await connection.query(
+    `SELECT 1 FROM information_schema.TABLES
+      WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'admin_users' LIMIT 1`,
+    [dbConfig.database],
+  );
+  if (adminUserTables.length === 0) {
+    await connection.end();
+    throw new Error('admin_users table is missing. Run npm run db:migrate before npm run db:init-users.');
+  }
 
   let created = 0;
   let skipped = 0;
@@ -83,7 +71,7 @@ async function main() {
       continue;
     }
 
-    const passwordHash = hashPassword(user.password);
+    const passwordHash = hashPassword(initialPassword);
     await connection.query(
       `INSERT INTO admin_users (name, email, username, password_hash, role, status, password_changed_at)
        VALUES (?, ?, ?, ?, ?, 'active', NOW())`,

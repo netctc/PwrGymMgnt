@@ -62,7 +62,8 @@ test('Required administrator accounts use the requested identifiers', () => {
   const initializer = read('scripts/db-init-users.mjs');
   assert.match(initializer, /admin@powergym\.local/);
   assert.match(initializer, /super_admin@powergym\.local/);
-  assert.match(initializer, /Ab\.654321/);
+  assert.match(initializer, /POWERGYM_INITIAL_ADMIN_PASSWORD/);
+  assert.doesNotMatch(initializer, /password:\s*['\"]/);
   assert.doesNotMatch(initializer, /superadmin@powergym\.local/);
 });
 

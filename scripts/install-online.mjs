@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import os from 'node:os';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
@@ -10,13 +11,14 @@ const SERVICE_NAME = 'PowerGym';
 const PROJECT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 export function parseInstallerArgs(argv = process.argv.slice(2)) {
-  const result = { windows: false, linux: false, dryRun: false, skipService: false };
+  const result = { windows: false, linux: false, dryRun: false, installService: false };
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];
     if (token === '-w') result.windows = true;
     else if (token === '-l') result.linux = true;
     else if (token === '--dry-run') result.dryRun = true;
-    else if (token === '--skip-service') result.skipService = true;
+    else if (token === '--install-service') result.installService = true;
+    else if (token === '--skip-service') result.installService = false;
     else if (token.startsWith('--')) {
       const [name, inlineValue] = token.slice(2).split('=', 2);
       const value = inlineValue ?? argv[++index];
@@ -115,6 +117,11 @@ async function prepareEnvironment(args, publicUrl) {
     throw new Error(`Configure the database before installation. Missing: ${missingDatabaseKeys.join(', ')}`);
   }
 
+  const initialAdminPassword = configuredValue('POWERGYM_INITIAL_ADMIN_PASSWORD');
+  if (!initialAdminPassword || String(initialAdminPassword).length < 10) {
+    throw new Error('Configure POWERGYM_INITIAL_ADMIN_PASSWORD with at least 10 characters before installation.');
+  }
+
   const secureUrl = publicUrl.startsWith('https://');
   const updates = {
     NODE_ENV: 'production',
@@ -143,7 +150,6 @@ async function prepareEnvironment(args, publicUrl) {
 }
 
 async function installLinuxService(args, env) {
-  if (process.getuid?.() !== 0) throw new Error('Linux service installation requires root. Re-run with sudo or use --skip-service.');
   const nodePath = process.execPath;
   const envPath = path.join(PROJECT_DIR, '.env');
   const unit = `[Unit]
@@ -157,7 +163,6 @@ EnvironmentFile=${envPath}
 ExecStart=${nodePath} ${path.join(PROJECT_DIR, 'scripts', 'service-runner.mjs')}
 Restart=always
 RestartSec=5
-User=${args.serviceUser || 'root'}
 
 [Install]
 WantedBy=multi-user.target
@@ -183,22 +188,24 @@ Persistent=true
 [Install]
 WantedBy=timers.target
 `;
+  const serviceDir = path.resolve(args.serviceDir || path.join(os.homedir(), '.config', 'systemd', 'user'));
   if (args.dryRun) {
-    console.log('[dry-run] would install powergym.service and powergym-health.timer');
+    console.log(`[dry-run] would install user services in ${serviceDir}`);
     return;
   }
-  await fs.writeFile('/etc/systemd/system/powergym.service', unit);
-  await fs.writeFile('/etc/systemd/system/powergym-health.service', healthUnit);
-  await fs.writeFile('/etc/systemd/system/powergym-health.timer', timer);
-  await command('systemctl', ['daemon-reload'], { ...args, env });
-  await command('systemctl', ['enable', '--now', 'powergym.service', 'powergym-health.timer'], { ...args, env });
+  await fs.mkdir(serviceDir, { recursive: true });
+  await fs.writeFile(path.join(serviceDir, 'powergym.service'), unit);
+  await fs.writeFile(path.join(serviceDir, 'powergym-health.service'), healthUnit);
+  await fs.writeFile(path.join(serviceDir, 'powergym-health.timer'), timer);
+  await command('systemctl', ['--user', 'daemon-reload'], { ...args, env });
+  await command('systemctl', ['--user', 'enable', '--now', 'powergym.service', 'powergym-health.timer'], { ...args, env });
 }
 
 async function installWindowsService(args, env) {
   const runner = `"${process.execPath}" "${path.join(PROJECT_DIR, 'scripts', 'service-runner.mjs')}"`;
   const monitor = `"${process.execPath}" "${path.join(PROJECT_DIR, 'scripts', 'monitor-installation.mjs')}"`;
-  await command('schtasks.exe', ['/Create', '/F', '/TN', SERVICE_NAME, '/SC', 'ONSTART', '/RU', 'SYSTEM', '/RL', 'HIGHEST', '/TR', runner], { ...args, env });
-  await command('schtasks.exe', ['/Create', '/F', '/TN', `${SERVICE_NAME}-Health`, '/SC', 'MINUTE', '/MO', '5', '/RU', 'SYSTEM', '/RL', 'HIGHEST', '/TR', monitor], { ...args, env });
+  await command('schtasks.exe', ['/Create', '/F', '/TN', SERVICE_NAME, '/SC', 'ONLOGON', '/TR', runner], { ...args, env });
+  await command('schtasks.exe', ['/Create', '/F', '/TN', `${SERVICE_NAME}-Health`, '/SC', 'MINUTE', '/MO', '5', '/TR', monitor], { ...args, env });
   await command('schtasks.exe', ['/Run', '/TN', SERVICE_NAME], { ...args, env });
 }
 
@@ -219,14 +226,14 @@ export async function install(argv = process.argv.slice(2)) {
   await command(npmCommand, ['run', 'build'], { ...args, env });
   await command(npmCommand, ['run', 'deploy:check'], { ...args, env });
 
-  if (!args.skipService) {
+  if (args.installService) {
     if (args.windows) await installWindowsService(args, env);
     else await installLinuxService(args, env);
   }
 
   console.log('PowerGym installation completed.');
   console.log('Required accounts verified: admin@powergym.local and super_admin@powergym.local');
-  console.warn('Security action required: change the initial password Ab.654321 immediately after first login.');
+  console.warn('Security action required: rotate the initial administrator password immediately after first login.');
   console.log(`Health monitor target: ${publicUrl}/api/health`);
 }
 

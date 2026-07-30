@@ -270,119 +270,6 @@ async function startServer() {
 
   await connectToDatabase("startup");
   
-  // Ensure tables exist on boot
-  if (pool) {
-    try {
-      // Unify database charset/collation to utf8mb4_unicode_ci for all existing tables
-      try {
-        const [tables]: any = await pool.query(
-          `SELECT TABLE_NAME FROM information_schema.TABLES
-           WHERE TABLE_SCHEMA = DATABASE() AND TABLE_COLLATION <> 'utf8mb4_unicode_ci' AND TABLE_TYPE = 'BASE TABLE'`
-        );
-        for (const row of tables) {
-          await pool.query(`ALTER TABLE \`${row.TABLE_NAME}\` CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`);
-        }
-      } catch { /* ignore collation fix errors on startup */ }
-
-      await pool.query(`
-        CREATE TABLE IF NOT EXISTS audit_logs (
-          id INT AUTO_INCREMENT PRIMARY KEY,
-          action VARCHAR(255) NOT NULL,
-          details TEXT,
-          performed_by VARCHAR(255),
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-      `);
-      await pool.query(`
-        CREATE TABLE IF NOT EXISTS members (
-          id VARCHAR(255) PRIMARY KEY,
-          first_name VARCHAR(100),
-          last_name VARCHAR(100),
-          email VARCHAR(255),
-          phone VARCHAR(50),
-          status VARCHAR(50) DEFAULT 'active',
-          join_date DATETIME,
-          plan VARCHAR(100),
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-          data JSON
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-      `);
-      await pool.query(`
-        CREATE TABLE IF NOT EXISTS staff (
-          id VARCHAR(255) PRIMARY KEY,
-          first_name VARCHAR(100),
-          last_name VARCHAR(100),
-          email VARCHAR(255),
-          role VARCHAR(100),
-          status VARCHAR(50) DEFAULT 'active',
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-          data JSON
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-      `);
-      await pool.query(`
-        CREATE TABLE IF NOT EXISTS hr (
-          id VARCHAR(255) PRIMARY KEY,
-          employee_id VARCHAR(255),
-          type VARCHAR(100),
-          amount DECIMAL(10,2),
-          date DATETIME,
-          notes TEXT,
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          data JSON
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-      `);
-      await pool.query(`
-        CREATE TABLE IF NOT EXISTS accounting (
-          id VARCHAR(255) PRIMARY KEY,
-          transaction_type VARCHAR(50),
-          amount DECIMAL(10,2),
-          date DATETIME,
-          category VARCHAR(100),
-          description TEXT,
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          data JSON
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-      `);
-      await pool.query(`
-        CREATE TABLE IF NOT EXISTS users (
-          id VARCHAR(255) PRIMARY KEY,
-          email VARCHAR(255),
-          role VARCHAR(100),
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-          data JSON,
-          INDEX idx_users_email (email),
-          INDEX idx_users_role (role)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-      `);
-      // Ensure updated_at column exists on legacy users tables missing it
-      try {
-        const [cols]: any = await pool.query(
-          "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'updated_at'"
-        );
-        if (cols.length === 0) {
-          await pool.query("ALTER TABLE users ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP");
-        }
-      } catch { /* ignore if column already exists */ }
-      await pool.query(`
-        CREATE TABLE IF NOT EXISTS classes (
-          id VARCHAR(255) PRIMARY KEY,
-          name VARCHAR(255),
-          instructor_id VARCHAR(255),
-          start_time DATETIME,
-          end_time DATETIME,
-          capacity INT,
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          data JSON
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-      `);
-    } catch (e) {
-      console.error("Setup error", e);
-    }
-  }
-
   // Phase 6 structured security audit logging. Mounted before routes so auth, password-reset,
   // and protected API requests receive request IDs and security_audit_events entries.
   app.use(createApiAuditMiddleware(() => pool));
@@ -1079,17 +966,6 @@ async function startServer() {
   app.get("/api/audit-logs", requirePermission("platform.audit.read"), async (req, res, next) => {
     try {
       if (!pool) return res.status(500).json({ error: "Database not connected" });
-      
-      // Ensure the table exists
-      await pool.query(`
-        CREATE TABLE IF NOT EXISTS audit_logs (
-          id INT AUTO_INCREMENT PRIMARY KEY,
-          action VARCHAR(255) NOT NULL,
-          details TEXT,
-          performed_by VARCHAR(255),
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-      `);
 
       const [rows] = await pool.query("SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT 100");
       res.json({ logs: rows });

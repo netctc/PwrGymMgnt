@@ -4,19 +4,13 @@ PowerGym Management is a gym operations application built with React, Vite, Type
 
 ## Current implementation status
 
-Delivery 1 started the roadmap implementation, and Delivery 2 adds the membership/subscription backend foundation:
+`PwrGymCodex` now includes the operational modules for dashboard, memberships, versioned plans, multi-user subscriptions, scheduling, Private PT, HR/payroll, accounting, warehouse/POS, trainer commissions, reporting, security, backup/restore, deployment monitoring and multilingual UI.
 
-- Environment hardening and removal of committed production-like credentials.
-- Secure super-admin password hashing with Node.js `crypto.scrypt`.
-- MySQL foundation schema in `sql/001_foundation_schema.sql`.
-- Type-check, production build, and dependency audit verification.
-- Membership/subscription MySQL tables, protected API routes, invoice generation, and hashed QR/e-card access tokens.
-
-See `docs/DELIVERY_1_IMPLEMENTATION.md` and `docs/DELIVERY_2_IMPLEMENTATION.md` for detailed implementation reports.
+The canonical database foundation is `sql/000_master_schema.sql`; later numbered files in `sql/` are incremental migrations. Historical migrations remain in `sql/archive/` for audit evidence only. See `docs/CODE_MAINTENANCE_AUDIT_2026-07-30.md` for the current technical status and prioritized release plan.
 
 ## Prerequisites
 
-- Node.js 20+
+- Node.js 22+
 - MySQL 8+ for database-backed API usage
 - `mysqldump` if you want backup endpoints to work
 
@@ -42,11 +36,13 @@ Update `.env` with real local or staging values before using database-backed API
 npm run db:migrate
 ```
 
-This applies all SQL files in the `sql/` directory, including the Delivery 1 foundation schema and Delivery 2 membership/subscription schema. Then create or upgrade the super-admin user:
+This applies all SQL files in the `sql/` directory, including the Delivery 1 foundation schema and Delivery 2 membership/subscription schema. Then configure a unique `POWERGYM_INITIAL_ADMIN_PASSWORD` in `.env` and create or verify the required local administrator accounts:
 
 ```bash
-curl http://localhost:3000/api/admin-setup
+npm run db:init-users
 ```
+
+Rotate the initial password immediately after the first successful login.
 
 ## Delivery 2 membership API
 

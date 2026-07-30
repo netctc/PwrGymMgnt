@@ -1,7 +1,7 @@
 -- =============================================================================
 -- PowerGym Management — MASTER SCHEMA (single source of truth)
 -- =============================================================================
--- Generated: 2026-07-02  |  Compatible: MariaDB 10.3+ / MySQL 5.7+
+-- Generated: 2026-07-02  |  Compatible: MySQL 8+
 -- All tables use ENGINE=InnoDB, utf8mb4_unicode_ci for FK compatibility.
 -- Run with:  npm run db:migrate   (applies 000_master_schema.sql first)
 --
