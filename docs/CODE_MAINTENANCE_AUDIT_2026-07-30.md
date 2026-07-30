@@ -125,3 +125,15 @@ dedicated rehearsal credentials, blocks the application database, validates the
 managed backup, restores it and runs access and integrity verification in a fixed
 order. Its sanitized JSON evidence must report `posture: pass` before P0 is
 considered complete.
+
+## P0 closure and P1 progress
+
+The production-like release gate and isolated restore rehearsal were executed on
+2026-07-30 and both reported `Posture: pass`. P0 is therefore closed.
+
+The first P1 implementation adds `npm run ops:concurrency-verify`. It performs
+read-only row-lock contention checks against real MySQL fixtures for subscription
+renewal, subscription payment, trainer commission settlement and session-ledger
+balances. Both transactions are rolled back and sanitized evidence is retained.
+P1 concurrency is accepted only after all four probes report `passed` against
+staging or the restored rehearsal database.
