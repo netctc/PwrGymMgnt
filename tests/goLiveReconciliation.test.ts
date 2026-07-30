@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import test from 'node:test';
 import {
   evaluateReconciliation,
@@ -70,4 +72,20 @@ test('reconciliation input and template modes are mutually exclusive', () => {
     () => parseReconciliationArgs(['--input=a.json', '--write-template=b.json']),
     /cannot be used together/,
   );
+});
+
+test('demo stock repair is idempotent and restricted to the known demo signature', () => {
+  const migration = fs.readFileSync(
+    path.join(process.cwd(), 'sql/029_demo_stock_ledger_baseline.sql'),
+    'utf8',
+  );
+  assert.match(migration, /product\.id = 'prod_023'/);
+  assert.match(migration, /product\.sku = 'APP-HOODIE-BLK-L'/);
+  assert.match(migration, /product\.stock_quantity = 38/);
+  assert.match(migration, /JSON_EXTRACT\(product\.data, '\$\.demo'\)/);
+  assert.match(migration, /latest\.id[\s\S]*= 'mov_po_003'/);
+  assert.match(migration, /NOT EXISTS[\s\S]*repair_demo_stock_prod_023_v1/);
+  assert.match(migration, /WAREHOUSE_DEMO_STOCK_BASELINE_REPAIRED/);
+  assert.doesNotMatch(migration, /UPDATE\s+warehouse_products/i);
+  assert.doesNotMatch(migration, /DELETE\s+FROM/i);
 });
