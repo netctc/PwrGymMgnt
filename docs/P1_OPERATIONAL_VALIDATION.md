@@ -49,6 +49,21 @@ npm run ops:service-verify -- -w --base-url=http://server-ip:3000
 npm run ops:service-verify -- -l --base-url=https://your-domain.example
 ```
 
+If the Windows tasks exist but remain queued and `logs\service.log` is not
+created, repair only the scheduled-task registration without reinstalling
+dependencies or changing the database:
+
+```bat
+npm run ops:service-repair:windows
+timeout /t 10 /nobreak
+npm run ops:service-verify -- -w --base-url=http://server-ip:3000
+```
+
+The repair registers `node.exe` as the executable (without embedded quotes),
+passes the runner as a separate argument, assigns the project working
+directory, enables restart supervision and starts `PowerGym`. It safely
+replaces the two existing task definitions.
+
 Windows validates the `PowerGym` and `PowerGym-Health` scheduled tasks. Linux
 validates the user-level `powergym.service` and `powergym-health.timer`. Both
 checks also require HTTP 200 from `/api/health` and write platform-specific JSON
