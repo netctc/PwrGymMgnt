@@ -89,7 +89,10 @@ npm run ops:reconcile -- --input=reconciliation/go-live-baseline.json
 
 The command is read-only. It blocks negative stock, differences from the latest
 stock movement, accounting differences, missing physical counts and quantity
-differences. Technical identifiers are omitted from evidence.
+differences. When stock differs from its latest movement, the diagnostic lists
+the SKU, product name, system quantity, latest movement quantity and movement
+timestamp so the discrepancy can be investigated without exposing technical
+identifiers. Technical identifiers are omitted from evidence.
 
 ## Retention policy
 
