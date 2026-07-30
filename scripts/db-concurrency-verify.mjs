@@ -13,22 +13,26 @@ export const CONCURRENCY_PROBES = Object.freeze([
   {
     id: 'subscription-renewal',
     table: 'subscriptions',
-    sourceFile: 'server/subscriptionsV2.ts',
+    lockSourceFile: 'server/subscriptionsV2.ts',
+    transactionSourceFile: 'server/subscriptionsV2.ts',
   },
   {
     id: 'subscription-payment',
     table: 'invoices',
-    sourceFile: 'server/membership.ts',
+    lockSourceFile: 'server/membership.ts',
+    transactionSourceFile: 'server/membership.ts',
   },
   {
     id: 'trainer-commission',
     table: 'trainer_plan_commissions',
-    sourceFile: 'server/trainerCommissions.ts',
+    lockSourceFile: 'server/trainerCommissions.ts',
+    transactionSourceFile: 'server/trainerCommissions.ts',
   },
   {
     id: 'session-ledger',
     table: 'session_balances',
-    sourceFile: 'server/sessionLedger.ts',
+    lockSourceFile: 'server/sessionLedger.ts',
+    transactionSourceFile: 'server/subscriptionsV2.ts',
   },
 ]);
 
@@ -115,8 +119,15 @@ function writeEvidence(evidence, outputArg) {
 }
 
 async function sourceUsesRowLock(probe) {
-  const source = fs.readFileSync(path.join(PROJECT_ROOT, probe.sourceFile), 'utf8');
-  return /FOR\s+UPDATE/i.test(source) && /beginTransaction\s*\(/.test(source);
+  const lockSource = fs.readFileSync(
+    path.join(PROJECT_ROOT, probe.lockSourceFile),
+    'utf8',
+  );
+  const transactionSource = probe.transactionSourceFile === probe.lockSourceFile
+    ? lockSource
+    : fs.readFileSync(path.join(PROJECT_ROOT, probe.transactionSourceFile), 'utf8');
+  return /FOR\s+UPDATE/i.test(lockSource)
+    && /beginTransaction\s*\(/.test(transactionSource);
 }
 
 async function runProbe(pool, probe, timeoutSeconds) {
@@ -125,7 +136,8 @@ async function runProbe(pool, probe, timeoutSeconds) {
       id: probe.id,
       table: probe.table,
       status: 'failed',
-      reason: `${probe.sourceFile} does not contain transactional row locking.`,
+      reason: `${probe.lockSourceFile} does not contain a row lock or `
+        + `${probe.transactionSourceFile} does not own the transaction.`,
     };
   }
 

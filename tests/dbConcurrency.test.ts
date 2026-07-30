@@ -16,6 +16,9 @@ test('concurrency probes cover every critical financial and session domain', () 
     'session-ledger',
   ]);
   assert.equal(new Set(CONCURRENCY_PROBES.map((probe) => probe.table)).size, 4);
+  const sessionProbe = CONCURRENCY_PROBES.find((probe) => probe.id === 'session-ledger');
+  assert.equal(sessionProbe?.lockSourceFile, 'server/sessionLedger.ts');
+  assert.equal(sessionProbe?.transactionSourceFile, 'server/subscriptionsV2.ts');
 });
 
 test('concurrency arguments enforce a short bounded lock timeout', () => {
