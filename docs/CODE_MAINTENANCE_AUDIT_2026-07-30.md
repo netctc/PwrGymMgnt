@@ -104,3 +104,16 @@ npm run db:integrity -- --json
 ## Audit trail
 
 This document records the scope, findings, changes and residual risks of the 2026-07-30 maintenance pass. Future reviews should append a dated entry containing the commit SHA, test totals, database target, migration result, integrity posture and deployment smoke result.
+
+## P0 implementation progress
+
+The first release-blocker automation pass adds:
+
+1. `PwrGymCodex` to mandatory push CI.
+2. The maintenance audit to `verify:ci`.
+3. Persistent CI evidence artifacts retained for 30 days.
+4. `npm run ops:release-gate`, which runs code verification, backup, migrations, database verification, integrity and external smoke checks in fail-fast order.
+5. A clean-checkout guard and explicit flags for every skipped release phase.
+6. A cross-platform JSON evidence record for each release attempt.
+
+The external environment tasks are not considered completed until the release gate passes against the real database and final domain/IP, followed by an isolated restore rehearsal.

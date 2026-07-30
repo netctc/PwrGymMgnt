@@ -4,6 +4,7 @@ dist/
 .env.*
 !.env.example
 backups/*.sql
+release-evidence/
 *.log
 
 # Archive files
