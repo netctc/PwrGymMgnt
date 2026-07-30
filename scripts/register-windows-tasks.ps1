@@ -20,7 +20,14 @@ foreach ($requiredPath in @($ProjectDirectory, $NodePath, $runnerPath, $monitorP
   }
 }
 
-$currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+$currentIdentity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+$currentPrincipal = New-Object System.Security.Principal.WindowsPrincipal($currentIdentity)
+$administratorRole = [System.Security.Principal.WindowsBuiltInRole]::Administrator
+if (-not $currentPrincipal.IsInRole($administratorRole)) {
+  throw 'Administrator privileges are required. Open Command Prompt as administrator and run npm run ops:service-repair:windows again.'
+}
+
+$currentUser = $currentIdentity.Name
 $principal = New-ScheduledTaskPrincipal `
   -UserId $currentUser `
   -LogonType Interactive `
