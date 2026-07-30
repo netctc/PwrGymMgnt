@@ -40,6 +40,40 @@ because no real concurrency behaviour was exercised.
 
 None of these items should be marked complete from static code review alone.
 
+## Windows and Linux services
+
+Run the non-mutating service check on each installed host:
+
+```bash
+npm run ops:service-verify -- -w --base-url=http://server-ip:3000
+npm run ops:service-verify -- -l --base-url=https://your-domain.example
+```
+
+Windows validates the `PowerGym` and `PowerGym-Health` scheduled tasks. Linux
+validates the user-level `powergym.service` and `powergym-health.timer`. Both
+checks also require HTTP 200 from `/api/health` and write platform-specific JSON
+evidence.
+
+## Accounting and physical stock reconciliation
+
+Create a controlled count template from the current ledger and product catalogue:
+
+```bash
+npm run ops:reconcile -- --write-template=reconciliation/go-live-baseline.json
+```
+
+The generated values are starting points, not approval. Finance must replace
+`approvedLedgerBalance` with the signed accounting balance and warehouse staff
+must replace every product quantity with the signed physical count. Then run:
+
+```bash
+npm run ops:reconcile -- --input=reconciliation/go-live-baseline.json
+```
+
+The command is read-only. It blocks negative stock, differences from the latest
+stock movement, accounting differences, missing physical counts and quantity
+differences. Technical identifiers are omitted from evidence.
+
 ## Retention policy
 
 The default policy retains application and security audit data for 730 days,

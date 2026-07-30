@@ -143,3 +143,15 @@ application requires `--apply --confirm=APPLY_RETENTION`. Financial, invoice,
 commission, session and stock ledgers are excluded from deletion. Retention
 remains pending until its preview is reviewed and the policy is formally
 approved.
+
+Concurrency verification subsequently reported `Posture: pass`; that P1 item is
+closed. Retention reported `Posture: preview` and remains pending approval.
+
+The next P1 pass adds:
+
+1. `npm run ops:service-verify` for real Windows scheduled-task and Linux systemd
+   evidence plus the external health endpoint.
+2. `npm run ops:reconcile` for a signed accounting baseline and SKU-level
+   physical stock comparison.
+
+Both commands are read-only with respect to application and database state.
