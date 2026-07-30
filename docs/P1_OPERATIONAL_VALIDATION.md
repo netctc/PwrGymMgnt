@@ -94,6 +94,13 @@ the SKU, product name, system quantity, latest movement quantity and movement
 timestamp so the discrepancy can be investigated without exposing technical
 identifiers. Technical identifiers are omitted from evidence.
 
+Migration `029_demo_stock_ledger_baseline.sql` corrects only the known
+`APP-HOODIE-BLK-L` demo signature created by the original complete-demo reset:
+product `prod_023`, demo marker enabled, system quantity 38 and latest movement
+`mov_po_003` with zero delta and zero final stock. It appends an immutable
+reconciliation checkpoint and audit entry; it does not update the product,
+delete history or affect products that do not match every guard.
+
 ## Retention policy
 
 The default policy retains application and security audit data for 730 days,
