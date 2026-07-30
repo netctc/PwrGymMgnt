@@ -7,6 +7,7 @@ import os from 'node:os';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { resolveNpmInvocation } from './release-gate.mjs';
+import { installWindowsScheduledTasks } from './windows-service-tasks.mjs';
 
 const SERVICE_NAME = 'PowerGym';
 const PROJECT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -203,11 +204,13 @@ WantedBy=timers.target
 }
 
 async function installWindowsService(args, env) {
-  const runner = `"${process.execPath}" "${path.join(PROJECT_DIR, 'scripts', 'service-runner.mjs')}"`;
-  const monitor = `"${process.execPath}" "${path.join(PROJECT_DIR, 'scripts', 'monitor-installation.mjs')}"`;
-  await command('schtasks.exe', ['/Create', '/F', '/TN', SERVICE_NAME, '/SC', 'ONLOGON', '/TR', runner], { ...args, env });
-  await command('schtasks.exe', ['/Create', '/F', '/TN', `${SERVICE_NAME}-Health`, '/SC', 'MINUTE', '/MO', '5', '/TR', monitor], { ...args, env });
-  await command('schtasks.exe', ['/Run', '/TN', SERVICE_NAME], { ...args, env });
+  await installWindowsScheduledTasks({
+    projectDir: PROJECT_DIR,
+    nodePath: process.execPath,
+    env,
+    dryRun: args.dryRun,
+    start: true,
+  });
 }
 
 export async function install(argv = process.argv.slice(2)) {
