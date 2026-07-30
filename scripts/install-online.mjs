@@ -9,7 +9,6 @@ import { fileURLToPath } from 'node:url';
 import { resolveNpmInvocation } from './release-gate.mjs';
 import { installWindowsScheduledTasks } from './windows-service-tasks.mjs';
 
-const SERVICE_NAME = 'PowerGym';
 const PROJECT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 export function parseInstallerArgs(argv = process.argv.slice(2)) {
