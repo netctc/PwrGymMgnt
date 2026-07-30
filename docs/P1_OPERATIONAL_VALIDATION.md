@@ -51,7 +51,9 @@ npm run ops:service-verify -- -l --base-url=https://your-domain.example
 
 If the Windows tasks exist but remain queued and `logs\service.log` is not
 created, repair only the scheduled-task registration without reinstalling
-dependencies or changing the database:
+dependencies or changing the database. Run the command from an elevated
+Command Prompt so Windows can replace tasks that were created by an
+administrator:
 
 ```bat
 npm run ops:service-repair:windows
