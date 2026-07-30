@@ -5,7 +5,6 @@ import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 const PROJECT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const POWERSHELL_SCRIPT = path.join(PROJECT_DIR, 'scripts', 'register-windows-tasks.ps1');
 
 export function parseWindowsServiceArgs(argv = process.argv.slice(2)) {
   const args = { dryRun: false, start: true };
