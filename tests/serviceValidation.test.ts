@@ -117,6 +117,23 @@ test('Linux MySQL bootstrap is restricted, idempotent and does not expose creden
   assert.match(env, /^DATABASE_PASSWORD=generated$/m);
 });
 
+test('active MySQL migrations avoid unsupported conditional ALTER and INDEX syntax', () => {
+  const sqlDirectory = path.join(projectRoot, 'sql');
+  const migrationFiles = fs.readdirSync(sqlDirectory)
+    .filter((fileName) => fileName.endsWith('.sql'));
+  for (const fileName of migrationFiles) {
+    const source = fs.readFileSync(path.join(sqlDirectory, fileName), 'utf8');
+    assert.doesNotMatch(source, /ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS/i, fileName);
+    assert.doesNotMatch(source, /CREATE\s+(?:UNIQUE\s+)?INDEX\s+IF\s+NOT\s+EXISTS/i, fileName);
+  }
+  const migration = fs.readFileSync(
+    path.join(sqlDirectory, '010_member_access_qr_renewal_enhancements.sql'),
+    'utf8',
+  );
+  assert.match(migration, /INFORMATION_SCHEMA\.COLUMNS/);
+  assert.match(migration, /INFORMATION_SCHEMA\.STATISTICS/);
+});
+
 test('service validation rejects credentials in URLs and summarizes failures', () => {
   assert.throws(
     () => parseServiceValidationArgs(['-w', '--base-url=http://user:pass@localhost:3000'], {}),
