@@ -65,6 +65,15 @@ test('Linux system units run as a non-root account with portable quoted paths', 
     }),
     /Unsafe Linux service user/,
   );
+  const installerSource = fs.readFileSync(
+    path.join(projectRoot, 'scripts/linux-service-units.mjs'),
+    'utf8',
+  );
+  assert.match(installerSource, /useradd/);
+  assert.match(installerSource, /\/usr\/sbin\/nologin/);
+  assert.match(installerSource, /prepareRuntimePermissions/);
+  assert.match(installerSource, /fs\.chown\(envPath, uid, gid\)/);
+  assert.match(installerSource, /\['logs', 'backups', 'release-evidence'\]/);
 });
 
 test('service validation rejects credentials in URLs and summarizes failures', () => {
