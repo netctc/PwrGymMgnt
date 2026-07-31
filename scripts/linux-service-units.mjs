@@ -258,3 +258,34 @@ export async function installLinuxSystemServices(options = {}) {
     return;
   }
   if (process.platform !== 'linux') {
+    throw new Error(`Linux services can only be installed on Linux; current platform is ${process.platform}.`);
+  }
+  if (typeof process.getuid !== 'function' || process.getuid() !== 0) {
+    if (serviceUser === 'root') {
+      throw new Error('Run this command as a normal deployment user with sudo access.');
+    }
+    await disableLegacyUserUnits(projectDir);
+    await run('sudo', [
+      nodePath,
+      SCRIPT_PATH,
+      `--service-user=${serviceUser}`,
+      `--project-dir=${projectDir}`,
+      `--node-path=${nodePath}`,
+      `--unit-dir=${unitDir}`,
+    ], { cwd: projectDir });
+    return;
+  }
+  if (!serviceUser || serviceUser === 'root') {
+    throw new Error('Specify the non-root deployment account with --service-user.');
+  }
+  await installAsRoot({ projectDir, nodePath, serviceUser, unitDir });
+}
+
+const isMain = process.argv[1] && path.resolve(process.argv[1]) === SCRIPT_PATH;
+if (isMain) {
+  const args = parseLinuxServiceArgs();
+  installLinuxSystemServices(args).catch((error) => {
+    console.error(`Linux service installation failed: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  });
+}
