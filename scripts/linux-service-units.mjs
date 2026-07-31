@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const DEFAULT_PROJECT_DIR = path.resolve(path.dirname(SCRIPT_PATH), '..');
 const DEFAULT_UNIT_DIR = '/etc/systemd/system';
+const STAGED_NODE_PATH = '/usr/local/lib/powergym/node';
 
 function systemdQuote(value) {
   const text = String(value);
@@ -67,6 +68,13 @@ export function buildLinuxSystemdUnits({
     'powergym-health.service': `[Unit]\nDescription=PowerGym installation health check\nAfter=powergym.service\n\n[Service]\nType=oneshot\n${common}ExecStart=${systemdQuote(nodePath)} ${systemdQuote(monitorPath)}\nNoNewPrivileges=true\nPrivateTmp=true\nUMask=0027\n`,
     'powergym-health.timer': `[Unit]\nDescription=Run PowerGym health check every five minutes\n\n[Timer]\nOnBootSec=2min\nOnUnitActiveSec=5min\nPersistent=true\nUnit=powergym-health.service\n\n[Install]\nWantedBy=timers.target\n`,
   };
+}
+
+export function selectLinuxServiceNodePath(nodePath) {
+  const resolved = path.resolve(nodePath);
+  return resolved === '/root' || resolved.startsWith('/root/')
+    ? STAGED_NODE_PATH
+    : resolved;
 }
 
 function run(command, args, options = {}) {
@@ -148,6 +156,29 @@ async function prepareRuntimePermissions(projectDir, uid, gid) {
   }
 }
 
+async function prepareServiceNode(nodePath, serviceUser) {
+  const version = String(await run(nodePath, ['--version'], { capture: true }));
+  if (!/^v22\./.test(version)) {
+    throw new Error(`PowerGym requires Node.js 22.x; found ${version || 'unknown'}.`);
+  }
+  try {
+    await run(
+      'runuser',
+      ['-u', serviceUser, '--', 'test', '-x', nodePath],
+      { capture: true },
+    );
+    return nodePath;
+  } catch {
+    const runtimeDirectory = path.dirname(STAGED_NODE_PATH);
+    const temporaryPath = `${STAGED_NODE_PATH}.tmp-${process.pid}`;
+    await fs.mkdir(runtimeDirectory, { recursive: true, mode: 0o755 });
+    await fs.copyFile(nodePath, temporaryPath);
+    await fs.chmod(temporaryPath, 0o755);
+    await fs.rename(temporaryPath, STAGED_NODE_PATH);
+    return STAGED_NODE_PATH;
+  }
+}
+
 async function installAsRoot({ projectDir, nodePath, serviceUser, unitDir }) {
   const requiredPaths = [
     projectDir,
@@ -165,10 +196,11 @@ async function installAsRoot({ projectDir, nodePath, serviceUser, unitDir }) {
     }
   }
   const account = await ensureServiceAccount(serviceUser);
+  const serviceNodePath = await prepareServiceNode(nodePath, serviceUser);
   await prepareRuntimePermissions(projectDir, account.uid, account.gid);
   const units = buildLinuxSystemdUnits({
     projectDir,
-    nodePath,
+    nodePath: serviceNodePath,
     serviceUser,
     serviceGroup: account.serviceGroup,
   });
@@ -200,6 +232,7 @@ async function installAsRoot({ projectDir, nodePath, serviceUser, unitDir }) {
   }
   console.log(`Linux system services registered for ${serviceUser}:${account.serviceGroup}.`);
   console.log(`PowerGym working directory: ${projectDir}`);
+  console.log(`PowerGym Node.js runtime: ${serviceNodePath}`);
 }
 
 export async function installLinuxSystemServices(options = {}) {
@@ -212,45 +245,16 @@ export async function installLinuxSystemServices(options = {}) {
   );
   const unitDir = path.resolve(options.unitDir || DEFAULT_UNIT_DIR);
   if (options.dryRun) {
+    const serviceNodePath = selectLinuxServiceNodePath(nodePath);
     const units = buildLinuxSystemdUnits({
       projectDir,
-      nodePath,
+      nodePath: serviceNodePath,
       serviceUser: serviceUser === 'root' ? 'powergym' : serviceUser,
       serviceGroup: serviceUser === 'root' ? 'powergym' : serviceUser,
     });
     console.log(`[dry-run] would install system units in ${unitDir}`);
     console.log(`[dry-run] units: ${Object.keys(units).join(', ')}`);
+    console.log(`[dry-run] service Node.js runtime: ${serviceNodePath}`);
     return;
   }
   if (process.platform !== 'linux') {
-    throw new Error(`Linux services can only be installed on Linux; current platform is ${process.platform}.`);
-  }
-  if (typeof process.getuid !== 'function' || process.getuid() !== 0) {
-    if (serviceUser === 'root') {
-      throw new Error('Run this command as a normal deployment user with sudo access.');
-    }
-    await disableLegacyUserUnits(projectDir);
-    await run('sudo', [
-      nodePath,
-      SCRIPT_PATH,
-      `--service-user=${serviceUser}`,
-      `--project-dir=${projectDir}`,
-      `--node-path=${nodePath}`,
-      `--unit-dir=${unitDir}`,
-    ], { cwd: projectDir });
-    return;
-  }
-  if (!serviceUser || serviceUser === 'root') {
-    throw new Error('Specify the non-root deployment account with --service-user.');
-  }
-  await installAsRoot({ projectDir, nodePath, serviceUser, unitDir });
-}
-
-const isMain = process.argv[1] && path.resolve(process.argv[1]) === SCRIPT_PATH;
-if (isMain) {
-  const args = parseLinuxServiceArgs();
-  installLinuxSystemServices(args).catch((error) => {
-    console.error(`Linux service installation failed: ${error instanceof Error ? error.message : String(error)}`);
-    process.exit(1);
-  });
-}
