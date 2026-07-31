@@ -52,10 +52,10 @@ export function buildServiceChecks(args) {
         { id: 'health-task', command: 'schtasks.exe', args: ['/Query', '/TN', 'PowerGym-Health'] },
       ]
     : [
-        { id: 'powergym-enabled', command: 'systemctl', args: ['--user', 'is-enabled', 'powergym.service'] },
-        { id: 'powergym-active', command: 'systemctl', args: ['--user', 'is-active', 'powergym.service'] },
-        { id: 'health-timer-enabled', command: 'systemctl', args: ['--user', 'is-enabled', 'powergym-health.timer'] },
-        { id: 'health-timer-active', command: 'systemctl', args: ['--user', 'is-active', 'powergym-health.timer'] },
+        { id: 'powergym-enabled', command: 'systemctl', args: ['is-enabled', 'powergym.service'] },
+        { id: 'powergym-active', command: 'systemctl', args: ['is-active', 'powergym.service'] },
+        { id: 'health-timer-enabled', command: 'systemctl', args: ['is-enabled', 'powergym-health.timer'] },
+        { id: 'health-timer-active', command: 'systemctl', args: ['is-active', 'powergym-health.timer'] },
       ];
 }
 
