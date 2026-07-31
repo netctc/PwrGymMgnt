@@ -189,16 +189,31 @@ test('Windows service repair builds an unambiguous PowerShell invocation', () =>
   });
 });
 
-test('PowerShell task registration sets executable and working directory separately', () => {
+test('PowerShell task registration uses an invisible launcher and preserves alerts', () => {
   const source = fs.readFileSync(
     path.join(projectRoot, 'scripts/register-windows-tasks.ps1'),
     'utf8',
   );
-  assert.match(source, /-Execute \$NodePath/);
+  assert.match(source, /-Execute \$wscriptPath/);
   assert.match(source, /-WorkingDirectory \$ProjectDirectory/);
   assert.match(source, /-LogonType Interactive/);
   assert.match(source, /-ExecutionTimeLimit \(\[TimeSpan\]::Zero\)/);
-  assert.doesNotMatch(source, /-Execute ["']?\$NodePath["']? ["']?\$runnerPath/);
+  assert.match(source, /\$healthArguments = .* alert /);
+  assert.match(source, /-Hidden/);
+  assert.doesNotMatch(source, /-Execute \$NodePath/);
+  const launcherSource = fs.readFileSync(
+    path.join(projectRoot, 'scripts/windows-hidden-launcher.vbs'),
+    'utf8',
+  );
+  assert.match(launcherSource, /shell\.Run\(command, 0, True\)/);
+  assert.match(launcherSource, /mode = "alert"/);
+  assert.match(launcherSource, /PowerGym health alert/);
+  const monitorSource = fs.readFileSync(
+    path.join(projectRoot, 'scripts/monitor-installation.mjs'),
+    'utf8',
+  );
+  assert.match(monitorSource, /logs', 'monitor\.log/);
+  assert.match(monitorSource, /appendMonitorLog\(alert\)/);
   const privilegeCheck = source.indexOf('IsInRole($administratorRole)');
   const firstTaskStop = source.indexOf('Stop-ScheduledTask');
   assert.ok(privilegeCheck >= 0);
