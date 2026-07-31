@@ -13,8 +13,10 @@ $serviceName = 'PowerGym'
 $healthTaskName = 'PowerGym-Health'
 $runnerPath = Join-Path $ProjectDirectory 'scripts\service-runner.mjs'
 $monitorPath = Join-Path $ProjectDirectory 'scripts\monitor-installation.mjs'
+$hiddenLauncherPath = Join-Path $ProjectDirectory 'scripts\windows-hidden-launcher.vbs'
+$wscriptPath = Join-Path $env:SystemRoot 'System32\wscript.exe'
 
-foreach ($requiredPath in @($ProjectDirectory, $NodePath, $runnerPath, $monitorPath)) {
+foreach ($requiredPath in @($ProjectDirectory, $NodePath, $runnerPath, $monitorPath, $hiddenLauncherPath, $wscriptPath)) {
   if (-not (Test-Path -LiteralPath $requiredPath)) {
     throw "Required path was not found: $requiredPath"
   }
@@ -33,9 +35,10 @@ $principal = New-ScheduledTaskPrincipal `
   -LogonType Interactive `
   -RunLevel Limited
 
+$serviceArguments = "`"$hiddenLauncherPath`" silent `"$NodePath`" `"$runnerPath`""
 $serviceAction = New-ScheduledTaskAction `
-  -Execute $NodePath `
-  -Argument "`"$runnerPath`"" `
+  -Execute $wscriptPath `
+  -Argument $serviceArguments `
   -WorkingDirectory $ProjectDirectory
 $serviceTrigger = New-ScheduledTaskTrigger -AtLogOn -User $currentUser
 $serviceSettings = New-ScheduledTaskSettingsSet `
@@ -44,11 +47,13 @@ $serviceSettings = New-ScheduledTaskSettingsSet `
   -ExecutionTimeLimit ([TimeSpan]::Zero) `
   -MultipleInstances IgnoreNew `
   -RestartCount 3 `
-  -RestartInterval (New-TimeSpan -Minutes 1)
+  -RestartInterval (New-TimeSpan -Minutes 1) `
+  -Hidden
 
+$healthArguments = "`"$hiddenLauncherPath`" alert `"$NodePath`" `"$monitorPath`""
 $healthAction = New-ScheduledTaskAction `
-  -Execute $NodePath `
-  -Argument "`"$monitorPath`"" `
+  -Execute $wscriptPath `
+  -Argument $healthArguments `
   -WorkingDirectory $ProjectDirectory
 $healthTrigger = New-ScheduledTaskTrigger `
   -Once `
@@ -59,7 +64,8 @@ $healthSettings = New-ScheduledTaskSettingsSet `
   -AllowStartIfOnBatteries `
   -DontStopIfGoingOnBatteries `
   -ExecutionTimeLimit (New-TimeSpan -Minutes 2) `
-  -MultipleInstances IgnoreNew
+  -MultipleInstances IgnoreNew `
+  -Hidden
 
 foreach ($taskName in @($serviceName, $healthTaskName)) {
   $existingTask = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
@@ -89,7 +95,7 @@ if ($StartService) {
 }
 
 $registeredAction = (Get-ScheduledTask -TaskName $serviceName).Actions | Select-Object -First 1
-if ($registeredAction.Execute -ne $NodePath) {
+if ($registeredAction.Execute -ne $wscriptPath) {
   throw "PowerGym task executable was registered incorrectly: $($registeredAction.Execute)"
 }
 if ($registeredAction.WorkingDirectory -ne $ProjectDirectory) {
@@ -97,5 +103,6 @@ if ($registeredAction.WorkingDirectory -ne $ProjectDirectory) {
 }
 
 Write-Host "Windows scheduled tasks registered for $currentUser."
-Write-Host "PowerGym executable: $($registeredAction.Execute)"
+Write-Host "PowerGym hidden launcher: $($registeredAction.Execute)"
+Write-Host "PowerGym Node.js runtime: $NodePath"
 Write-Host "PowerGym working directory: $($registeredAction.WorkingDirectory)"
