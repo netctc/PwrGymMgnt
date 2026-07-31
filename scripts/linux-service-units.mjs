@@ -17,6 +17,18 @@ function systemdQuote(value) {
   return `"${text.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 }
 
+function systemdPathValue(value) {
+  const text = String(value);
+  if (!path.isAbsolute(text)) throw new Error(`Systemd path must be absolute: ${text}`);
+  if (/[\r\n]/.test(text)) throw new Error('Systemd paths must not contain line breaks.');
+  return text
+    .replace(/%/g, '%%')
+    .replace(/\\/g, '\\x5c')
+    .replace(/ /g, '\\x20')
+    .replace(/\t/g, '\\x09')
+    .replace(/"/g, '\\x22');
+}
+
 export function parseLinuxServiceArgs(argv = process.argv.slice(2)) {
   const args = {
     dryRun: false,
@@ -62,7 +74,7 @@ export function buildLinuxSystemdUnits({
   const envPath = path.join(projectDir, '.env');
   const runnerPath = path.join(projectDir, 'scripts', 'service-runner.mjs');
   const monitorPath = path.join(projectDir, 'scripts', 'monitor-installation.mjs');
-  const common = `User=${serviceUser}\nGroup=${serviceGroup}\nWorkingDirectory=${systemdQuote(projectDir)}\nEnvironmentFile=${systemdQuote(envPath)}\n`;
+  const common = `User=${serviceUser}\nGroup=${serviceGroup}\nWorkingDirectory=${systemdPathValue(projectDir)}\nEnvironmentFile=${systemdPathValue(envPath)}\n`;
   return {
     'powergym.service': `[Unit]\nDescription=PowerGym Management\nWants=network-online.target\nAfter=network-online.target mysql.service\n\n[Service]\nType=simple\n${common}ExecStart=${systemdQuote(nodePath)} ${systemdQuote(runnerPath)}\nRestart=always\nRestartSec=5\nTimeoutStopSec=30\nNoNewPrivileges=true\nPrivateTmp=true\nUMask=0027\n\n[Install]\nWantedBy=multi-user.target\n`,
     'powergym-health.service': `[Unit]\nDescription=PowerGym installation health check\nAfter=powergym.service\n\n[Service]\nType=oneshot\n${common}ExecStart=${systemdQuote(nodePath)} ${systemdQuote(monitorPath)}\nNoNewPrivileges=true\nPrivateTmp=true\nUMask=0027\n`,
