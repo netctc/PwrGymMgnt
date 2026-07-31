@@ -77,6 +77,10 @@ continue to execute as that non-root account. This avoids root-owned project
 files and does not depend on an interactive login or user-session lingering.
 The units use absolute quoted paths, wait for network and MySQL, restart the
 application automatically, and run the health monitor every five minutes.
+When installation is launched by root on a dedicated server, the registrator
+creates a locked `powergym` system account if needed. Only `.env` and the
+runtime directories `logs`, `backups` and `release-evidence` are assigned to
+that account; the service never runs as root.
 
 ## Accounting and physical stock reconciliation
 
