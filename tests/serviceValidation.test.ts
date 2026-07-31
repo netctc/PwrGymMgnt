@@ -15,6 +15,7 @@ import {
 import {
   buildLinuxSystemdUnits,
   parseLinuxServiceArgs,
+  selectLinuxServiceNodePath,
 } from '../scripts/linux-service-units.mjs';
 import {
   buildBootstrapSql,
@@ -79,6 +80,14 @@ test('Linux system units run as a non-root account with portable quoted paths', 
   assert.match(installerSource, /prepareRuntimePermissions/);
   assert.match(installerSource, /fs\.chown\(envPath, uid, gid\)/);
   assert.match(installerSource, /\['logs', 'backups', 'release-evidence'\]/);
+  assert.equal(
+    selectLinuxServiceNodePath('/root/.nvm/versions/node/v22.11.0/bin/node'),
+    '/usr/local/lib/powergym/node',
+  );
+  assert.equal(selectLinuxServiceNodePath('/usr/bin/node'), '/usr/bin/node');
+  assert.match(installerSource, /PowerGym requires Node\.js 22\.x/);
+  assert.match(installerSource, /runuser/);
+  assert.match(installerSource, /fs\.copyFile\(nodePath, temporaryPath\)/);
 });
 
 test('Linux MySQL bootstrap is restricted, idempotent and does not expose credentials', () => {
