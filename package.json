@@ -68,6 +68,7 @@
     "ops:concurrency-verify": "node scripts/db-concurrency-verify.mjs",
     "ops:retention": "node scripts/data-retention.mjs",
     "ops:service-repair:windows": "node scripts/windows-service-tasks.mjs",
+    "ops:service-repair:linux": "node scripts/linux-service-units.mjs",
     "ops:service-verify": "node scripts/service-validation.mjs",
     "ops:reconcile": "node scripts/go-live-reconciliation.mjs"
   },
