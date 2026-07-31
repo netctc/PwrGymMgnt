@@ -46,7 +46,7 @@ test('Linux checks validate service and health timer state', () => {
   assert.ok(checks.some((check) => check.args.includes('powergym-health.timer')));
 });
 
-test('Linux system units run as a non-root account with portable quoted paths', () => {
+test('Linux system units run as a non-root account with systemd-safe paths', () => {
   const units = buildLinuxSystemdUnits({
     projectDir: '/opt/PowerGym Management',
     nodePath: '/usr/bin/node',
@@ -55,8 +55,10 @@ test('Linux system units run as a non-root account with portable quoted paths', 
   });
   assert.match(units['powergym.service'], /User=powergym/);
   assert.match(units['powergym.service'], /Group=powergym/);
-  assert.match(units['powergym.service'], /WorkingDirectory="\/opt\/PowerGym Management"/);
-  assert.match(units['powergym.service'], /EnvironmentFile="\/opt\/PowerGym Management\/\.env"/);
+  assert.match(units['powergym.service'], /WorkingDirectory=\/opt\/PowerGym\\x20Management/);
+  assert.match(units['powergym.service'], /EnvironmentFile=\/opt\/PowerGym\\x20Management\/\.env/);
+  assert.doesNotMatch(units['powergym.service'], /WorkingDirectory="/);
+  assert.doesNotMatch(units['powergym.service'], /EnvironmentFile="/);
   assert.match(units['powergym.service'], /After=network-online\.target mysql\.service/);
   assert.match(units['powergym.service'], /Restart=always/);
   assert.match(units['powergym.service'], /NoNewPrivileges=true/);
