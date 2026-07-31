@@ -47,10 +47,41 @@ CREATE TABLE IF NOT EXISTS hr_profiles (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Compatibilidad: si class_bookings fue creado por una migracion base antigua,
--- puede faltarle member_name/cancelled_at. Usamos sintaxis compatible con MariaDB
--- y con el runner Node mysql2; no usar DELIMITER aqui.
-ALTER TABLE class_bookings ADD COLUMN IF NOT EXISTS member_name VARCHAR(180) NULL;
-ALTER TABLE class_bookings ADD COLUMN IF NOT EXISTS cancelled_at DATETIME NULL;
+-- puede faltarle member_name/cancelled_at. MySQL no admite ADD COLUMN IF NOT
+-- EXISTS; INFORMATION_SCHEMA mantiene el seed idempotente sin usar DELIMITER.
+SET @schema_name = DATABASE();
+
+SET @sql = (SELECT IF(
+  EXISTS(
+    SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+    WHERE TABLE_SCHEMA = @schema_name AND TABLE_NAME = 'class_bookings'
+  )
+  AND NOT EXISTS(
+    SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = @schema_name
+      AND TABLE_NAME = 'class_bookings'
+      AND COLUMN_NAME = 'member_name'
+  ),
+  'ALTER TABLE class_bookings ADD COLUMN member_name VARCHAR(180) NULL',
+  'SELECT 1'
+));
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = (SELECT IF(
+  EXISTS(
+    SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+    WHERE TABLE_SCHEMA = @schema_name AND TABLE_NAME = 'class_bookings'
+  )
+  AND NOT EXISTS(
+    SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = @schema_name
+      AND TABLE_NAME = 'class_bookings'
+      AND COLUMN_NAME = 'cancelled_at'
+  ),
+  'ALTER TABLE class_bookings ADD COLUMN cancelled_at DATETIME NULL',
+  'SELECT 1'
+));
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 -- Limpieza solo de datos seed_ para evitar duplicados sin tocar datos reales.
 DELETE FROM support_ticket_messages WHERE id LIKE 'seed_%' OR ticket_id LIKE 'seed_%';
