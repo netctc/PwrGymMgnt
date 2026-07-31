@@ -12,6 +12,10 @@ import {
   buildPowerShellArgs,
   parseWindowsServiceArgs,
 } from '../scripts/windows-service-tasks.mjs';
+import {
+  buildLinuxSystemdUnits,
+  parseLinuxServiceArgs,
+} from '../scripts/linux-service-units.mjs';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -32,8 +36,35 @@ test('Windows checks use the two installed scheduled task names', () => {
 test('Linux checks validate service and health timer state', () => {
   const checks = buildServiceChecks({ windows: false });
   assert.equal(checks.length, 4);
-  assert.ok(checks.every((check) => check.args.includes('--user')));
+  assert.ok(checks.every((check) => !check.args.includes('--user')));
   assert.ok(checks.some((check) => check.args.includes('powergym-health.timer')));
+});
+
+test('Linux system units run as a non-root account with portable quoted paths', () => {
+  const units = buildLinuxSystemdUnits({
+    projectDir: '/opt/PowerGym Management',
+    nodePath: '/usr/bin/node',
+    serviceUser: 'powergym',
+    serviceGroup: 'powergym',
+  });
+  assert.match(units['powergym.service'], /User=powergym/);
+  assert.match(units['powergym.service'], /Group=powergym/);
+  assert.match(units['powergym.service'], /WorkingDirectory="\/opt\/PowerGym Management"/);
+  assert.match(units['powergym.service'], /EnvironmentFile="\/opt\/PowerGym Management\/\.env"/);
+  assert.match(units['powergym.service'], /After=network-online\.target mysql\.service/);
+  assert.match(units['powergym.service'], /Restart=always/);
+  assert.match(units['powergym.service'], /NoNewPrivileges=true/);
+  assert.match(units['powergym-health.timer'], /OnUnitActiveSec=5min/);
+  assert.deepEqual(parseLinuxServiceArgs(['--dry-run', '--service-user=powergym']).serviceUser, 'powergym');
+  assert.throws(
+    () => buildLinuxSystemdUnits({
+      projectDir: '/opt/powergym',
+      nodePath: '/usr/bin/node',
+      serviceUser: 'root;rm',
+      serviceGroup: 'root',
+    }),
+    /Unsafe Linux service user/,
+  );
 });
 
 test('service validation rejects credentials in URLs and summarizes failures', () => {
