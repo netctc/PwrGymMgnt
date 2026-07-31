@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadDotEnv } from './load-env.mjs';
@@ -8,6 +9,13 @@ const projectDirectory = path.resolve(
   '..',
 );
 loadDotEnv(path.join(projectDirectory, '.env'));
+
+const monitorLogPath = path.join(projectDirectory, 'logs', 'monitor.log');
+
+async function appendMonitorLog(entry) {
+  await fs.mkdir(path.dirname(monitorLogPath), { recursive: true });
+  await fs.appendFile(monitorLogPath, `${JSON.stringify(entry)}\n`, 'utf8');
+}
 
 const baseUrl = String(
   process.env.DEPLOY_BASE_URL
@@ -19,6 +27,11 @@ const alertWebhook = String(process.env.INSTALL_ALERT_WEBHOOK_URL || '').trim();
 const timeoutMs = Number(process.env.INSTALL_MONITOR_TIMEOUT_MS || 8000);
 
 if (!baseUrl) {
+  await appendMonitorLog({
+    status: 'configuration-error',
+    error: 'No public base URL is configured.',
+    checkedAt: new Date().toISOString(),
+  });
   console.error('Installation monitor: no public base URL is configured.');
   process.exit(2);
 }
@@ -49,6 +62,7 @@ const alert = {
   checkedAt: new Date().toISOString(),
 };
 console.error(JSON.stringify(alert));
+await appendMonitorLog(alert);
 
 if (alertWebhook) {
   try {
@@ -58,7 +72,14 @@ if (alertWebhook) {
       body: JSON.stringify(alert),
     });
   } catch (error) {
-    console.error(`Installation alert webhook failed: ${error instanceof Error ? error.message : String(error)}`);
+    const webhookError = error instanceof Error ? error.message : String(error);
+    console.error(`Installation alert webhook failed: ${webhookError}`);
+    await appendMonitorLog({
+      service: 'PowerGym',
+      status: 'alert-delivery-failed',
+      error: webhookError,
+      checkedAt: new Date().toISOString(),
+    });
   }
 }
 process.exit(1);
