@@ -3,11 +3,11 @@ import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import os from 'node:os';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { resolveNpmInvocation } from './release-gate.mjs';
 import { installWindowsScheduledTasks } from './windows-service-tasks.mjs';
+import { installLinuxSystemServices } from './linux-service-units.mjs';
 
 const PROJECT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -151,55 +151,14 @@ async function prepareEnvironment(args, publicUrl) {
 }
 
 async function installLinuxService(args, env) {
-  const nodePath = process.execPath;
-  const envPath = path.join(PROJECT_DIR, '.env');
-  const unit = `[Unit]
-Description=PowerGym Management
-After=network.target mysql.service
-
-[Service]
-Type=simple
-WorkingDirectory=${PROJECT_DIR}
-EnvironmentFile=${envPath}
-ExecStart=${nodePath} ${path.join(PROJECT_DIR, 'scripts', 'service-runner.mjs')}
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-`;
-  const healthUnit = `[Unit]
-Description=PowerGym post-installation health check
-After=powergym.service
-
-[Service]
-Type=oneshot
-WorkingDirectory=${PROJECT_DIR}
-EnvironmentFile=${envPath}
-ExecStart=${nodePath} ${path.join(PROJECT_DIR, 'scripts', 'monitor-installation.mjs')}
-`;
-  const timer = `[Unit]
-Description=Run PowerGym health check every five minutes
-
-[Timer]
-OnBootSec=2min
-OnUnitActiveSec=5min
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-`;
-  const serviceDir = path.resolve(args.serviceDir || path.join(os.homedir(), '.config', 'systemd', 'user'));
-  if (args.dryRun) {
-    console.log(`[dry-run] would install user services in ${serviceDir}`);
-    return;
-  }
-  await fs.mkdir(serviceDir, { recursive: true });
-  await fs.writeFile(path.join(serviceDir, 'powergym.service'), unit);
-  await fs.writeFile(path.join(serviceDir, 'powergym-health.service'), healthUnit);
-  await fs.writeFile(path.join(serviceDir, 'powergym-health.timer'), timer);
-  await command('systemctl', ['--user', 'daemon-reload'], { ...args, env });
-  await command('systemctl', ['--user', 'enable', '--now', 'powergym.service', 'powergym-health.timer'], { ...args, env });
+  await installLinuxSystemServices({
+    projectDir: PROJECT_DIR,
+    nodePath: process.execPath,
+    serviceUser: args.serviceUser,
+    unitDir: args.serviceDir,
+    env,
+    dryRun: args.dryRun,
+  });
 }
 
 async function installWindowsService(args, env) {
