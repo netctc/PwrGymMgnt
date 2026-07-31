@@ -82,6 +82,12 @@ creates a locked `powergym` system account if needed. Only `.env` and the
 runtime directories `logs`, `backups` and `release-evidence` are assigned to
 that account; the service never runs as root.
 
+For a new Ubuntu host with local MySQL, `npm run db:bootstrap:linux` creates the
+application database and localhost-only database account, generates a random
+database password, and writes it to `.env` with mode `600`. The initial
+administrator password must be supplied through the temporary
+`POWERGYM_INITIAL_ADMIN_PASSWORD` process environment and is never printed.
+
 ## Accounting and physical stock reconciliation
 
 Create a controlled count template from the current ledger and product catalogue:
