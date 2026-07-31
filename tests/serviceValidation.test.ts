@@ -16,6 +16,11 @@ import {
   buildLinuxSystemdUnits,
   parseLinuxServiceArgs,
 } from '../scripts/linux-service-units.mjs';
+import {
+  buildBootstrapSql,
+  parseLinuxBootstrapArgs,
+  updateBootstrapEnv,
+} from '../scripts/bootstrap-linux-mysql.mjs';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -74,6 +79,33 @@ test('Linux system units run as a non-root account with portable quoted paths', 
   assert.match(installerSource, /prepareRuntimePermissions/);
   assert.match(installerSource, /fs\.chown\(envPath, uid, gid\)/);
   assert.match(installerSource, /\['logs', 'backups', 'release-evidence'\]/);
+});
+
+test('Linux MySQL bootstrap is restricted, idempotent and does not expose credentials', () => {
+  assert.deepEqual(parseLinuxBootstrapArgs([]), {
+    database: 'pwrgymdb',
+    user: 'pwrgymdb',
+    dryRun: false,
+  });
+  assert.throws(
+    () => parseLinuxBootstrapArgs(['--database=bad-name;drop']),
+    /Unsafe MySQL database/,
+  );
+  const sql = buildBootstrapSql({
+    database: 'pwrgymdb',
+    user: 'pwrgymdb',
+    password: "safe'password",
+  });
+  assert.match(sql, /CREATE DATABASE IF NOT EXISTS `pwrgymdb`/);
+  assert.match(sql, /CREATE USER IF NOT EXISTS 'pwrgymdb'@'localhost'/);
+  assert.match(sql, /GRANT ALL PRIVILEGES ON `pwrgymdb`\.\*/);
+  assert.doesNotMatch(sql, /@'%'/);
+  const env = updateBootstrapEnv('DATABASE_NAME=old\nDATABASE_PASSWORD=old\n', {
+    DATABASE_NAME: 'pwrgymdb',
+    DATABASE_PASSWORD: 'generated',
+  });
+  assert.match(env, /^DATABASE_NAME=pwrgymdb$/m);
+  assert.match(env, /^DATABASE_PASSWORD=generated$/m);
 });
 
 test('service validation rejects credentials in URLs and summarizes failures', () => {
