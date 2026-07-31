@@ -103,6 +103,51 @@ async function disableLegacyUserUnits(projectDir) {
   }
 }
 
+async function ensureServiceAccount(serviceUser) {
+  try {
+    await run('id', ['-u', serviceUser], { capture: true });
+  } catch {
+    await run('useradd', [
+      '--system',
+      '--create-home',
+      '--home-dir',
+      `/var/lib/${serviceUser}`,
+      '--shell',
+      '/usr/sbin/nologin',
+      serviceUser,
+    ]);
+  }
+  const uid = Number(await run('id', ['-u', serviceUser], { capture: true }));
+  const gid = Number(await run('id', ['-g', serviceUser], { capture: true }));
+  const serviceGroup = await run('id', ['-gn', serviceUser], { capture: true });
+  if (!Number.isInteger(uid) || !Number.isInteger(gid)) {
+    throw new Error(`Unable to resolve Linux service account: ${serviceUser}`);
+  }
+  return { uid, gid, serviceGroup };
+}
+
+async function chownTree(target, uid, gid) {
+  const stats = await fs.lstat(target);
+  if (stats.isDirectory()) {
+    const entries = await fs.readdir(target);
+    for (const entry of entries) {
+      await chownTree(path.join(target, entry), uid, gid);
+    }
+  }
+  if (!stats.isSymbolicLink()) await fs.chown(target, uid, gid);
+}
+
+async function prepareRuntimePermissions(projectDir, uid, gid) {
+  const envPath = path.join(projectDir, '.env');
+  await fs.chown(envPath, uid, gid);
+  await fs.chmod(envPath, 0o600);
+  for (const directoryName of ['logs', 'backups', 'release-evidence']) {
+    const directory = path.join(projectDir, directoryName);
+    await fs.mkdir(directory, { recursive: true, mode: 0o750 });
+    await chownTree(directory, uid, gid);
+  }
+}
+
 async function installAsRoot({ projectDir, nodePath, serviceUser, unitDir }) {
   const requiredPaths = [
     projectDir,
@@ -119,12 +164,13 @@ async function installAsRoot({ projectDir, nodePath, serviceUser, unitDir }) {
       throw new Error(`Required Linux service path was not found: ${requiredPath}`);
     }
   }
-  const serviceGroup = await run('id', ['-gn', serviceUser], { capture: true });
+  const account = await ensureServiceAccount(serviceUser);
+  await prepareRuntimePermissions(projectDir, account.uid, account.gid);
   const units = buildLinuxSystemdUnits({
     projectDir,
     nodePath,
     serviceUser,
-    serviceGroup,
+    serviceGroup: account.serviceGroup,
   });
   await fs.mkdir(unitDir, { recursive: true });
   const previous = new Map();
@@ -152,7 +198,7 @@ async function installAsRoot({ projectDir, nodePath, serviceUser, unitDir }) {
     await run('systemctl', ['daemon-reload']).catch(() => undefined);
     throw error;
   }
-  console.log(`Linux system services registered for ${serviceUser}:${serviceGroup}.`);
+  console.log(`Linux system services registered for ${serviceUser}:${account.serviceGroup}.`);
   console.log(`PowerGym working directory: ${projectDir}`);
 }
 
@@ -162,7 +208,7 @@ export async function installLinuxSystemServices(options = {}) {
   const serviceUser = String(
     options.serviceUser
       || process.env.SUDO_USER
-      || os.userInfo().username,
+      || (os.userInfo().username === 'root' ? 'powergym' : os.userInfo().username),
   );
   const unitDir = path.resolve(options.unitDir || DEFAULT_UNIT_DIR);
   if (options.dryRun) {
