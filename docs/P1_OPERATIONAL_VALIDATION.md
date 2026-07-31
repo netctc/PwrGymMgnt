@@ -67,9 +67,16 @@ directory, enables restart supervision and starts `PowerGym`. It safely
 replaces the two existing task definitions.
 
 Windows validates the `PowerGym` and `PowerGym-Health` scheduled tasks. Linux
-validates the user-level `powergym.service` and `powergym-health.timer`. Both
+validates the system-level `powergym.service` and `powergym-health.timer`. Both
 checks also require HTTP 200 from `/api/health` and write platform-specific JSON
 evidence.
+
+On Linux, application setup runs as the normal deployment account. Service
+registration elevates only the unit installation through `sudo`, and the units
+continue to execute as that non-root account. This avoids root-owned project
+files and does not depend on an interactive login or user-session lingering.
+The units use absolute quoted paths, wait for network and MySQL, restart the
+application automatically, and run the health monitor every five minutes.
 
 ## Accounting and physical stock reconciliation
 
