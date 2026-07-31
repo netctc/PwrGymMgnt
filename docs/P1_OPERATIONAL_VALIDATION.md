@@ -81,6 +81,10 @@ When installation is launched by root on a dedicated server, the registrator
 creates a locked `powergym` system account if needed. Only `.env` and the
 runtime directories `logs`, `backups` and `release-evidence` are assigned to
 that account; the service never runs as root.
+If Node.js is installed under a root-only version manager such as
+`/root/.nvm`, the registrator verifies that it is Node 22 and atomically stages
+the runtime binary at `/usr/local/lib/powergym/node`. The service therefore
+does not depend on access to root's home directory.
 
 For a new Ubuntu host with local MySQL, `npm run db:bootstrap:linux` creates the
 application database and localhost-only database account, generates a random
