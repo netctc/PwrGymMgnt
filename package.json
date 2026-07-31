@@ -22,6 +22,7 @@
     "db:diagnose": "node scripts/db-diagnose.mjs",
     "db:seed": "node scripts/apply-seed.mjs",
     "db:init-users": "node scripts/db-init-users.mjs",
+    "db:bootstrap:linux": "node scripts/bootstrap-linux-mysql.mjs",
     "install:online": "node scripts/install-online.mjs",
     "monitor:installation": "node scripts/monitor-installation.mjs",
     "db:backfill-v2": "node scripts/backfill-subscriptions-v2.mjs",
