@@ -61,10 +61,13 @@ timeout /t 10 /nobreak
 npm run ops:service-verify -- -w --base-url=http://server-ip:3000
 ```
 
-The repair registers `node.exe` as the executable (without embedded quotes),
-passes the runner as a separate argument, assigns the project working
-directory, enables restart supervision and starts `PowerGym`. It safely
-replaces the two existing task definitions.
+The repair assigns the project working directory, enables restart supervision,
+starts `PowerGym` and safely replaces the two existing task definitions. The
+Windows tasks use `wscript.exe` and the repository-owned hidden launcher,
+so neither the long-running application nor the five-minute health check opens
+a console window in the interactive desktop. A failed health check displays a
+time-limited PowerGym warning and continues to record diagnostic output; a
+successful check remains completely silent.
 
 Windows validates the `PowerGym` and `PowerGym-Health` scheduled tasks. Linux
 validates the system-level `powergym.service` and `powergym-health.timer`. Both
