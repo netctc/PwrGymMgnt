@@ -136,6 +136,12 @@ test('active MySQL migrations avoid unsupported conditional ALTER and INDEX synt
   assert.match(migration, /INFORMATION_SCHEMA\.STATISTICS/);
 });
 
+test('demo seed command uses the protected current-schema reset', () => {
+  const packageJson = JSON.parse(fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8'));
+  assert.equal(packageJson.scripts['db:seed'], 'node scripts/db-reset-demo.mjs');
+  assert.notEqual(packageJson.scripts['db:seed'], 'node scripts/apply-seed.mjs');
+});
+
 test('service validation rejects credentials in URLs and summarizes failures', () => {
   assert.throws(
     () => parseServiceValidationArgs(['-w', '--base-url=http://user:pass@localhost:3000'], {}),
