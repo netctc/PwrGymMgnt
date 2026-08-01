@@ -1,8 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import ScreenReportActions from '../components/ScreenReportActions';
-import { db, handleFirestoreError, OperationType, logAuditAction } from '../lib/firebase';
-import { collection, getDocs, query, where, addDoc, setDoc, serverTimestamp, doc, updateDoc, getDoc, deleteDoc } from 'firebase/firestore';
+import { hrPayrollApi, type Employee, type StaffShift } from '../lib/hrPayrollApi';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 import { Badge } from '../components/ui/badge';
@@ -70,6 +69,7 @@ interface ProfileData {
   address?: string;
   startDate?: string;
   notes?: string;
+  employee?: Employee;
 }
 
 interface ShiftData {
@@ -78,6 +78,27 @@ interface ShiftData {
   startTime: string; // ISO
   endTime: string; // ISO
   notes?: string;
+}
+
+function employeeToProfile(employee: Employee): ProfileData {
+  const data = employee.data || {};
+  return {
+    id: employee.id,
+    email: employee.email || '',
+    firstName: employee.firstName || '',
+    lastName: employee.lastName || '',
+    role: employee.linkedUserStatus === 'inactive'
+      ? 'client'
+      : employee.linkedUserRole || (typeof data.role === 'string' ? data.role : 'staff'),
+    department: employee.department || '',
+    createdAt: employee.createdAt || null,
+    photoUrl: typeof data.photoUrl === 'string' ? data.photoUrl : '',
+    phone: employee.phone || '',
+    address: typeof data.address === 'string' ? data.address : '',
+    startDate: employee.hireDate || '',
+    notes: typeof data.notes === 'string' ? data.notes : '',
+    employee,
+  };
 }
 
 export default function Staff() {
@@ -195,14 +216,8 @@ export default function Staff() {
   const fetchStaff = async () => {
     try {
       if (canReadStaff) {
-        const rolesToFetch = settings?.staffRoles?.length ? settings.staffRoles : ['admin', 'manager', 'reception', 'cashier', 'trainer', 'accounting', 'warehouse_manager', 'hr', 'support'];
-        // Firestore 'in' queries are limited to 10 elements. Slicing in case it exceeds.
-        const q = query(collection(db, 'users'), where('role', 'in', rolesToFetch.slice(0, 10)));
-        const sn = await getDocs(q);
-        const data: ProfileData[] = [];
-        sn.forEach(doc => {
-          data.push({ id: doc.id, ...(doc.data() as Record<string, any>) } as ProfileData);
-        });
+        const result = await hrPayrollApi.listEmployees({ status: 'active' });
+        const data = result.employees.map(employeeToProfile);
         setStaff(data);
         return data;
       } else if (profile) {
@@ -211,42 +226,37 @@ export default function Staff() {
         return data as ProfileData[];
       }
       return [];
-    } catch (e) {
-      handleFirestoreError(e, OperationType.LIST, 'users');
+    } catch (error: any) {
+      toast.error(error.message || 'Failed to load staff');
       return [];
     }
   };
 
   const fetchShifts = async (staffData: ProfileData[]) => {
     try {
-      let q;
-      if (canReadStaff) {
-        q = query(collection(db, 'shifts'));
-      } else if (profile?.id) {
-        q = query(collection(db, 'shifts'), where('userId', '==', profile.id));
-      } else {
+      if (!canReadStaff) {
         setShifts([]);
         return;
       }
-      
-      const sn = await getDocs(q);
-      const data: (ShiftData & { user?: ProfileData })[] = [];
-      sn.forEach(doc => {
-        const payload = { id: doc.id, ...(doc.data() as Record<string, any>) } as ShiftData;
+      const result = await hrPayrollApi.listShifts();
+      const data = result.shifts.map((payload: StaffShift) => {
         const user = staffData.find(u => u.id === payload.userId);
-        data.push({ ...payload, user });
+        return { ...payload, user };
       });
       setShifts(data.sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime()));
-    } catch (e) {
-      handleFirestoreError(e, OperationType.LIST, 'shifts');
+    } catch (error: any) {
+      toast.error(error.message || 'Failed to load shifts');
     }
   };
 
   const loadData = async () => {
     setLoading(true);
-    const staffData = await fetchStaff();
-    await fetchShifts(staffData);
-    setLoading(false);
+    try {
+      const staffData = await fetchStaff();
+      await fetchShifts(staffData);
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
@@ -260,25 +270,27 @@ export default function Staff() {
     if (!empEmail || !empFirstName || !empLastName || !empPassword) return;
 
     try {
-      // Mock secondary app user creation since we removed firebase/auth
-      const newUserId = `staff-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
-
-      const docRef = doc(db, 'users', newUserId);
-      await setDoc(docRef, {
+      await hrPayrollApi.createEmployee({
         email: empEmail,
         firstName: empFirstName,
         lastName: empLastName,
-        role: empRole,
         department: empDepartment || '',
         phone: empPhone || '',
-        address: empAddress || '',
-        startDate: empStartDate || '',
-        photoUrl: empPhotoUrl || '',
-        notes: empNotes || '',
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
+        hireDate: empStartDate || '',
+        employmentStatus: 'active',
+        contractType: 'full-time',
+        baseSalary: 0,
+        payFrequency: 'monthly',
+        allowanceHousing: 0,
+        allowanceTransport: 0,
+        allowanceMedical: 0,
+        deductionTax: 0,
+        deductionInsurance: 0,
+        vacationDaysRemaining: 0,
+        data: { address: empAddress || '', photoUrl: empPhotoUrl || '', notes: empNotes || '' },
+        createUserAccount: true,
+        userAccount: { username: empEmail, email: empEmail, password: empPassword, role: empRole, status: 'active' },
       });
-      await logAuditAction('CREATE_EMPLOYEE', newUserId, `Created employee ${empFirstName} ${empLastName} with role ${empRole}`);
       toast.success('Employee profile created');
       setIsEmployeeDialogOpen(false);
       setEmpFirstName('');
@@ -292,10 +304,9 @@ export default function Staff() {
       setEmpDepartment('');
       setEmpPhotoUrl('');
       setEmpNotes('');
-      loadData();
-    } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, 'users');
-      toast.error('Failed to create employee');
+      await loadData();
+    } catch (error: any) {
+      toast.error(error.message || 'Failed to create employee');
     }
   };
 
@@ -315,73 +326,35 @@ export default function Staff() {
     if (!editingUserId || !editingRole) return;
     
     try {
-      const userRef = doc(db, 'users', editingUserId);
-      const userDoc = await getDoc(userRef);
-      if (userDoc.exists()) {
-         const data = userDoc.data();
-         await updateDoc(userRef, {
-           firstName: editingFirstName,
-           lastName: editingLastName,
-           phone: editingPhone,
-           address: editingAddress,
-           startDate: editingStartDate,
-           notes: editingNotes,
-           role: editingRole,
-           department: editingDepartment || '',
-           photoUrl: editingPhotoUrl,
-           updatedAt: serverTimestamp(),
-           createdAt: data.createdAt,
-           email: data.email
-         });
-
-         if (editingPassword) {
-           toast.info('Password update requires backend integration. Profile data was saved.');
-         }
-         
-         let logMsg = `Updated profile for ${editingFirstName} ${editingLastName}`;
-         let actionType = 'UPDATE_EMPLOYEE';
-         if (editingRole === 'client' && data.role !== 'client') {
-             logMsg = `Revoked staff access for ${editingFirstName} ${editingLastName} (changed role from ${data.role} to Client)`;
-             actionType = 'REVOKE_STAFF_ACCESS';
-         } else if (editingRole !== data.role) {
-             logMsg = `Updated profile and changed role from ${data.role} to ${editingRole} for ${editingFirstName} ${editingLastName}`;
-         }
-         await logAuditAction(actionType, editingUserId, logMsg);
-         toast.success('Profile updated successfully');
-         setIsEditDialogOpen(false);
-         loadData();
+      const current = staff.find(member => member.id === editingUserId);
+      await hrPayrollApi.updateEmployee(editingUserId, {
+        ...(current?.employee || {}),
+        firstName: editingFirstName,
+        lastName: editingLastName,
+        email: editingEmail,
+        phone: editingPhone,
+        department: editingDepartment || '',
+        hireDate: editingStartDate || '',
+        data: { ...(current?.employee?.data || {}), address: editingAddress, photoUrl: editingPhotoUrl, notes: editingNotes },
+      });
+      if (canEditStaffRoles && (editingRole !== current?.role || editingPassword)) {
+        await hrPayrollApi.updateEmployeeAccess(editingUserId, { role: editingRole, password: editingPassword || undefined });
       }
-    } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `users/${editingUserId}`);
-      toast.error('Failed to update profile');
+      toast.success('Profile updated successfully');
+      setIsEditDialogOpen(false);
+      await loadData();
+    } catch (error: any) {
+      toast.error(error.message || 'Failed to update profile');
     }
   };
 
   const handleRoleChange = async (userId: string, newRole: string) => {
     try {
-      const userRef = doc(db, 'users', userId);
-      const userDoc = await getDoc(userRef);
-      if (userDoc.exists()) {
-        const data = userDoc.data();
-        await updateDoc(userRef, {
-          role: newRole,
-          updatedAt: serverTimestamp(),
-          createdAt: data.createdAt,
-          email: data.email
-        });
-        let logMsg = `Changed role from ${data.role} to ${newRole}`;
-        let actionType = 'UPDATE_ROLE';
-        if (newRole === 'client' && data.role !== 'client') {
-          logMsg = `Revoked staff access (changed role from ${data.role} to Client)`;
-          actionType = 'REVOKE_STAFF_ACCESS';
-        }
-        await logAuditAction(actionType, userId, logMsg);
-        toast.success(`Role updated to ${newRole}`);
-        loadData();
-      }
-    } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `users/${userId}`);
-      toast.error('Failed to update role');
+      await hrPayrollApi.updateEmployeeAccess(userId, { role: newRole });
+      toast.success(newRole === 'client' ? 'Staff access revoked' : `Role updated to ${newRole}`);
+      await loadData();
+    } catch (error: any) {
+      toast.error(error.message || 'Failed to update role');
     }
   };
 
@@ -416,22 +389,19 @@ export default function Staff() {
 
     try {
       if (editingShiftId) {
-        await updateDoc(doc(db, 'shifts', editingShiftId), {
+        await hrPayrollApi.updateShift(editingShiftId, {
           userId: shiftUserId,
           startTime: new Date(shiftStartTime).toISOString(),
           endTime: new Date(shiftEndTime).toISOString(),
           notes: shiftNotes,
-          updatedAt: serverTimestamp(),
         });
         toast.success('Shift updated successfully');
       } else {
-        await addDoc(collection(db, 'shifts'), {
+        await hrPayrollApi.createShift({
           userId: shiftUserId,
           startTime: new Date(shiftStartTime).toISOString(),
           endTime: new Date(shiftEndTime).toISOString(),
           notes: shiftNotes,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
         });
         toast.success('Shift created successfully');
       }
@@ -441,34 +411,31 @@ export default function Staff() {
       setShiftStartTime('');
       setShiftEndTime('');
       setShiftNotes('');
-      loadData();
-    } catch (error) {
-      handleFirestoreError(error, editingShiftId ? OperationType.UPDATE : OperationType.CREATE, 'shifts');
-      toast.error(editingShiftId ? 'Failed to update shift' : 'Failed to create shift');
+      await loadData();
+    } catch (error: any) {
+      toast.error(error.message || (editingShiftId ? 'Failed to update shift' : 'Failed to create shift'));
     }
   };
 
   const handleDeleteShift = async (shiftId: string) => {
     try {
-      await deleteDoc(doc(db, 'shifts', shiftId));
+      await hrPayrollApi.deleteShift(shiftId);
       toast.success('Shift deleted successfully');
-      loadData();
+      await loadData();
       setIsShiftDialogOpen(false);
       setEditingShiftId(null);
-    } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, 'shifts');
-      toast.error('Failed to delete shift');
+    } catch (error: any) {
+      toast.error(error.message || 'Failed to delete shift');
     }
   };
 
   const handleDeleteProfile = async (userId: string) => {
     try {
-      await deleteDoc(doc(db, 'users', userId));
-      toast.success('Profile deleted successfully');
-      loadData();
-    } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, 'users');
-      toast.error('Failed to delete profile');
+      await hrPayrollApi.deleteEmployee(userId);
+      toast.success('Employee and staff access deactivated');
+      await loadData();
+    } catch (error: any) {
+      toast.error(error.message || 'Failed to deactivate employee');
     }
   };
 
@@ -504,8 +471,7 @@ export default function Staff() {
     }
 
     try {
-      const dbPromises = [];
-      const timestamp = serverTimestamp();
+      const shiftsToCreate: Array<Omit<StaffShift, 'id'>> = [];
       
       for (const date of datesToSchedule) {
         const dStr = format(date, 'yyyy-MM-dd');
@@ -519,19 +485,17 @@ export default function Staff() {
         const shiftEnd = shiftEndObj.toISOString();
 
         for (const uId of bulkShiftUserIds) {
-          dbPromises.push(addDoc(collection(db, 'shifts'), {
+          shiftsToCreate.push({
             userId: uId,
             startTime: shiftStart,
             endTime: shiftEnd,
             notes: bulkShiftNotes,
-            createdAt: timestamp,
-            updatedAt: timestamp,
-          }));
+          });
         }
       }
 
-      await Promise.all(dbPromises);
-      toast.success(`Successfully created ${dbPromises.length} shifts.`);
+      await hrPayrollApi.createBulkShifts(shiftsToCreate);
+      toast.success(`Successfully created ${shiftsToCreate.length} shifts.`);
       setIsBulkShiftDialogOpen(false);
       setBulkShiftUserIds([]);
       setBulkShiftStartDate('');
@@ -540,10 +504,9 @@ export default function Staff() {
       setBulkShiftEndTime('');
       setBulkShiftDays([1,2,3,4,5]);
       setBulkShiftNotes('');
-      loadData();
-    } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, 'shifts');
-      toast.error('Failed to create bulk shifts');
+      await loadData();
+    } catch (error: any) {
+      toast.error(error.message || 'Failed to create bulk shifts');
     }
   };
 
@@ -826,7 +789,7 @@ export default function Staff() {
                           )}
                         </TableCell>
                         <TableCell className="text-slate-500 text-sm">
-                          {member.startDate ? format(new Date(member.startDate), 'dd/MM/yyyy') : member.createdAt?.toDate ? format(member.createdAt.toDate(), 'dd/MM/yyyy') : 'Unknown'}
+                          {member.startDate ? format(new Date(member.startDate), 'dd/MM/yyyy') : member.createdAt ? format(new Date(member.createdAt), 'dd/MM/yyyy') : 'Unknown'}
                         </TableCell>
                         <TableCell className="text-right whitespace-nowrap">
                           {canManageStaff ? (
