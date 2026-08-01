@@ -1,17 +1,17 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
-import { db } from '../lib/firebase';
-import { doc, getDoc, onSnapshot } from 'firebase/firestore';
+import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import {
+  DEFAULT_GENERAL_SETTINGS,
+  fetchGeneralSettings,
+  GENERAL_SETTINGS_UPDATED_EVENT,
+  type GeneralSettings,
+} from '../lib/generalSettings';
 
-export interface SystemSettings {
-  gymName: string;
-  staffRoles: string[];
-  departments: string[];
-  rooms: string[];
-}
+export type SystemSettings = GeneralSettings;
 
 interface SettingsContextType {
   settings: SystemSettings | null;
   loading: boolean;
+  refreshSettings: () => Promise<void>;
 }
 
 const SettingsContext = createContext<SettingsContextType | undefined>(undefined);
@@ -20,43 +20,31 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
   const [settings, setSettings] = useState<SystemSettings | null>(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    const docRef = doc(db, 'settings', 'general');
-    const unsubscribe = onSnapshot(docRef, (docSnap) => {
-      if (docSnap.exists()) {
-        const data = docSnap.data();
-        setSettings({
-          gymName: data.gymName || 'POWERPULSE GYM',
-          staffRoles: Array.isArray(data.staffRoles) ? data.staffRoles : ['admin', 'manager', 'reception', 'cashier', 'trainer', 'accounting', 'warehouse_manager', 'hr', 'support'],
-          departments: Array.isArray(data.departments) ? data.departments : ['Sales', 'Management', 'Training', 'Operations', 'Finance'],
-          rooms: Array.isArray(data.rooms) ? data.rooms : ['Personal Training Area', 'Sala A', 'Sala B', 'Box Exterior'],
-        });
-      } else {
-        setSettings({
-          gymName: 'POWERPULSE GYM',
-          staffRoles: ['admin', 'manager', 'reception', 'cashier', 'trainer', 'accounting', 'warehouse_manager', 'hr', 'support'],
-          departments: ['Sales', 'Management', 'Training', 'Operations', 'Finance'],
-          rooms: ['Personal Training Area', 'Sala A', 'Sala B', 'Box Exterior'],
-        });
-      }
+  const refreshSettings = useCallback(async () => {
+    try {
+      setSettings(await fetchGeneralSettings());
+    } catch (error) {
+      console.error('Failed to load general settings:', error);
+      setSettings(DEFAULT_GENERAL_SETTINGS);
+    } finally {
       setLoading(false);
-    }, (error) => {
-      console.error("Failed to load settings from firestore:", error);
-      // Fallback
-      setSettings({
-        gymName: 'POWERPULSE GYM',
-        staffRoles: ['admin', 'manager', 'reception', 'cashier', 'trainer', 'accounting', 'warehouse_manager', 'hr', 'support'],
-        departments: ['Sales', 'Management', 'Training', 'Operations', 'Finance'],
-        rooms: ['Personal Training Area', 'Sala A', 'Sala B', 'Box Exterior'],
-      });
-      setLoading(false);
-    });
-
-    return () => unsubscribe();
+    }
   }, []);
 
+  useEffect(() => {
+    void refreshSettings();
+
+    const handleSettingsUpdated = (event: Event) => {
+      const updated = (event as CustomEvent<GeneralSettings>).detail;
+      if (updated) setSettings(updated);
+      else void refreshSettings();
+    };
+    window.addEventListener(GENERAL_SETTINGS_UPDATED_EVENT, handleSettingsUpdated);
+    return () => window.removeEventListener(GENERAL_SETTINGS_UPDATED_EVENT, handleSettingsUpdated);
+  }, [refreshSettings]);
+
   return (
-    <SettingsContext.Provider value={{ settings, loading }}>
+    <SettingsContext.Provider value={{ settings, loading, refreshSettings }}>
       {children}
     </SettingsContext.Provider>
   );
