@@ -2,7 +2,13 @@ import crypto from "crypto";
 import type { Express, NextFunction, Request, Response } from "express";
 import type { Pool } from "mysql2/promise";
 import { hasPermission, requirePermission } from "./rbac";
-import { createLinkedAdminUserForEmployee, ensureUserManagementTables } from "./userManagement";
+import {
+  createLinkedAdminUserForEmployee,
+  ensureAssignableRole,
+  ensureUserManagementTables,
+  hashPassword,
+  validatePasswordComplexity,
+} from "./userManagement";
 import { writeOperationalAudit } from "./observability";
 
 type PoolProvider = () => Pool | null;
@@ -209,6 +215,40 @@ function mapPayrollItem(row: any) {
   };
 }
 
+function mapStaffShift(row: any) {
+  return {
+    id: row.id,
+    userId: row.employee_id,
+    startTime: rowDateToIso(row.start_time) || "",
+    endTime: rowDateToIso(row.end_time) || "",
+    notes: row.notes || "",
+    createdAt: rowDateToIso(row.created_at),
+    updatedAt: rowDateToIso(row.updated_at),
+  };
+}
+
+function sanitizeStaffShiftPayload(body: any) {
+  const employeeId = normalizeString(body.userId || body.employeeId);
+  const startTime = new Date(normalizeString(body.startTime));
+  const endTime = new Date(normalizeString(body.endTime));
+  if (!employeeId || Number.isNaN(startTime.getTime()) || Number.isNaN(endTime.getTime())) {
+    const error = new Error("Employee, start time and end time are required");
+    (error as any).status = 400;
+    throw error;
+  }
+  if (startTime >= endTime) {
+    const error = new Error("End time must be after start time");
+    (error as any).status = 400;
+    throw error;
+  }
+  return {
+    employeeId,
+    startTime: toMysqlDateTime(startTime),
+    endTime: toMysqlDateTime(endTime),
+    notes: normalizeString(body.notes) || null,
+  };
+}
+
 async function ensureHrTablesNow(pool: Pool) {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS employees (
@@ -326,6 +366,41 @@ async function ensureHrTablesNow(pool: Pool) {
       UNIQUE KEY uq_hr_job_titles_name (name)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS staff_shifts (
+      id VARCHAR(64) PRIMARY KEY,
+      employee_id VARCHAR(64) NOT NULL,
+      start_time DATETIME NOT NULL,
+      end_time DATETIME NOT NULL,
+      notes TEXT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      INDEX idx_staff_shifts_employee (employee_id),
+      INDEX idx_staff_shifts_start (start_time),
+      CONSTRAINT fk_staff_shifts_employee FOREIGN KEY (employee_id) REFERENCES employees(id) ON DELETE RESTRICT
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+
+  // One-way compatibility import. Typed routes own staff_shifts after this point.
+  await pool.query(`
+    INSERT IGNORE INTO staff_shifts (id, employee_id, start_time, end_time, notes, created_at, updated_at)
+    SELECT
+      s.id,
+      JSON_UNQUOTE(JSON_EXTRACT(s.data, '$.userId')),
+      STR_TO_DATE(SUBSTRING(JSON_UNQUOTE(JSON_EXTRACT(s.data, '$.startTime')), 1, 19), '%Y-%m-%dT%H:%i:%s'),
+      STR_TO_DATE(SUBSTRING(JSON_UNQUOTE(JSON_EXTRACT(s.data, '$.endTime')), 1, 19), '%Y-%m-%dT%H:%i:%s'),
+      NULLIF(JSON_UNQUOTE(JSON_EXTRACT(s.data, '$.notes')), 'null'),
+      s.created_at,
+      s.updated_at
+    FROM shifts s
+    INNER JOIN employees e ON e.id = JSON_UNQUOTE(JSON_EXTRACT(s.data, '$.userId'))
+    WHERE JSON_VALID(s.data)
+      AND JSON_EXTRACT(s.data, '$.startTime') IS NOT NULL
+      AND JSON_EXTRACT(s.data, '$.endTime') IS NOT NULL
+  `).catch((error: any) => {
+    if (error?.code !== 'ER_NO_SUCH_TABLE') throw error;
+  });
 
   // Seed default departments if empty
   const [deptCount]: any = await pool.query("SELECT COUNT(*) AS c FROM hr_departments");
@@ -580,6 +655,153 @@ export function registerHrPayrollRoutes(app: Express, poolProvider: PoolProvider
 
       const [rows]: any = await pool.query(`${employeeSelectSql("WHERE e.id = ?")}`, [req.params.id]);
       res.json({ employee: mapEmployee(rows[0]), user: createdUser });
+    } catch (error) {
+      handleRouteError(res, error);
+    }
+  });
+
+  app.put("/api/hr/employees/:id/access", requirePermission("records.users.write"), async (req: AuthenticatedRequest, res) => {
+    try {
+      const pool = requirePool(poolProvider);
+      await ensureHrTables(pool);
+      await ensureUserManagementTables(pool);
+      const requestedRole = normalizeString(req.body?.role);
+      const password = String(req.body?.password || "");
+      const [accountRows]: any = await pool.query("SELECT id, role, status FROM admin_users WHERE employee_id = ? LIMIT 1", [req.params.id]);
+      if (accountRows.length === 0) return res.status(404).json({ error: "Linked user account not found" });
+
+      if (requestedRole === "client") {
+        await pool.query("UPDATE admin_users SET status = 'inactive' WHERE id = ?", [accountRows[0].id]);
+      } else {
+        const role = ensureAssignableRole(requestedRole);
+        if (!role) return res.status(400).json({ error: "Invalid staff role" });
+        if (password) {
+          if (!validatePasswordComplexity(password)) return res.status(400).json({ error: "Password does not meet complexity requirements" });
+          await pool.query("UPDATE admin_users SET role = ?, status = 'active', password_hash = ?, password_changed_at = NOW() WHERE id = ?", [role, hashPassword(password), accountRows[0].id]);
+        } else {
+          await pool.query("UPDATE admin_users SET role = ?, status = 'active' WHERE id = ?", [role, accountRows[0].id]);
+        }
+      }
+
+      await auditHrEmployeeUserAction(pool, req, requestedRole === "client" ? "HR_EMPLOYEE_ACCESS_REVOKED" : "HR_EMPLOYEE_ACCESS_UPDATED", {
+        employeeId: req.params.id,
+        previousRole: accountRows[0].role,
+        role: requestedRole,
+      });
+      const [rows]: any = await pool.query(`${employeeSelectSql("WHERE e.id = ?")}`, [req.params.id]);
+      res.json({ employee: mapEmployee(rows[0]) });
+    } catch (error) {
+      handleRouteError(res, error);
+    }
+  });
+
+  app.delete("/api/hr/employees/:id", requireHrWrite, async (req: AuthenticatedRequest, res) => {
+    try {
+      const pool = requirePool(poolProvider);
+      await ensureHrTables(pool);
+      await ensureUserManagementTables(pool);
+      const [rows]: any = await pool.query("SELECT id FROM employees WHERE id = ? LIMIT 1", [req.params.id]);
+      if (rows.length === 0) return res.status(404).json({ error: "Employee not found" });
+      const [accounts]: any = await pool.query("SELECT id FROM admin_users WHERE employee_id = ? LIMIT 1", [req.params.id]);
+      if (accounts.length > 0 && String(accounts[0].id) === String(req.user?.uid || "")) {
+        return res.status(409).json({ error: "You cannot deactivate your own employee profile" });
+      }
+      await pool.query("UPDATE employees SET employment_status = 'terminated' WHERE id = ?", [req.params.id]);
+      await pool.query("UPDATE admin_users SET status = 'inactive' WHERE employee_id = ?", [req.params.id]);
+      await auditHrEmployeeUserAction(pool, req, "HR_EMPLOYEE_DEACTIVATED", { employeeId: req.params.id });
+      res.json({ ok: true, deactivated: true });
+    } catch (error) {
+      handleRouteError(res, error);
+    }
+  });
+
+  app.get("/api/hr/shifts", async (req, res) => {
+    try {
+      const pool = requirePool(poolProvider);
+      await ensureHrTables(pool);
+      const employeeId = normalizeString(req.query.employeeId);
+      const [rows]: any = employeeId
+        ? await pool.query("SELECT * FROM staff_shifts WHERE employee_id = ? ORDER BY start_time ASC", [employeeId])
+        : await pool.query("SELECT * FROM staff_shifts ORDER BY start_time ASC");
+      res.json({ shifts: rows.map(mapStaffShift) });
+    } catch (error) {
+      handleRouteError(res, error);
+    }
+  });
+
+  app.post("/api/hr/shifts", requireHrWrite, async (req: AuthenticatedRequest, res) => {
+    try {
+      const pool = requirePool(poolProvider);
+      await ensureHrTables(pool);
+      const payload = sanitizeStaffShiftPayload(req.body || {});
+      const [employees]: any = await pool.query("SELECT id FROM employees WHERE id = ? AND employment_status = 'active' LIMIT 1", [payload.employeeId]);
+      if (employees.length === 0) return res.status(404).json({ error: "Active employee not found" });
+      const id = createId("shift");
+      await pool.query("INSERT INTO staff_shifts (id, employee_id, start_time, end_time, notes) VALUES (?, ?, ?, ?, ?)", [id, payload.employeeId, payload.startTime, payload.endTime, payload.notes]);
+      const [rows]: any = await pool.query("SELECT * FROM staff_shifts WHERE id = ?", [id]);
+      await auditHrEmployeeUserAction(pool, req, "HR_SHIFT_CREATED", { shiftId: id, employeeId: payload.employeeId });
+      res.status(201).json({ shift: mapStaffShift(rows[0]) });
+    } catch (error) {
+      handleRouteError(res, error);
+    }
+  });
+
+  app.post("/api/hr/shifts/bulk", requireHrWrite, async (req: AuthenticatedRequest, res) => {
+    let connection: Awaited<ReturnType<Pool["getConnection"]>> | null = null;
+    try {
+      const pool = requirePool(poolProvider);
+      await ensureHrTables(pool);
+      const input = Array.isArray(req.body?.shifts) ? req.body.shifts : [];
+      if (input.length === 0 || input.length > 500) return res.status(400).json({ error: "Bulk shifts must contain between 1 and 500 entries" });
+      const payloads = input.map(sanitizeStaffShiftPayload);
+      const ids = payloads.map(() => createId("shift"));
+      connection = await pool.getConnection();
+      await connection.beginTransaction();
+      for (let index = 0; index < payloads.length; index += 1) {
+        const payload = payloads[index];
+        const [employees]: any = await connection.query("SELECT id FROM employees WHERE id = ? AND employment_status = 'active' LIMIT 1", [payload.employeeId]);
+        if (employees.length === 0) {
+          const error = new Error(`Active employee not found: ${payload.employeeId}`);
+          (error as any).status = 404;
+          throw error;
+        }
+        await connection.query("INSERT INTO staff_shifts (id, employee_id, start_time, end_time, notes) VALUES (?, ?, ?, ?, ?)", [ids[index], payload.employeeId, payload.startTime, payload.endTime, payload.notes]);
+      }
+      await connection.commit();
+      const [rows]: any = await pool.query("SELECT * FROM staff_shifts WHERE id IN (?) ORDER BY start_time ASC", [ids]);
+      await auditHrEmployeeUserAction(pool, req, "HR_SHIFTS_BULK_CREATED", { count: ids.length });
+      res.status(201).json({ shifts: rows.map(mapStaffShift) });
+    } catch (error) {
+      await connection?.rollback().catch(() => undefined);
+      handleRouteError(res, error);
+    } finally {
+      connection?.release();
+    }
+  });
+
+  app.put("/api/hr/shifts/:id", requireHrWrite, async (req: AuthenticatedRequest, res) => {
+    try {
+      const pool = requirePool(poolProvider);
+      await ensureHrTables(pool);
+      const payload = sanitizeStaffShiftPayload(req.body || {});
+      const [result]: any = await pool.query("UPDATE staff_shifts SET employee_id = ?, start_time = ?, end_time = ?, notes = ? WHERE id = ?", [payload.employeeId, payload.startTime, payload.endTime, payload.notes, req.params.id]);
+      if (Number(result.affectedRows || 0) === 0) return res.status(404).json({ error: "Shift not found" });
+      const [rows]: any = await pool.query("SELECT * FROM staff_shifts WHERE id = ?", [req.params.id]);
+      await auditHrEmployeeUserAction(pool, req, "HR_SHIFT_UPDATED", { shiftId: req.params.id, employeeId: payload.employeeId });
+      res.json({ shift: mapStaffShift(rows[0]) });
+    } catch (error) {
+      handleRouteError(res, error);
+    }
+  });
+
+  app.delete("/api/hr/shifts/:id", requireHrWrite, async (req: AuthenticatedRequest, res) => {
+    try {
+      const pool = requirePool(poolProvider);
+      await ensureHrTables(pool);
+      const [result]: any = await pool.query("DELETE FROM staff_shifts WHERE id = ?", [req.params.id]);
+      if (Number(result.affectedRows || 0) === 0) return res.status(404).json({ error: "Shift not found" });
+      await auditHrEmployeeUserAction(pool, req, "HR_SHIFT_DELETED", { shiftId: req.params.id });
+      res.json({ ok: true });
     } catch (error) {
       handleRouteError(res, error);
     }
