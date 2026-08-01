@@ -40,14 +40,41 @@ async function transientSourceFiles() {
   return matches.sort();
 }
 
+async function legacyFirestoreReferences() {
+  const findings = [];
+  const sourceRoot = path.join(PROJECT_ROOT, 'src');
+  const importPattern = /(?:from\s*|import\s*\()\s*['"]firebase(?:\/[^'"]*)?['"]/;
+  const compatibilityApiPattern = /\/api\/records(?:\/|['"`?])/;
+  const adapterPattern = /firestore-sql-shim/;
+
+  const walk = async (directory) => {
+    for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+      const absolute = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        await walk(absolute);
+        continue;
+      }
+      if (!/\.(?:ts|tsx|js|jsx|mjs|cjs)$/.test(entry.name)) continue;
+      const source = await fs.readFile(absolute, 'utf8');
+      if (importPattern.test(source) || compatibilityApiPattern.test(source) || adapterPattern.test(source)) {
+        findings.push(path.relative(PROJECT_ROOT, absolute).replaceAll(path.sep, '/'));
+      }
+    }
+  };
+
+  await walk(sourceRoot);
+  return findings.sort();
+}
+
 function nodeMajor(range) {
   return Number(String(range || '').match(/\d+/)?.[0] || 0);
 }
 
 export async function runMaintenanceAudit() {
-  const [packageText, dockerfile, renderYaml, envExample, server, initializer, installer, masterSchema, readme] =
+  const [packageText, viteConfig, dockerfile, renderYaml, envExample, server, initializer, installer, masterSchema, readme] =
     await Promise.all([
       read('package.json'),
+      read('vite.config.ts'),
       read('Dockerfile'),
       read('render.yaml'),
       read('.env.example'),
@@ -72,8 +99,29 @@ export async function runMaintenanceAudit() {
     }, {}),
   ).filter(([, count]) => count > 1).map(([prefix]) => prefix);
   const transientFiles = await transientSourceFiles();
+  const legacyFirestoreFiles = await legacyFirestoreReferences();
+  const legacyFirestoreDependencies = [
+    packageJson.dependencies?.firebase ? 'dependencies.firebase' : null,
+    packageJson.devDependencies?.['@firebase/eslint-plugin-security-rules']
+      ? 'devDependencies.@firebase/eslint-plugin-security-rules'
+      : null,
+  ].filter(Boolean);
+  const legacyFirestoreConfig = /firebase\/firestore|firestore-sql-shim/.test(viteConfig)
+    ? ['vite.config.ts']
+    : [];
+  const legacyFirestoreFindings = [
+    ...legacyFirestoreFiles,
+    ...legacyFirestoreDependencies,
+    ...legacyFirestoreConfig,
+  ];
 
   const checks = [
+    {
+      id: 'no-legacy-firestore-adapter',
+      severity: 'critical',
+      ok: legacyFirestoreFindings.length === 0,
+      detail: legacyFirestoreFindings.join(', ') || 'No Firebase/Firestore compatibility adapter remains in executable code.',
+    },
     {
       id: 'node-version-alignment',
       severity: 'critical',
