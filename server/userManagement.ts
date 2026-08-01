@@ -43,6 +43,8 @@ export const ASSIGNABLE_USER_ROLES = [
   "cashier",
   "reception",
   "trainer",
+  "hr",
+  "support",
 ] as const satisfies readonly AppRole[];
 
 export const USER_STATUSES = ["active", "suspended", "inactive"] as const;
