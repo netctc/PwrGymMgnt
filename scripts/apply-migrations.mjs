@@ -142,7 +142,9 @@ try {
 
   console.log(`\nApplied ${files.length} migration file(s) successfully.`);
   if (!includeSeed) {
-    console.log('Seed files were skipped. To load demo data, run: npm run db:seed');
+    console.log('Legacy seed files were skipped. Preview the current demo reset with:');
+    console.log('npm run db:seed -- --confirm=RESET_DEMO_DATA --dry-run --json');
+    console.log('After a verified backup, apply it with --backup-confirmed instead of --dry-run.');
   }
 } finally {
   await connection.end();
