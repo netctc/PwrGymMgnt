@@ -67,3 +67,22 @@ test('general settings validation normalizes supported fields and rejects unsafe
   assert.throws(() => normalizeGeneralSettingsPatch({ rooms: 'Sala A' }), /rooms must be an array/);
   assert.throws(() => normalizeGeneralSettingsPatch({ ecardNote: 'x'.repeat(1001) }), /maximum length/);
 });
+
+test('staff management uses typed HR APIs instead of the Firestore compatibility adapter', () => {
+  const page = read('src/pages/Staff.tsx');
+  const api = read('src/lib/hrPayrollApi.ts');
+  const routes = read('server/hrPayroll.ts');
+
+  assert.doesNotMatch(page, /firebase\/firestore|lib\/firebase|\/api\/records/);
+  assert.match(page, /hrPayrollApi\.listEmployees/);
+  assert.match(page, /hrPayrollApi\.listShifts/);
+  assert.match(page, /hrPayrollApi\.createBulkShifts/);
+  assert.match(page, /hrPayrollApi\.updateEmployeeAccess/);
+  assert.match(api, /\/api\/hr\/shifts/);
+  assert.match(api, /\/api\/hr\/employees\/\$\{encodeURIComponent\(id\)\}\/access/);
+  assert.match(routes, /app\.get\("\/api\/hr\/shifts"/);
+  assert.match(routes, /app\.post\("\/api\/hr\/shifts\/bulk"/);
+  assert.match(routes, /app\.put\("\/api\/hr\/employees\/:id\/access"/);
+  assert.match(routes, /app\.delete\("\/api\/hr\/employees\/:id"/);
+  assert.match(routes, /writeOperationalAudit/);
+});
