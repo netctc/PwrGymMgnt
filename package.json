@@ -20,7 +20,7 @@
     "db:integrity": "node --import tsx scripts/db-integrity-check.ts",
     "db:repair": "node --import tsx scripts/db-integrity-repair.ts",
     "db:diagnose": "node scripts/db-diagnose.mjs",
-    "db:seed": "node scripts/apply-seed.mjs",
+    "db:seed": "node scripts/db-reset-demo.mjs",
     "db:init-users": "node scripts/db-init-users.mjs",
     "db:bootstrap:linux": "node scripts/bootstrap-linux-mysql.mjs",
     "install:online": "node scripts/install-online.mjs",
