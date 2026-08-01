@@ -57,6 +57,10 @@ test('Linux system units run as a non-root account with systemd-safe paths', () 
   assert.match(units['powergym.service'], /Group=powergym/);
   assert.match(units['powergym.service'], /WorkingDirectory=\/opt\/PowerGym\\x20Management/);
   assert.match(units['powergym.service'], /EnvironmentFile=\/opt\/PowerGym\\x20Management\/\.env/);
+  assert.match(units['powergym.service'], /ExecStart="\/usr\/bin\/node" "\/opt\/PowerGym Management\/scripts\/service-runner\.mjs"/);
+  assert.match(units['powergym-health.service'], /ExecStart="\/usr\/bin\/node" "\/opt\/PowerGym Management\/scripts\/monitor-installation\.mjs"/);
+  assert.doesNotMatch(units['powergym.service'], /\\x5c/);
+  assert.doesNotMatch(units['powergym-health.service'], /\\x5c/);
   assert.doesNotMatch(units['powergym.service'], /WorkingDirectory="/);
   assert.doesNotMatch(units['powergym.service'], /EnvironmentFile="/);
   assert.match(units['powergym.service'], /After=network-online\.target mysql\.service/);
