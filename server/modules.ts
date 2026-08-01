@@ -21,6 +21,7 @@ import { registerSubscriptionLifecycleRoutes } from "./subscriptionLifecycle";
 import { registerMemberPortalRoutes } from "./memberPortal";
 import { registerPlanManagementRoutes } from "./planManagement";
 import { registerTrainerCommissionRoutes } from "./trainerCommissions";
+import { registerGeneralSettingsRoutes } from "./generalSettings";
 
 export type PoolProvider = () => Pool | null;
 
@@ -71,6 +72,12 @@ export const APPLICATION_ROUTE_MODULES: readonly ApplicationRouteModule[] = Obje
     area: "domain",
     description: "Accounting transactions, approvals, budgets, rentals, loans and recurring processing.",
     register: (app, getPool) => registerFinanceRoutes(app, getPool),
+  },
+  {
+    name: "general-settings",
+    area: "platform",
+    description: "Typed, permission-scoped MySQL persistence for application-wide settings.",
+    register: (app, getPool) => registerGeneralSettingsRoutes(app, getPool),
   },
   {
     name: "platform-security",
