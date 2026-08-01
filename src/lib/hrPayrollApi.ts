@@ -22,6 +22,19 @@ export type Employee = {
   linkedUsername?: string;
   linkedUserRole?: string;
   linkedUserStatus?: string;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  data?: Record<string, unknown>;
+};
+
+export type StaffShift = {
+  id: string;
+  userId: string;
+  startTime: string;
+  endTime: string;
+  notes?: string;
+  createdAt?: string | null;
+  updatedAt?: string | null;
 };
 
 export type AttendanceRecord = {
@@ -124,6 +137,27 @@ export const hrPayrollApi = {
 
   updateEmployee: (id: string, payload: Partial<Employee> & { createUserAccount?: boolean; userAccount?: Record<string, unknown> }) =>
     apiRequest<{ employee: Employee; user?: unknown }>(`/api/hr/employees/${encodeURIComponent(id)}`, { method: 'PUT', body: payload }),
+
+  updateEmployeeAccess: (id: string, payload: { role: string; password?: string }) =>
+    apiRequest<{ employee: Employee }>(`/api/hr/employees/${encodeURIComponent(id)}/access`, { method: 'PUT', body: payload }),
+
+  deleteEmployee: (id: string) =>
+    apiRequest<{ ok: true; deactivated: true }>(`/api/hr/employees/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  listShifts: (params: { employeeId?: string } = {}) =>
+    apiRequest<{ shifts: StaffShift[] }>(`/api/hr/shifts${toQuery(params)}`),
+
+  createShift: (payload: Omit<StaffShift, 'id'>) =>
+    apiRequest<{ shift: StaffShift }>('/api/hr/shifts', { method: 'POST', body: payload }),
+
+  createBulkShifts: (shifts: Array<Omit<StaffShift, 'id'>>) =>
+    apiRequest<{ shifts: StaffShift[] }>('/api/hr/shifts/bulk', { method: 'POST', body: { shifts } }),
+
+  updateShift: (id: string, payload: Omit<StaffShift, 'id'>) =>
+    apiRequest<{ shift: StaffShift }>(`/api/hr/shifts/${encodeURIComponent(id)}`, { method: 'PUT', body: payload }),
+
+  deleteShift: (id: string) =>
+    apiRequest<{ ok: true }>(`/api/hr/shifts/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
   listAttendance: (params: { employeeId?: string; from?: string; to?: string } = {}) =>
     apiRequest<{ attendance: AttendanceRecord[] }>(`/api/hr/attendance${toQuery(params)}`),
