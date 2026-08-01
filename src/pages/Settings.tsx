@@ -8,8 +8,7 @@ import { Label } from '../components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 import { toast } from 'sonner';
-import { doc, getDoc, setDoc, collection, query, orderBy, limit, getDocs } from 'firebase/firestore';
-import { db } from '../lib/firebase';
+import { fetchGeneralSettings, GENERAL_SETTINGS_UPDATED_EVENT, saveGeneralSettings } from '../lib/generalSettings';
 import { Database, Server, Activity, ShieldAlert, CheckCircle2, Download, Play, AlertTriangle, Trash2, Image as ImageIcon, KeyRound, UserCog, PlusCircle, RefreshCcw } from 'lucide-react';
 import { format, parseISO, subDays } from 'date-fns';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend, AreaChart, Area } from 'recharts';
@@ -859,26 +858,22 @@ export default function Settings() {
   useEffect(() => {
     async function loadSettings() {
       try {
-        const docRef = doc(db, 'settings', 'general');
-        const docSnap = await getDoc(docRef);
-        if (docSnap.exists()) {
-          const data = docSnap.data();
-          if (data.gymName) setGymName(data.gymName);
-          if (data.staffRoles && Array.isArray(data.staffRoles)) setStaffRoles(data.staffRoles.join(', '));
-          if (data.departments && Array.isArray(data.departments)) setDepartments(data.departments.join(', '));
-          if (data.rooms && Array.isArray(data.rooms)) setRooms(data.rooms.join(', '));
-          if (data.ecardTitle) setEcardTitle(data.ecardTitle);
-          if (data.ecardNote) setEcardNote(data.ecardNote);
-          if (data.ecardBackgroundImage) setEcardBackgroundImage(data.ecardBackgroundImage);
-        }
+        const data = await fetchGeneralSettings();
+        setGymName(data.gymName);
+        setStaffRoles(data.staffRoles.join(', '));
+        setDepartments(data.departments.join(', '));
+        setRooms(data.rooms.join(', '));
+        setEcardTitle(data.ecardTitle);
+        setEcardNote(data.ecardNote);
+        setEcardBackgroundImage(data.ecardBackgroundImage);
       } catch (error) {
-        console.error("Error loading settings:", error);
-        toast.error("Failed to load settings.");
+        console.error('Error loading settings:', error);
+        toast.error(error instanceof Error ? error.message : 'Failed to load settings.');
       } finally {
         setLoading(false);
       }
     }
-    loadSettings();
+    void loadSettings();
   }, []);
 
   const loadAuditLogs = async () => {
@@ -996,20 +991,20 @@ export default function Settings() {
 
   const handleSave = async () => {
     try {
-      const docRef = doc(db, 'settings', 'general');
-      await setDoc(docRef, {
+      const saved = await saveGeneralSettings({
         gymName,
         staffRoles: staffRoles.split(',').map(s => s.trim()).filter(Boolean),
         departments: departments.split(',').map(s => s.trim()).filter(Boolean),
         rooms: rooms.split(',').map(s => s.trim()).filter(Boolean),
         ecardTitle,
         ecardNote,
-        ecardBackgroundImage
-      }, { merge: true });
+        ecardBackgroundImage,
+      });
+      window.dispatchEvent(new CustomEvent(GENERAL_SETTINGS_UPDATED_EVENT, { detail: saved }));
       toast.success('Settings saved successfully.');
     } catch (error) {
-      console.error("Error saving settings:", error);
-      toast.error("Failed to save settings.");
+      console.error('Error saving settings:', error);
+      toast.error(error instanceof Error ? error.message : 'Failed to save settings.');
     }
   };
 
