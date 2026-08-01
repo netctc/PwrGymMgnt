@@ -43,7 +43,7 @@ async function transientSourceFiles() {
 async function legacyFirestoreReferences() {
   const findings = [];
   const sourceRoot = path.join(PROJECT_ROOT, 'src');
-  const importPattern = /(?:from\s*|import\s*\()\s*['"]firebase(?:\/[^'"]*)?['"]/;
+  const importPattern = /(?:from\s*|import\s*\()\s*['"](?:firebase(?:\/[^'"]*)?|[^'"]*\/firebase)['"]/;
   const compatibilityApiPattern = /\/api\/records(?:\/|['"`?])/;
   const adapterPattern = /firestore-sql-shim/;
 
