@@ -71,9 +71,10 @@ export function buildLinuxSystemdUnits({
   if (!/^[a-z_][a-z0-9_-]*[$]?$/i.test(serviceGroup)) {
     throw new Error(`Unsafe Linux service group: ${serviceGroup}`);
   }
-  const envPath = path.join(projectDir, '.env');
-  const runnerPath = path.join(projectDir, 'scripts', 'service-runner.mjs');
-  const monitorPath = path.join(projectDir, 'scripts', 'monitor-installation.mjs');
+  // Unit files always target Linux, even when generated or tested on another host.
+  const envPath = path.posix.join(projectDir, '.env');
+  const runnerPath = path.posix.join(projectDir, 'scripts', 'service-runner.mjs');
+  const monitorPath = path.posix.join(projectDir, 'scripts', 'monitor-installation.mjs');
   const common = `User=${serviceUser}\nGroup=${serviceGroup}\nWorkingDirectory=${systemdPathValue(projectDir)}\nEnvironmentFile=${systemdPathValue(envPath)}\n`;
   return {
     'powergym.service': `[Unit]\nDescription=PowerGym Management\nWants=network-online.target\nAfter=network-online.target mysql.service\n\n[Service]\nType=simple\n${common}ExecStart=${systemdQuote(nodePath)} ${systemdQuote(runnerPath)}\nRestart=always\nRestartSec=5\nTimeoutStopSec=30\nNoNewPrivileges=true\nPrivateTmp=true\nUMask=0027\n\n[Install]\nWantedBy=multi-user.target\n`,
