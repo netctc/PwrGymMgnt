@@ -13,7 +13,6 @@ export default defineConfig(({mode}) => {
     resolve: {
       alias: {
         '@': path.resolve(__dirname, './src'),
-        'firebase/firestore': path.resolve(__dirname, './src/lib/firestore-sql-shim.ts'),
       },
     },
     build: {
