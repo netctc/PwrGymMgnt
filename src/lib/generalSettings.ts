@@ -20,7 +20,10 @@ export const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
 
 async function readResponse(response: Response) {
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || `Settings request failed (${response.status})`);
+  if (!response.ok) {
+    const message = typeof data.error === 'string' ? data.error : data.error?.message;
+    throw new Error(message || `Settings request failed (${response.status})`);
+  }
   return { ...DEFAULT_GENERAL_SETTINGS, ...(data.settings || {}) } as GeneralSettings;
 }
 
