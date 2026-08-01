@@ -84,7 +84,10 @@ export function buildLinuxSystemdUnits({
 }
 
 export function selectLinuxServiceNodePath(nodePath) {
-  const resolved = path.resolve(nodePath);
+  const value = String(nodePath);
+  const resolved = path.posix.isAbsolute(value)
+    ? path.posix.normalize(value)
+    : path.resolve(value);
   return resolved === '/root' || resolved.startsWith('/root/')
     ? STAGED_NODE_PATH
     : resolved;
