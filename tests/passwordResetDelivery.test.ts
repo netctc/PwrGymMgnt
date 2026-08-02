@@ -8,10 +8,8 @@ import {
   sendPasswordResetDelivery,
 } from '../server/passwordResetDelivery';
 
-const originalEnv = { ...process.env };
-
 function resetEnv() {
-  process.env = { ...originalEnv, NODE_ENV: 'test' };
+  process.env = { NODE_ENV: 'test' };
 }
 
 test('password reset delivery helpers build safe URLs and masked destinations', () => {
