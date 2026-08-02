@@ -121,6 +121,14 @@ function createFakePool() {
   };
 }
 
+function configurePasswordResetTestEnv({ exposeDevToken = false }: { exposeDevToken?: boolean } = {}) {
+  configurePasswordResetTestEnv();
+  process.env.PASSWORD_RESET_EXPOSE_DEV_TOKEN = exposeDevToken ? 'true' : 'false';
+  process.env.PASSWORD_RESET_DELIVERY_CHANNELS = 'email';
+  process.env.PASSWORD_RESET_EMAIL_PROVIDER = 'disabled';
+  process.env.PASSWORD_RESET_SMS_PROVIDER = 'disabled';
+}
+
 async function withPasswordResetServer(pool: ReturnType<typeof createFakePool>, run: (baseUrl: string) => Promise<void>) {
   const app = express();
   app.use(express.json());
@@ -140,7 +148,7 @@ async function withPasswordResetServer(pool: ReturnType<typeof createFakePool>, 
 }
 
 test('password reset helpers normalize input and enforce complexity', () => {
-  process.env.PASSWORD_RESET_TOKEN_PEPPER = 'unit-test-pepper';
+  configurePasswordResetTestEnv();
   assert.equal(normalizeResetEmail(' Admin@Example.COM '), 'admin@example.com');
   assert.equal(validateResetPasswordComplexity('weakpass'), false);
   assert.equal(validateResetPasswordComplexity('StrongPass1!'), true);
@@ -149,8 +157,7 @@ test('password reset helpers normalize input and enforce complexity', () => {
 });
 
 test('request route uses anti-enumeration response for unknown accounts', async () => {
-  process.env.NODE_ENV = 'test';
-  process.env.PASSWORD_RESET_TOKEN_PEPPER = 'unit-test-pepper';
+  configurePasswordResetTestEnv();
   const pool = createFakePool();
 
   await withPasswordResetServer(pool, async (baseUrl) => {
@@ -168,8 +175,7 @@ test('request route uses anti-enumeration response for unknown accounts', async 
 });
 
 test('request route creates a hashed single-use reset token without persisting the raw token', async () => {
-  process.env.NODE_ENV = 'test';
-  process.env.PASSWORD_RESET_TOKEN_PEPPER = 'unit-test-pepper';
+  configurePasswordResetTestEnv({ exposeDevToken: true });
   const pool = createFakePool();
 
   await withPasswordResetServer(pool, async (baseUrl) => {
@@ -190,8 +196,7 @@ test('request route creates a hashed single-use reset token without persisting t
 });
 
 test('confirm route updates password and rejects token reuse', async () => {
-  process.env.NODE_ENV = 'test';
-  process.env.PASSWORD_RESET_TOKEN_PEPPER = 'unit-test-pepper';
+  configurePasswordResetTestEnv({ exposeDevToken: true });
   const pool = createFakePool();
 
   await withPasswordResetServer(pool, async (baseUrl) => {
