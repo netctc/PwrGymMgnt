@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { isIP } from 'node:net';
 import { envFirst, getDatabaseEnv, getMissingDatabaseEnv } from './db-env.mjs';
 
 export function parseCliArgs(argv = process.argv.slice(2)) {
@@ -92,6 +93,33 @@ export function getOperationalConfig(env = process.env) {
   };
 }
 
+export function isApprovedProductionUrl(value) {
+  const text = String(value || '').trim();
+  if (!text) return false;
+
+  try {
+    const parsed = new URL(text);
+    if (parsed.username || parsed.password) return false;
+    if (parsed.protocol === 'https:') return true;
+    if (parsed.protocol !== 'http:') return false;
+
+    const hostname = parsed.hostname.replace(/^\[|\]$/g, '');
+    const authority = text.match(/^http:\/\/([^/?#]+)/i)?.[1] || '';
+    const hasExplicitPort = /^\[[^\]]+\]:\d+$/.test(authority) || /^[^:]+:\d+$/.test(authority);
+    return isIP(hostname) !== 0 && hasExplicitPort;
+  } catch {
+    return false;
+  }
+}
+
+export function areApprovedProductionOrigins(value) {
+  const origins = String(value || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return origins.length > 0 && origins.every(isApprovedProductionUrl);
+}
+
 export function validateProductionConfig(config = getOperationalConfig()) {
   const checks = [];
   const production = config.nodeEnv === 'production';
@@ -108,8 +136,8 @@ export function validateProductionConfig(config = getOperationalConfig()) {
   add('admin-setup-disabled', !production || !adminSetupEnabled, 'warning', production ? 'ADMIN_SETUP_ENABLED should be false after first admin bootstrap.' : 'Admin setup is flexible outside production.', 'Set ADMIN_SETUP_ENABLED=false after setup completes.');
   add('env-bootstrap-login-disabled', !production || !boolEnv(config.envBootstrapLogin), 'critical', production ? 'ALLOW_ENV_BOOTSTRAP_LOGIN must remain false in production.' : 'Environment bootstrap login is flexible outside production.', 'Persist admin users in the database and set ALLOW_ENV_BOOTSTRAP_LOGIN=false.');
   add('api-docs-hidden', !production || !boolEnv(config.apiDocsInProduction), 'warning', production ? 'API docs should not be publicly exposed by default.' : 'API docs are available outside production.', 'Keep ENABLE_API_DOCS_IN_PRODUCTION=false unless docs are behind additional controls.');
-  add('allowed-origins', !production || config.allowedOrigins.includes('https://'), 'critical', production ? 'ALLOWED_ORIGINS should include the production HTTPS origin.' : 'ALLOWED_ORIGINS is flexible outside production.', 'Set ALLOWED_ORIGINS=https://your-domain.example.');
-  add('reset-base-url', !production || config.passwordResetPublicBaseUrl.startsWith('https://'), 'critical', production ? 'PASSWORD_RESET_PUBLIC_BASE_URL must be HTTPS.' : 'Password reset public base URL is only strictly validated in production.', 'Set PASSWORD_RESET_PUBLIC_BASE_URL=https://your-domain.example.');
+  add('allowed-origins', !production || areApprovedProductionOrigins(config.allowedOrigins), 'critical', production ? 'ALLOWED_ORIGINS must use HTTPS or explicit http://IP:port origins.' : 'ALLOWED_ORIGINS is flexible outside production.', 'Set ALLOWED_ORIGINS=https://your-domain.example or http://SERVER-IP:PORT for a direct-IP deployment.');
+  add('reset-base-url', !production || isApprovedProductionUrl(config.passwordResetPublicBaseUrl), 'critical', production ? 'PASSWORD_RESET_PUBLIC_BASE_URL must use HTTPS or http://IP:port for a direct-IP deployment.' : 'Password reset public base URL is only strictly validated in production.', 'Set PASSWORD_RESET_PUBLIC_BASE_URL=https://your-domain.example or http://SERVER-IP:PORT for a direct-IP deployment.');
   add('reset-token-pepper', !production || config.passwordResetTokenPepper.length >= 32, 'critical', production ? 'PASSWORD_RESET_TOKEN_PEPPER must be at least 32 characters.' : 'PASSWORD_RESET_TOKEN_PEPPER length is only enforced in production.', 'Use a long random value different from JWT_SECRET.');
   add('reset-preview-disabled', !production || !boolEnv(config.passwordResetExposeDevToken), 'critical', production ? 'PASSWORD_RESET_EXPOSE_DEV_TOKEN must be false.' : 'Reset preview token may be enabled for development.', 'Set PASSWORD_RESET_EXPOSE_DEV_TOKEN=false in production.');
   add('reset-delivery-provider', !production || config.passwordResetEmailProvider !== 'disabled' || config.passwordResetSmsProvider !== 'disabled', 'warning', 'At least one reset delivery provider should be enabled in production.', 'Use SendGrid, Twilio or webhooks for reset delivery.');
