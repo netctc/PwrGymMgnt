@@ -116,3 +116,28 @@ Only restore the predeploy SQL backup when the application rollback is not enoug
 3. Review database health and backup status.
 4. Save the deployment notes, backup path, build ID and smoke test output.
 5. Schedule any warning-level data integrity repair work outside peak hours.
+
+
+## 10. Daily membership reconciliation
+
+The integrity check and reconciliation command share one eligibility rule across legacy
+`member_subscriptions` and V2 `affiliations` / `subscriptions`. Start and end dates
+are inclusive.
+
+Preview without changing data:
+
+```bash
+npm run db:reconcile-memberships
+```
+
+Apply after reviewing the candidates:
+
+```bash
+npm run db:reconcile-memberships -- --apply
+npm run db:integrity
+```
+
+On Linux, `powergym-membership-reconciliation.timer` runs the apply mode daily at
+00:10 with a randomized delay of up to two minutes. The timer is persistent, so a
+missed run is executed after the host starts. Each status change is recorded in
+`audit_logs` with action `member_automatically_deactivated`.
