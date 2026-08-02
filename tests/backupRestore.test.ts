@@ -68,15 +68,15 @@ test('restore plan blocks unsafe apply modes', () => {
   };
   const db = { host: 'db', port: 3306, user: 'user', password: 'pw', database: 'powergym', connectTimeout: 10000 };
 
-  const dryRun = createRestorePlan({ inspection, apply: false, db });
+  const dryRun = createRestorePlan({ inspection, apply: false, nodeEnv: 'test', db });
   assert.equal(dryRun.dryRun, true);
   assert.equal(dryRun.canApply, true);
 
-  const blocked = createRestorePlan({ inspection, apply: true, confirmation: RESTORE_CONFIRMATION, db });
+  const blocked = createRestorePlan({ inspection, apply: true, confirmation: RESTORE_CONFIRMATION, nodeEnv: 'test', db });
   assert.equal(blocked.canApply, false);
   assert.equal(blocked.blockers.some((message: string) => message.includes('destructive')), true);
 
-  const allowed = createRestorePlan({ inspection, apply: true, confirmation: RESTORE_CONFIRMATION, allowDestructive: true, db });
+  const allowed = createRestorePlan({ inspection, apply: true, confirmation: RESTORE_CONFIRMATION, allowDestructive: true, nodeEnv: 'test', db });
   assert.equal(allowed.canApply, true);
 });
 
