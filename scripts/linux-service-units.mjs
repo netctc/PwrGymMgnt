@@ -75,11 +75,14 @@ export function buildLinuxSystemdUnits({
   const envPath = path.posix.join(projectDir, '.env');
   const runnerPath = path.posix.join(projectDir, 'scripts', 'service-runner.mjs');
   const monitorPath = path.posix.join(projectDir, 'scripts', 'monitor-installation.mjs');
+  const reconciliationPath = path.posix.join(projectDir, 'scripts', 'membership-reconciliation.ts');
   const common = `User=${serviceUser}\nGroup=${serviceGroup}\nWorkingDirectory=${systemdPathValue(projectDir)}\nEnvironmentFile=${systemdPathValue(envPath)}\n`;
   return {
     'powergym.service': `[Unit]\nDescription=PowerGym Management\nWants=network-online.target\nAfter=network-online.target mysql.service\n\n[Service]\nType=simple\n${common}ExecStart=${systemdQuote(nodePath)} ${systemdQuote(runnerPath)}\nRestart=always\nRestartSec=5\nTimeoutStopSec=30\nNoNewPrivileges=true\nPrivateTmp=true\nUMask=0027\n\n[Install]\nWantedBy=multi-user.target\n`,
     'powergym-health.service': `[Unit]\nDescription=PowerGym installation health check\nAfter=powergym.service\n\n[Service]\nType=oneshot\n${common}ExecStart=${systemdQuote(nodePath)} ${systemdQuote(monitorPath)}\nNoNewPrivileges=true\nPrivateTmp=true\nUMask=0027\n`,
     'powergym-health.timer': `[Unit]\nDescription=Run PowerGym health check every five minutes\n\n[Timer]\nOnBootSec=2min\nOnUnitActiveSec=5min\nPersistent=true\nUnit=powergym-health.service\n\n[Install]\nWantedBy=timers.target\n`,
+    'powergym-membership-reconciliation.service': `[Unit]\nDescription=Reconcile PowerGym member status with current subscriptions\nWants=network-online.target\nAfter=network-online.target mysql.service\n\n[Service]\nType=oneshot\n${common}ExecStart=${systemdQuote(nodePath)} --import tsx ${systemdQuote(reconciliationPath)} --apply\nNoNewPrivileges=true\nPrivateTmp=true\nUMask=0027\nTimeoutStartSec=10min\n`,
+    'powergym-membership-reconciliation.timer': `[Unit]\nDescription=Run PowerGym membership reconciliation daily\n\n[Timer]\nOnCalendar=*-*-* 00:10:00\nPersistent=true\nRandomizedDelaySec=120\nUnit=powergym-membership-reconciliation.service\n\n[Install]\nWantedBy=timers.target\n`,
   };
 }
 
@@ -119,7 +122,7 @@ async function disableLegacyUserUnits(projectDir) {
   try {
     await run(
       'systemctl',
-      ['--user', 'disable', '--now', 'powergym.service', 'powergym-health.timer'],
+      ['--user', 'disable', '--now', 'powergym.service', 'powergym-health.timer', 'powergym-membership-reconciliation.timer'],
       { cwd: projectDir, capture: true },
     );
   } catch {
@@ -203,6 +206,7 @@ async function installAsRoot({ projectDir, nodePath, serviceUser, unitDir }) {
     path.join(projectDir, 'dist', 'server.cjs'),
     path.join(projectDir, 'scripts', 'service-runner.mjs'),
     path.join(projectDir, 'scripts', 'monitor-installation.mjs'),
+    path.join(projectDir, 'scripts', 'membership-reconciliation.ts'),
   ];
   for (const requiredPath of requiredPaths) {
     try {
@@ -235,9 +239,10 @@ async function installAsRoot({ projectDir, nodePath, serviceUser, unitDir }) {
   try {
     await run('systemd-analyze', ['verify', ...unitPaths], { capture: true });
     await run('systemctl', ['daemon-reload']);
-    await run('systemctl', ['enable', 'powergym.service', 'powergym-health.timer']);
+    await run('systemctl', ['enable', 'powergym.service', 'powergym-health.timer', 'powergym-membership-reconciliation.timer']);
     await run('systemctl', ['restart', 'powergym.service']);
     await run('systemctl', ['start', 'powergym-health.timer']);
+    await run('systemctl', ['start', 'powergym-membership-reconciliation.timer']);
   } catch (error) {
     for (const [destination, content] of previous) {
       if (content === null) await fs.rm(destination, { force: true });
