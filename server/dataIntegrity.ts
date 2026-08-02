@@ -1,6 +1,7 @@
 import type { Express, Request, Response, NextFunction } from "express";
 import type { Pool } from "mysql2/promise";
 import { hasPermission } from "./rbac";
+import { activeMembersWithoutCurrentSubscriptionSql } from "./membershipEligibility";
 
 type PoolProvider = () => Pool | null;
 
@@ -108,26 +109,11 @@ export const DATA_INTEGRITY_CHECKS: IntegrityCheck[] = [
     severity: "warning",
     description: "A member is marked active, but no active future-dated subscription was found in the member_subscriptions table.",
     recommendation: "Create/renew the member subscription, correct casing/status values, or mark the member inactive if access should be blocked.",
-    sql: `SELECT COUNT(*) AS count
-      FROM members m
-      WHERE LOWER(COALESCE(m.status, '')) = 'active'
-        AND NOT EXISTS (
-          SELECT 1 FROM member_subscriptions ms
-          WHERE ms.member_id = m.id
-            AND LOWER(COALESCE(ms.status, '')) = 'active'
-            AND ms.end_date >= CURDATE()
-        )`,
-    sampleSql: `SELECT m.id, m.email, m.status, m.plan, m.join_date
-      FROM members m
-      WHERE LOWER(COALESCE(m.status, '')) = 'active'
-        AND NOT EXISTS (
-          SELECT 1 FROM member_subscriptions ms
-          WHERE ms.member_id = m.id
-            AND LOWER(COALESCE(ms.status, '')) = 'active'
-            AND ms.end_date >= CURDATE()
-        )
-      ORDER BY m.join_date ASC
-      LIMIT ?`,
+    sql: activeMembersWithoutCurrentSubscriptionSql("COUNT(*) AS count"),
+    sampleSql: activeMembersWithoutCurrentSubscriptionSql(
+      "m.id, m.email, m.status, m.plan, m.join_date",
+      "ORDER BY m.join_date ASC LIMIT ?",
+    ),
   },
   {
     id: "duplicate-active-member-emails",
