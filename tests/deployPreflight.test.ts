@@ -23,7 +23,14 @@ function productionConfig(overrides = {}) {
     passwordResetTokenPepper: 'p'.repeat(32),
     backupDir: 'backups',
     backupRetentionDays: 30,
-    db: {},
+    db: {
+      host: '127.0.0.1',
+      port: 3306,
+      user: 'powergym_test',
+      password: 'test-password',
+      database: 'powergym_test',
+      connectTimeout: 10_000,
+    },
     missingDb: [],
     ...overrides,
   };
