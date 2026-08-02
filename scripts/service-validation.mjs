@@ -56,6 +56,8 @@ export function buildServiceChecks(args) {
         { id: 'powergym-active', command: 'systemctl', args: ['is-active', 'powergym.service'] },
         { id: 'health-timer-enabled', command: 'systemctl', args: ['is-enabled', 'powergym-health.timer'] },
         { id: 'health-timer-active', command: 'systemctl', args: ['is-active', 'powergym-health.timer'] },
+        { id: 'membership-timer-enabled', command: 'systemctl', args: ['is-enabled', 'powergym-membership-reconciliation.timer'] },
+        { id: 'membership-timer-active', command: 'systemctl', args: ['is-active', 'powergym-membership-reconciliation.timer'] },
       ];
 }
 
