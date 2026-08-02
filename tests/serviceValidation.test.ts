@@ -41,9 +41,10 @@ test('Windows checks use the two installed scheduled task names', () => {
 
 test('Linux checks validate service and health timer state', () => {
   const checks = buildServiceChecks({ windows: false });
-  assert.equal(checks.length, 4);
+  assert.equal(checks.length, 6);
   assert.ok(checks.every((check) => !check.args.includes('--user')));
   assert.ok(checks.some((check) => check.args.includes('powergym-health.timer')));
+  assert.ok(checks.some((check) => check.args.includes('powergym-membership-reconciliation.timer')));
 });
 
 test('Linux system units run as a non-root account with systemd-safe paths', () => {
@@ -67,6 +68,10 @@ test('Linux system units run as a non-root account with systemd-safe paths', () 
   assert.match(units['powergym.service'], /Restart=always/);
   assert.match(units['powergym.service'], /NoNewPrivileges=true/);
   assert.match(units['powergym-health.timer'], /OnUnitActiveSec=5min/);
+  assert.match(units['powergym-membership-reconciliation.service'], /membership-reconciliation\.ts" --apply/);
+  assert.match(units['powergym-membership-reconciliation.timer'], /OnCalendar=\*-\*-\* 00:10:00/);
+  assert.match(units['powergym-membership-reconciliation.timer'], /Persistent=true/);
+  assert.match(units['powergym-membership-reconciliation.timer'], /RandomizedDelaySec=120/);
   assert.deepEqual(parseLinuxServiceArgs(['--dry-run', '--service-user=powergym']).serviceUser, 'powergym');
   assert.throws(
     () => buildLinuxSystemdUnits({
