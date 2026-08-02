@@ -122,7 +122,8 @@ function createFakePool() {
 }
 
 function configurePasswordResetTestEnv({ exposeDevToken = false }: { exposeDevToken?: boolean } = {}) {
-  configurePasswordResetTestEnv();
+  process.env.NODE_ENV = 'test';
+  process.env.PASSWORD_RESET_TOKEN_PEPPER = 'unit-test-pepper';
   process.env.PASSWORD_RESET_EXPOSE_DEV_TOKEN = exposeDevToken ? 'true' : 'false';
   process.env.PASSWORD_RESET_DELIVERY_CHANNELS = 'email';
   process.env.PASSWORD_RESET_EMAIL_PROVIDER = 'disabled';
