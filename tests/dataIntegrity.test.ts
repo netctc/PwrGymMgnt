@@ -17,6 +17,10 @@ test('data integrity check catalog includes active member subscription coverage'
   assert.equal(ids.includes('active-members-without-current-subscription'), true);
   assert.equal(ids.includes('active-access-tokens-expired'), true);
   assert.equal(DATA_REPAIRS.some((repair) => repair.id === 'expire-access-tokens'), true);
+  const membershipCheck = DATA_INTEGRITY_CHECKS.find((check) => check.id === 'active-members-without-current-subscription');
+  assert.match(membershipCheck?.sql || '', /FROM member_subscriptions ms/);
+  assert.match(membershipCheck?.sql || '', /FROM affiliations a/);
+  assert.match(membershipCheck?.sql || '', /start_date <= CURDATE\(\)/);
 });
 
 test('data integrity summary escalates posture from warning to critical', () => {
