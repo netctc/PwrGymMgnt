@@ -7,7 +7,11 @@ import { __securityHardeningForTests } from "../server/securityHardening";
 const originalEnv = { ...process.env };
 
 function withEnv(env: NodeJS.ProcessEnv, run: () => void) {
-  process.env = { ...originalEnv, ...env };
+  process.env = { ...originalEnv };
+  for (const [key, value] of Object.entries(env)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
   try {
     run();
   } finally {
@@ -27,7 +31,7 @@ test("Phase 7 rejects weak production JWT secrets", () => {
 });
 
 test("Phase 7 production session cookies use strict secure options", () => {
-  withEnv({ NODE_ENV: "production" }, () => {
+  withEnv({ NODE_ENV: "production", SESSION_COOKIE_SECURE: undefined }, () => {
     const options = __securityHardeningForTests.getSessionCookieOptions();
     assert.equal(options.httpOnly, true);
     assert.equal(options.secure, true);
