@@ -259,6 +259,9 @@ test("limited multi-user plans expose distribution, cycles, immutable movements 
   const commissions = read("server/trainerCommissions.ts");
   const commissionsPage = read("src/pages/TrainerCommissions.tsx");
   const dashboardPage = read("src/pages/Dashboard.tsx");
+  const wizard = read("src/pages/HybridSubscriptionWizard.tsx");
+  const subscriptionsApi = read("src/lib/subscriptionsV2Api.ts");
+  const planManagementApi = read("src/lib/planManagementApi.ts");
 
   assert.match(management, /holderSessionsPerCycle/);
   assert.match(management, /beneficiarySessionsPerCycle/);
@@ -421,6 +424,21 @@ test("limited multi-user plans expose distribution, cycles, immutable movements 
   );
   assert.match(lifecycle, /confirmOutstandingPayment/);
   assert.match(lifecycle, /subscription_renewed_with_outstanding_payment/);
+  assert.match(subscriptions, /OUTSTANDING_SUBSCRIPTION_PAYMENT_CONFIRMATION_REQUIRED/);
+  assert.match(subscriptions, /subscription_created_with_pending_payment_confirmed/);
+  assert.match(subscriptions, /subscription_creation_with_pending_payment_cancelled/);
+  assert.match(subscriptions, /findOutstandingSubscriptionPayment/);
+  assert.match(membersPage, /recordPendingPaymentDecision/);
+  assert.match(membersPage, /confirmOutstandingPayment: true/);
+  assert.match(membersPage, /active or inactive plan with a pending payment/);
+  assert.match(subscriptionsApi, /typeof apiError === 'string'/);
+  assert.match(subscriptionsApi, /apiError\?\.message/);
+  assert.match(management, /multi_user_subscription_created_with_pending_payment_confirmed/);
+  assert.match(management, /OUTSTANDING_SUBSCRIPTION_PAYMENT_CONFIRMATION_REQUIRED/);
+  assert.match(wizard, /pendingPaymentWarning/);
+  assert.match(wizard, /recordPendingPaymentDecision/);
+  assert.match(wizard, /confirmOutstandingPayment: true/);
+  assert.match(planManagementApi, /typeof apiError === "string"/);
   assert.match(membership, /member_directory_filters_applied/);
   assert.match(reports, /report_pdf_downloaded/);
 });
