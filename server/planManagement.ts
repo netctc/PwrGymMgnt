@@ -8,6 +8,7 @@ import {
 } from "./subscriptionCycles";
 import {
   assertNoOutstandingSubscriptionPayment,
+  findOutstandingSubscriptionPayment,
   normalizePaymentStatus,
 } from "./subscriptionPaymentRules";
 import { upsertTrainerPlanCommission } from "./trainerCommissions";
@@ -491,13 +492,26 @@ export function registerPlanManagementRoutes(app: Express, provider: PoolProvide
       };
 
       const holder = await resolveMember(req.body.holder || {}, "hybrid_subscription_holder");
-      await assertNoOutstandingSubscriptionPayment(connection, holder.id);
+      const outstandingPayments: Array<{ memberId: string; payment: unknown }> = [];
+      const holderOutstandingPayment = await findOutstandingSubscriptionPayment(
+        connection,
+        holder.id,
+      );
+      if (holderOutstandingPayment) {
+        outstandingPayments.push({ memberId: holder.id, payment: holderOutstandingPayment });
+      }
       const uniqueMemberIds = new Set<string>([holder.id]);
       const uniqueEmails = new Set<string>(holder.email ? [holder.email] : []);
       const resolvedMembers: Array<{ id: string; created: boolean; joinedAt: string; restrictions: unknown; benefitsOverride: unknown }> = [];
       for (const candidate of requestedMembers) {
         const resolved = await resolveMember(candidate, "hybrid_subscription_beneficiary");
-        await assertNoOutstandingSubscriptionPayment(connection, resolved.id);
+        const outstandingPayment = await findOutstandingSubscriptionPayment(
+          connection,
+          resolved.id,
+        );
+        if (outstandingPayment) {
+          outstandingPayments.push({ memberId: resolved.id, payment: outstandingPayment });
+        }
         if (uniqueMemberIds.has(resolved.id) || (resolved.email && uniqueEmails.has(resolved.email))) {
           throw Object.assign(new Error("The same person cannot be added twice to one subscription"), { status: 409 });
         }
@@ -510,6 +524,17 @@ export function registerPlanManagementRoutes(app: Express, provider: PoolProvide
           restrictions: candidate?.restrictions || {},
           benefitsOverride: candidate?.benefitsOverride || {},
         });
+      }
+      const confirmedOutstandingPayment = req.body.confirmOutstandingPayment === true;
+      if (outstandingPayments.length && !confirmedOutstandingPayment) {
+        throw Object.assign(
+          new Error("At least one selected member has an active or inactive plan with a pending payment. Explicit confirmation is required to create another subscription."),
+          {
+            status: 409,
+            code: "OUTSTANDING_SUBSCRIPTION_PAYMENT_CONFIRMATION_REQUIRED",
+            outstandingPayments,
+          },
+        );
       }
 
       const startDate = dateOnly(req.body.startDate) || new Date().toISOString().slice(0, 10);
@@ -655,6 +680,22 @@ export function registerPlanManagementRoutes(app: Express, provider: PoolProvide
          VALUES (?, 'multi_user_subscription_created', ?, 'pending')`,
         [createId("evt"), json({ subscriptionId, holderMemberId: holder.id, membersAdded: resolvedMembers.length, addMembersNow: req.body.addMembersNow !== false })],
       );
+      if (outstandingPayments.length && confirmedOutstandingPayment) {
+        await connection.query(
+          `INSERT INTO audit_logs (action, details, performed_by)
+           VALUES ('multi_user_subscription_created_with_pending_payment_confirmed', ?, ?)`,
+          [
+            json({
+              decision: "confirmed",
+              subscriptionId,
+              planVersionId,
+              outstandingPayments,
+              paymentStatus,
+            }),
+            req.user?.email || req.user?.uid || "system",
+          ],
+        );
+      }
       await connection.commit();
       res.status(201).json({
         subscription: {
