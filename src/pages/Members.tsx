@@ -1011,14 +1011,46 @@ export default function Members() {
         if (!selectedNewPlanVersion) {
           throw new Error('Select an active plan.');
         }
-        await subscriptionsV2Api.createSubscription({
+        const creationPayload = {
           planVersionId: selectedNewPlanVersion.planVersionId,
           holderMemberId: renewMember.id,
           startDate: renewStartDate,
           endDate: renewEndDate,
           paymentStatus: renewPaymentStatus,
           paymentDate: renewPaymentDate,
-        });
+        };
+        try {
+          await subscriptionsV2Api.createSubscription(creationPayload);
+        } catch (error: any) {
+          if (
+            error?.code !==
+            'OUTSTANDING_SUBSCRIPTION_PAYMENT_CONFIRMATION_REQUIRED'
+          ) {
+            throw error;
+          }
+          const confirmed = window.confirm(
+            locale === 'ar'
+              ? 'لدى هذا العضو خطة نشطة أو غير نشطة بدفعة معلّقة. هل تريد إنشاء الاشتراك الجديد تحت مسؤوليتك؟ سيتم تسجيل قرارك والمستخدم الحالي في سجل التدقيق.'
+              : 'This member already has an active or inactive plan with a pending payment. Do you want to create the new subscription under your responsibility? Your decision and the current user will be recorded in the audit trail.',
+          );
+          if (!confirmed) {
+            await subscriptionsV2Api.recordPendingPaymentDecision({
+              holderMemberId: renewMember.id,
+              planVersionId: selectedNewPlanVersion.planVersionId,
+              decision: 'cancelled',
+            });
+            toast.info(
+              locale === 'ar'
+                ? 'تم إلغاء إنشاء الاشتراك وتسجيل القرار.'
+                : 'Subscription creation cancelled and decision recorded.',
+            );
+            return;
+          }
+          await subscriptionsV2Api.createSubscription({
+            ...creationPayload,
+            confirmOutstandingPayment: true,
+          });
+        }
         toast.success('New subscription created and assigned to the member');
         setRenewOpen(false);
         await loadMembers();
