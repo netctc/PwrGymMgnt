@@ -23,11 +23,19 @@ export function normalizePaymentStatus(value: unknown, fallback = "pending") {
   return status;
 }
 
-export async function assertNoOutstandingSubscriptionPayment(
+export type OutstandingSubscriptionPayment = {
+  subscriptionId: string;
+  paymentStatus: string;
+  subscriptionStatus: string;
+  endDate: string | null;
+  planName: string | null;
+};
+
+export async function findOutstandingSubscriptionPayment(
   db: Pool | PoolConnection,
   memberId: string,
   excludeSubscriptionId?: string,
-) {
+): Promise<OutstandingSubscriptionPayment | null> {
   const params: string[] = [memberId, memberId];
   let exclusion = "";
   if (excludeSubscriptionId) {
@@ -35,7 +43,8 @@ export async function assertNoOutstandingSubscriptionPayment(
     params.push(excludeSubscriptionId);
   }
   const [rows]: any = await db.query(
-    `SELECT s.id, s.payment_status, s.end_date, pv.name AS plan_name
+    `SELECT s.id, s.payment_status, s.status AS subscription_status,
+            s.end_date, pv.name AS plan_name
        FROM subscriptions s
        LEFT JOIN subscription_members sm
          ON sm.subscription_id = s.id
@@ -49,16 +58,36 @@ export async function assertNoOutstandingSubscriptionPayment(
       LIMIT 1`,
     params,
   );
-  if (rows.length) {
+  if (!rows.length) return null;
+  return {
+    subscriptionId: rows[0].id,
+    paymentStatus: rows[0].payment_status,
+    subscriptionStatus: rows[0].subscription_status,
+    endDate: rows[0].end_date ? String(rows[0].end_date).slice(0, 10) : null,
+    planName: rows[0].plan_name || null,
+  };
+}
+
+export async function assertNoOutstandingSubscriptionPayment(
+  db: Pool | PoolConnection,
+  memberId: string,
+  excludeSubscriptionId?: string,
+) {
+  const outstanding = await findOutstandingSubscriptionPayment(
+    db,
+    memberId,
+    excludeSubscriptionId,
+  );
+  if (outstanding) {
     throw Object.assign(
       new Error(
-        `Outstanding payment for ${rows[0].plan_name || "a previous subscription"} must be settled before subscribing or renewing`,
+        `Outstanding payment for ${outstanding.planName || "a previous subscription"} must be settled before subscribing or renewing`,
       ),
       {
         status: 409,
         code: "OUTSTANDING_SUBSCRIPTION_PAYMENT",
-        subscriptionId: rows[0].id,
-        paymentStatus: rows[0].payment_status,
+        subscriptionId: outstanding.subscriptionId,
+        paymentStatus: outstanding.paymentStatus,
       },
     );
   }
