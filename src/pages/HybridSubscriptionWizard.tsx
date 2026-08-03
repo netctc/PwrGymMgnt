@@ -112,6 +112,10 @@ const copy = {
       "Calculated automatically from the start date and plan duration.",
     compatibilityMode:
       "The server is being updated. The subscription was created using the compatible V2 workflow.",
+    pendingPaymentWarning:
+      "At least one selected member already has an active or inactive plan with a pending payment. Do you want to create the new subscription under your responsibility? Your decision and the current user will be recorded in the audit trail.",
+    pendingPaymentCancelled:
+      "Subscription creation cancelled and decision recorded.",
   },
   ar: {
     title: "اشتراك جديد متعدد المستخدمين",
@@ -172,6 +176,10 @@ const copy = {
     automaticEnd: "يُحسب تلقائياً من تاريخ البداية ومدة الخطة.",
     compatibilityMode:
       "يجري تحديث الخادم. تم إنشاء الاشتراك باستخدام مسار V2 المتوافق.",
+    pendingPaymentWarning:
+      "لدى عضو واحد على الأقل خطة نشطة أو غير نشطة بدفعة معلّقة. هل تريد إنشاء الاشتراك الجديد تحت مسؤوليتك؟ سيتم تسجيل قرارك والمستخدم الحالي في سجل التدقيق.",
+    pendingPaymentCancelled:
+      "تم إلغاء إنشاء الاشتراك وتسجيل القرار.",
   },
 } as const;
 
@@ -481,39 +489,65 @@ export default function HybridSubscriptionWizard() {
     setSaving(true);
     try {
       let response;
+      const hybridPayload = {
+        planVersionId: selectedPlan.planVersionId,
+        holder:
+          holderMode === "existing"
+            ? { memberId: holder?.memberId }
+            : { newMember: holderNew },
+        startDate,
+        endDate,
+        addMembersNow: addNow,
+        members: addNow
+          ? members.map((member) => ({
+              memberId:
+                member.mode === "existing" ? member.memberId : undefined,
+              newMember:
+                member.mode === "new"
+                  ? {
+                      firstName: member.firstName || "",
+                      lastName: member.lastName || "",
+                      email: member.email,
+                      phone: member.phone,
+                    }
+                  : undefined,
+              joinedAt: member.joinedAt || startDate,
+              restrictions: member.restrictions
+                ? { notes: member.restrictions }
+                : {},
+            }))
+          : [],
+      };
       try {
-        response = await planManagementApi.createHybridSubscription({
-          planVersionId: selectedPlan.planVersionId,
-          holder:
-            holderMode === "existing"
-              ? { memberId: holder?.memberId }
-              : { newMember: holderNew },
-          startDate,
-          endDate,
-          addMembersNow: addNow,
-          members: addNow
-            ? members.map((member) => ({
-                memberId:
-                  member.mode === "existing" ? member.memberId : undefined,
-                newMember:
-                  member.mode === "new"
-                    ? {
-                        firstName: member.firstName || "",
-                        lastName: member.lastName || "",
-                        email: member.email,
-                        phone: member.phone,
-                      }
-                    : undefined,
-                joinedAt: member.joinedAt || startDate,
-                restrictions: member.restrictions
-                  ? { notes: member.restrictions }
-                  : {},
-              }))
-            : [],
-        });
+        response = await planManagementApi.createHybridSubscription(hybridPayload);
       } catch (error: any) {
-        if (error?.status !== 404) throw error;
-        response = await createCompatibleSubscription();
+        if (
+          error?.code ===
+          "OUTSTANDING_SUBSCRIPTION_PAYMENT_CONFIRMATION_REQUIRED"
+        ) {
+          const confirmed = window.confirm(c.pendingPaymentWarning);
+          if (!confirmed) {
+            await subscriptionsV2Api.recordPendingPaymentDecision({
+              memberIds: [
+                holderMode === "existing" ? holder?.memberId || "" : "",
+                ...members
+                  .filter((member) => member.mode === "existing")
+                  .map((member) => member.memberId || ""),
+              ].filter(Boolean),
+              planVersionId: selectedPlan.planVersionId,
+              decision: "cancelled",
+            });
+            toast.info(c.pendingPaymentCancelled);
+            return;
+          }
+          response = await planManagementApi.createHybridSubscription({
+            ...hybridPayload,
+            confirmOutstandingPayment: true,
+          });
+        } else {
+          if (error?.status !== 404) throw error;
+          response = await createCompatibleSubscription();
+        }
       }
       setCreated(response);
       setStep(5);
