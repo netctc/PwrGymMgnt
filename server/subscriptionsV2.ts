@@ -16,6 +16,7 @@ import { getSessionBalanceContext, mapBalance } from "./sessionLedger";
 import { createInitialCycle } from "./subscriptionCycles";
 import {
   assertNoOutstandingSubscriptionPayment,
+  findOutstandingSubscriptionPayment,
   normalizePaymentStatus,
 } from "./subscriptionPaymentRules";
 import { upsertTrainerPlanCommission } from "./trainerCommissions";
@@ -412,7 +413,7 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
       const [pvRows]: any = await pool.query("SELECT * FROM plan_versions WHERE id = ? AND status = 'active'", [planVersionId]);
       if (pvRows.length === 0) return res.status(404).json({ error: "Plan version not found or inactive" });
       const pv = pvRows[0];
-      await assertNoOutstandingSubscriptionPayment(pool, holderMemberId);
+      const confirmedOutstandingPayment = req.body.confirmOutstandingPayment === true;
 
       const startDate = normalizeDate(req.body.startDate) || new Date().toISOString().slice(0, 10);
       const endDate = normalizeDate(req.body.endDate) || addDays(startDate, Number(pv.duration_days));
@@ -446,6 +447,18 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
       const id = createId("sub");
       connection = await pool.getConnection();
       await connection.beginTransaction();
+      const outstandingPayment = await findOutstandingSubscriptionPayment(
+        connection,
+        holderMemberId,
+      );
+      if (outstandingPayment && !confirmedOutstandingPayment) {
+        await connection.rollback();
+        return res.status(409).json({
+          error: "The member already has an active or inactive plan with a pending payment. Explicit confirmation is required to create another subscription.",
+          code: "OUTSTANDING_SUBSCRIPTION_PAYMENT_CONFIRMATION_REQUIRED",
+          outstandingPayment,
+        });
+      }
       const [duplicateAffiliations]: any = await connection.query(
         `SELECT a.id
            FROM affiliations a
@@ -616,6 +629,22 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
           }),
         ],
       );
+      if (outstandingPayment && confirmedOutstandingPayment) {
+        await connection.query(
+          "INSERT INTO audit_logs (action, details, performed_by) VALUES ('subscription_created_with_pending_payment_confirmed', ?, ?)",
+          [
+            JSON.stringify({
+              decision: "confirmed",
+              holderMemberId,
+              planVersionId,
+              newSubscriptionId: id,
+              newPaymentStatus: paymentStatus,
+              outstandingPayment,
+            }),
+            req.user?.email || req.user?.uid || "system",
+          ],
+        );
+      }
       await connection.commit();
       const [rows]: any = await pool.query("SELECT s.*, pv.name AS plan_name, pv.plan_type FROM subscriptions s LEFT JOIN plan_versions pv ON pv.id = s.plan_version_id WHERE s.id = ?", [id]);
       res.status(201).json({
@@ -630,6 +659,45 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
     } finally {
       if (connection) connection.release();
     }
+  });
+
+  app.post("/api/v2/subscriptions/pending-payment-decision", requirePermission("membership.write"), async (req: AuthenticatedRequest, res, next) => {
+    try {
+      const pool = requirePool(poolProvider);
+      const holderMemberId = normalizeString(req.body.holderMemberId);
+      const memberIds = Array.from(new Set([
+        holderMemberId,
+        ...(Array.isArray(req.body.memberIds)
+          ? req.body.memberIds.map(normalizeString)
+          : []),
+      ].filter(Boolean)));
+      const planVersionId = normalizeString(req.body.planVersionId);
+      const decision = normalizeString(req.body.decision).toLowerCase();
+      if (!memberIds.length || !planVersionId || decision !== "cancelled") {
+        return res.status(400).json({
+          error: "At least one member, planVersionId and decision=cancelled are required",
+        });
+      }
+      const outstandingPayments = (
+        await Promise.all(memberIds.map(async (memberId) => ({
+          memberId,
+          payment: await findOutstandingSubscriptionPayment(pool, memberId),
+        })))
+      ).filter((entry) => entry.payment);
+      await pool.query(
+        "INSERT INTO audit_logs (action, details, performed_by) VALUES ('subscription_creation_with_pending_payment_cancelled', ?, ?)",
+        [
+          JSON.stringify({
+            decision,
+            memberIds,
+            planVersionId,
+            outstandingPayments,
+          }),
+          req.user?.email || req.user?.uid || "system",
+        ],
+      );
+      res.json({ ok: true, decision });
+    } catch (error) { next(error); }
   });
 
   app.patch("/api/v2/subscriptions/:id/payment-status", requirePermission("membership.write"), async (req: AuthenticatedRequest, res, next) => {
