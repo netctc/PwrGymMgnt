@@ -176,10 +176,23 @@ async function apiRequest<T>(url: string, options: RequestInit = {}): Promise<T>
   const response = await fetch(url, { credentials: 'include', ...options, headers });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const error = new Error(
-      payload.error || `Request failed with ${response.status}`,
-    ) as Error & { status?: number };
+    const apiError = payload?.error;
+    const message =
+      typeof apiError === 'string'
+        ? apiError
+        : typeof apiError?.message === 'string'
+          ? apiError.message
+          : typeof payload?.message === 'string'
+            ? payload.message
+            : `Request failed with ${response.status}`;
+    const error = new Error(message) as Error & {
+      status?: number;
+      code?: string;
+      details?: Record<string, unknown>;
+    };
     error.status = response.status;
+    error.code = payload?.code || apiError?.code;
+    error.details = payload;
     throw error;
   }
   return payload as T;
@@ -240,8 +253,19 @@ export const subscriptionsV2Api = {
       };
     }>(`/api/v2/subscriptions${toQuery(params)}`),
 
-  createSubscription: (payload: { planVersionId: string; holderMemberId: string; startDate?: string; endDate?: string; paymentStatus?: string; paymentDate?: string }) =>
+  createSubscription: (payload: { planVersionId: string; holderMemberId: string; startDate?: string; endDate?: string; paymentStatus?: string; paymentDate?: string; confirmOutstandingPayment?: boolean }) =>
     apiRequest<{ subscription: SubscriptionV2; affiliationId: string }>('/api/v2/subscriptions', { method: 'POST', body: JSON.stringify(payload) }),
+
+  recordPendingPaymentDecision: (payload: {
+    holderMemberId?: string;
+    memberIds?: string[];
+    planVersionId: string;
+    decision: 'cancelled';
+  }) =>
+    apiRequest<{ ok: boolean; decision: 'cancelled' }>(
+      '/api/v2/subscriptions/pending-payment-decision',
+      { method: 'POST', body: JSON.stringify(payload) },
+    ),
 
   updatePaymentStatus: (
     id: string,
