@@ -317,6 +317,18 @@ test("limited multi-user plans expose distribution, cycles, immutable movements 
   assert.match(membersPage, /Paid subscriptions are locked/);
   assert.match(membersPage, /renewPaymentStatus/);
   assert.match(membersPage, /renewPaymentDate/);
+  assert.match(membersPage, /setRenewPlanId\(''\)/);
+  assert.match(membersPage, /setRenewPlanVersionId\(multiSubscription\.planVersionId\)/);
+  assert.match(membersPage, /activeRenewalManagedPlans\.map/);
+  assert.doesNotMatch(
+    membersPage,
+    /disabled=\{Boolean\(renewMultiSubscription\) \|\| renewMode === 'edit'\}/,
+  );
+  assert.match(membersPage, /Number\.isNaN\(value\.getTime\(\)\)/);
+  assert.match(subscriptionsApi, /planVersionId\?: string/);
+  assert.match(lifecycle, /requestedPlanVersionId/);
+  assert.match(lifecycle, /PLAN_CAPACITY_EXCEEDED/);
+  assert.match(lifecycle, /Number\.isNaN\(sub\.end_date\.getTime\(\)\)/);
   assert.match(membersPage, /Estimated payment date cannot be after End Date/);
   assert.match(membersPage, /renewMode/);
   assert.match(membersPage, /Subscription payment updated/);
