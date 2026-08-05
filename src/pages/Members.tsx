@@ -115,8 +115,9 @@ function formatDate(value?: string | null) {
 }
 
 function addDaysToDate(date: string, days: number) {
-  if (!date) return '';
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(days)) return '';
   const value = new Date(`${date}T00:00:00.000Z`);
+  if (Number.isNaN(value.getTime())) return '';
   value.setUTCDate(value.getUTCDate() + days);
   return value.toISOString().slice(0, 10);
 }
@@ -358,6 +359,7 @@ export default function Members() {
   ] = useState(true);
   const [renewMember, setRenewMember] = useState<MembershipMember | null>(null);
   const [renewPlanId, setRenewPlanId] = useState('');
+  const [renewPlanVersionId, setRenewPlanVersionId] = useState('');
   const [renewStartDate, setRenewStartDate] = useState(today());
   const [renewCurrentExpiry, setRenewCurrentExpiry] = useState('');
   const [renewCurrentPlan, setRenewCurrentPlan] = useState('');
@@ -406,6 +408,17 @@ export default function Members() {
     ).sort((a, b) => a - b);
   }, [memberPagination.page, memberPagination.totalPages]);
   const selectedRenewPlan = useMemo(() => plans.find((plan) => plan.id === renewPlanId) || null, [plans, renewPlanId]);
+  const activeRenewalManagedPlans = useMemo(
+    () => newSubscriptionPlans.filter((plan) => plan.status === 'active'),
+    [newSubscriptionPlans],
+  );
+  const selectedRenewPlanVersion = useMemo(
+    () =>
+      activeRenewalManagedPlans.find(
+        (plan) => plan.planVersionId === renewPlanVersionId,
+      ) || null,
+    [activeRenewalManagedPlans, renewPlanVersionId],
+  );
   const availableNewSubscriptionPlans = useMemo(() => {
     const currentPlanMemberships = (renewMember?.plans || []).filter(
       (plan) =>
@@ -448,6 +461,12 @@ export default function Members() {
           selectedNewPlanVersion.durationDays,
         );
       }
+      if (renewMultiSubscription && selectedRenewPlanVersion) {
+        return addDaysToDate(
+          renewStartDate,
+          selectedRenewPlanVersion.durationDays,
+        );
+      }
       if (selectedRenewPlan) {
         return addDaysToDate(renewStartDate, selectedRenewPlan.durationDays);
       }
@@ -468,6 +487,7 @@ export default function Members() {
       renewStartDate,
       renewMultiSubscription,
       selectedRenewPlan,
+      selectedRenewPlanVersion,
       selectedNewPlanVersion,
       subscriptionIntent,
     ],
@@ -833,7 +853,8 @@ export default function Members() {
   const openRenew = async (member: MembershipMember) => {
     setSubscriptionIntent('renew');
     setRenewMember(member);
-    setRenewPlanId(plans[0]?.id || '');
+    setRenewPlanId('');
+    setRenewPlanVersionId('');
     setRenewCurrentExpiry('');
     setRenewCurrentPlan('');
     setRenewPaymentStatus('');
@@ -853,15 +874,47 @@ export default function Members() {
           .listSubscriptions({ memberId: member.id, status: 'all' })
           .catch(() => ({ subscriptions: [] as SubscriptionV2[] })),
       ]);
+      const preferredPlan = [...(response.member.plans || member.plans || [])]
+        .filter((plan) => plan.subscriptionId)
+        .sort(
+          (a, b) =>
+            Number(
+              b.subscriptionStatus === 'active' && dateValue(b.endDate) >= today(),
+            ) -
+              Number(
+                a.subscriptionStatus === 'active' && dateValue(a.endDate) >= today(),
+              ) ||
+            Number(b.isPrimary) - Number(a.isPrimary) ||
+            dateValue(b.endDate).localeCompare(dateValue(a.endDate)),
+        )[0];
+      const sortedMultiSubscriptions = [...multiResponse.subscriptions].sort(
+        (a, b) =>
+          Number(b.status === 'active' && dateValue(b.endDate) >= today()) -
+            Number(a.status === 'active' && dateValue(a.endDate) >= today()) ||
+          dateValue(b.endDate).localeCompare(dateValue(a.endDate)),
+      );
       const multiSubscription =
-        multiResponse.subscriptions
-          .sort((a, b) => String(b.endDate).localeCompare(String(a.endDate)))[0] ||
+        (preferredPlan?.planVersionId
+          ? sortedMultiSubscriptions.find(
+              (subscription) =>
+                subscription.id === preferredPlan.subscriptionId,
+            )
+          : null) ||
+        (!preferredPlan ? sortedMultiSubscriptions[0] : null) ||
         null;
-      const latestLegacySubscription = [...response.subscriptions].sort(
+      const sortedLegacySubscriptions = [...response.subscriptions].sort(
         (a, b) =>
           Number(b.status === 'active') - Number(a.status === 'active') ||
           String(b.endDate).localeCompare(String(a.endDate)),
-      )[0];
+      );
+      const latestLegacySubscription =
+        (!preferredPlan?.planVersionId
+          ? sortedLegacySubscriptions.find(
+              (subscription) =>
+                subscription.id === preferredPlan?.subscriptionId,
+            )
+          : null) ||
+        sortedLegacySubscriptions[0];
       const currentExpiry =
         multiSubscription?.endDate ||
         getLatestSubscriptionEndDate(response.subscriptions);
@@ -874,6 +927,17 @@ export default function Members() {
       );
       if (multiSubscription?.planId) {
         setRenewPlanId(multiSubscription.planId);
+      }
+      if (multiSubscription?.planVersionId) {
+        setRenewPlanVersionId(multiSubscription.planVersionId);
+      } else {
+        setRenewPlanId(
+          latestLegacySubscription?.planId ||
+            response.member.plans?.find(
+              (plan) => plan.subscriptionId === latestLegacySubscription?.id,
+            )?.planId ||
+            '',
+        );
       }
       setRenewCurrentExpiry(currentExpiry);
 
@@ -1084,9 +1148,13 @@ export default function Members() {
         return;
       }
       if (renewMultiSubscription) {
+        if (!renewPlanVersionId) {
+          throw new Error('Select an active plan before renewing.');
+        }
         await subscriptionsV2Api.renewSubscription(
           renewMultiSubscription.id,
           {
+            planVersionId: renewPlanVersionId,
             paymentStatus: renewPaymentStatus,
             paymentDate: renewPaymentDate,
             confirmOutstandingPayment,
@@ -1978,15 +2046,43 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                 <select
                   id="renewPlan"
                   className="h-9 w-full min-w-0 max-w-full rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
-                  value={renewPlanId}
-                  onChange={(event) => setRenewPlanId(event.target.value)}
-                  disabled={Boolean(renewMultiSubscription) || renewMode === 'edit'}
+                  value={
+                    renewMultiSubscription ? renewPlanVersionId : renewPlanId
+                  }
+                  onChange={(event) => {
+                    if (renewMultiSubscription) {
+                      setRenewPlanVersionId(event.target.value);
+                    } else {
+                      setRenewPlanId(event.target.value);
+                    }
+                  }}
+                  disabled={renewMode === 'edit'}
                   required
                 >
                   {renewMultiSubscription ? (
-                    <option value={renewMultiSubscription.planId}>
-                      {renewMultiSubscription.planName}
-                    </option>
+                    <>
+                      {!activeRenewalManagedPlans.some(
+                        (plan) =>
+                          plan.planVersionId === renewPlanVersionId,
+                      ) &&
+                        renewPlanVersionId && (
+                          <option value={renewPlanVersionId}>
+                            {renewCurrentPlan || renewMultiSubscription.planName}
+                          </option>
+                        )}
+                      {activeRenewalManagedPlans.length === 0 && (
+                        <option value="">No active plans available</option>
+                      )}
+                      {activeRenewalManagedPlans.map((plan) => (
+                        <option
+                          key={plan.planVersionId}
+                          value={plan.planVersionId}
+                        >
+                          {plan.name} - {formatMoney(plan.price, plan.currency)} /{' '}
+                          {plan.durationDays} days
+                        </option>
+                      ))}
+                    </>
                   ) : (
                     <>
                       {renewMode === 'edit' &&
@@ -2098,8 +2194,9 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                   (subscriptionIntent === 'new'
                     ? !renewMember || !selectedNewPlanVersion
                     : renewMode === 'create' &&
-                      !renewMultiSubscription &&
-                      plans.length === 0)
+                      (renewMultiSubscription
+                        ? !renewPlanVersionId
+                        : !renewPlanId || plans.length === 0))
                 }
               >
                 {saving
