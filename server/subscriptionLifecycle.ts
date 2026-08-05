@@ -233,8 +233,45 @@ export function registerSubscriptionLifecycleRoutes(app: Express, poolProvider: 
       }
       const renewalPaymentStatus = normalizePaymentStatus(requestedPaymentStatus);
 
-      const [pvRows]: any = await pool.query("SELECT duration_days FROM plan_versions WHERE id = ?", [sub.plan_version_id]);
-      const durationDays = pvRows.length > 0 ? Number(pvRows[0].duration_days || 30) : 30;
+      const requestedPlanVersionId =
+        normalizeString(req.body.planVersionId) || sub.plan_version_id;
+      const [pvRows]: any = await pool.query(
+        `SELECT id, plan_id, name, duration_days, price, currency,
+                max_members, status
+           FROM plan_versions
+          WHERE id = ?`,
+        [requestedPlanVersionId],
+      );
+      if (pvRows.length === 0) {
+        return res.status(404).json({ error: "Plan version not found" });
+      }
+      const renewalPlan = pvRows[0];
+      if (
+        requestedPlanVersionId !== sub.plan_version_id &&
+        renewalPlan.status !== "active"
+      ) {
+        return res.status(409).json({ error: "Selected plan is not active" });
+      }
+      const rawDurationDays = Number(renewalPlan.duration_days);
+      const durationDays =
+        Number.isFinite(rawDurationDays) && rawDurationDays > 0
+          ? rawDurationDays
+          : 30;
+      const [memberCountRows]: any = await pool.query(
+        `SELECT COUNT(*) AS member_count
+           FROM subscription_members
+          WHERE subscription_id = ?
+            AND status IN ('active', 'suspended')`,
+        [req.params.id],
+      );
+      const activeMemberCount = Number(memberCountRows[0]?.member_count || 0);
+      const maximumMembers = Math.max(1, Number(renewalPlan.max_members || 1));
+      if (activeMemberCount > maximumMembers) {
+        return res.status(409).json({
+          error: `Selected plan allows ${maximumMembers} member(s), but this subscription currently has ${activeMemberCount}`,
+          code: "PLAN_CAPACITY_EXCEEDED",
+        });
+      }
       const [beneficiaryRows]: any = await pool.query(
         `SELECT sm.member_id, sm.status, sm.joined_at, a.end_date
            FROM subscription_members sm
@@ -244,13 +281,24 @@ export function registerSubscriptionLifecycleRoutes(app: Express, poolProvider: 
         [req.params.id],
       );
 
-      const currentEnd = sub.end_date instanceof Date ? sub.end_date : new Date(sub.end_date);
       const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      const newStart = currentEnd >= today ? new Date(currentEnd) : today;
-      if (currentEnd >= today) newStart.setDate(newStart.getDate() + 1);
+      today.setUTCHours(0, 0, 0, 0);
+      const currentEndDate =
+        sub.end_date instanceof Date
+          ? Number.isNaN(sub.end_date.getTime())
+            ? null
+            : sub.end_date.toISOString().slice(0, 10)
+          : normalizeDate(String(sub.end_date || ""));
+      const currentEnd = currentEndDate
+        ? new Date(`${currentEndDate}T00:00:00.000Z`)
+        : null;
+      const renewAfterCurrentEnd = Boolean(currentEnd && currentEnd >= today);
+      const newStart = renewAfterCurrentEnd
+        ? new Date(currentEnd!.getTime())
+        : new Date(today.getTime());
+      if (renewAfterCurrentEnd) newStart.setUTCDate(newStart.getUTCDate() + 1);
       const newEnd = new Date(newStart);
-      newEnd.setDate(newEnd.getDate() + durationDays);
+      newEnd.setUTCDate(newEnd.getUTCDate() + durationDays);
       const newStartDate = newStart.toISOString().slice(0, 10);
       const newEndDate = newEnd.toISOString().slice(0, 10);
       const paymentDate =
@@ -276,6 +324,11 @@ export function registerSubscriptionLifecycleRoutes(app: Express, poolProvider: 
       await pool.query(
         `UPDATE subscriptions
             SET status = 'active',
+                plan_version_id = ?,
+                plan_id = ?,
+                price_paid = ?,
+                currency = ?,
+                max_members = ?,
                 start_date = ?,
                 end_date = ?,
                 payment_status = ?,
@@ -287,6 +340,11 @@ export function registerSubscriptionLifecycleRoutes(app: Express, poolProvider: 
                 updated_at = NOW()
           WHERE id = ?`,
         [
+          requestedPlanVersionId,
+          renewalPlan.plan_id,
+          Number(renewalPlan.price || 0),
+          renewalPlan.currency || sub.currency || "USD",
+          maximumMembers,
           newStartDate,
           newEndDate,
           renewalPaymentStatus,
@@ -299,18 +357,20 @@ export function registerSubscriptionLifecycleRoutes(app: Express, poolProvider: 
       await pool.query(
         `UPDATE affiliations a
            JOIN subscription_members sm ON sm.id = a.subscription_member_id
-            SET a.end_date = ?,
+            SET a.plan_version_id = ?,
+                a.end_date = ?,
                 a.data = JSON_REMOVE(COALESCE(a.data, JSON_OBJECT()), '$.expiryOverride'),
                 a.updated_at = NOW()
           WHERE a.subscription_id = ?
             AND a.status IN ('active', 'suspended')
             AND sm.status IN ('active', 'suspended')`,
-        [newEndDate, req.params.id],
+        [requestedPlanVersionId, newEndDate, req.params.id],
       );
       await pool.query(
         `UPDATE affiliations a
            JOIN subscription_members sm ON sm.id = a.subscription_member_id
             SET a.status = CASE WHEN sm.status = 'suspended' THEN 'suspended' ELSE 'active' END,
+                a.plan_version_id = ?,
                 a.start_date = ?,
                 a.end_date = ?,
                 a.data = JSON_REMOVE(COALESCE(a.data, JSON_OBJECT()), '$.expiryOverride'),
@@ -318,7 +378,7 @@ export function registerSubscriptionLifecycleRoutes(app: Express, poolProvider: 
           WHERE a.subscription_id = ?
             AND a.status = 'expired'
             AND sm.status IN ('active', 'suspended')`,
-        [newStartDate, newEndDate, req.params.id],
+        [requestedPlanVersionId, newStartDate, newEndDate, req.params.id],
       );
       await pool.query(
         `INSERT INTO subscription_member_history
@@ -332,6 +392,8 @@ export function registerSubscriptionLifecycleRoutes(app: Express, poolProvider: 
           JSON.stringify({
             previousStartDate: sub.start_date,
             previousEndDate: sub.end_date,
+            previousPlanVersionId: sub.plan_version_id,
+            newPlanVersionId: requestedPlanVersionId,
             newStartDate,
             newEndDate,
             renewalPaymentStatus,
@@ -347,7 +409,8 @@ export function registerSubscriptionLifecycleRoutes(app: Express, poolProvider: 
       );
       const invoiceId = createId("inv");
       const invoiceNumber = createInvoiceNumber();
-      const amount = Number(sub.price_paid || 0);
+      const amount = Number(renewalPlan.price || 0);
+      const renewalCurrency = renewalPlan.currency || sub.currency || "USD";
       await pool.query(
         `INSERT INTO invoices
           (id, invoice_number, member_id, subscription_id, status,
@@ -360,7 +423,7 @@ export function registerSubscriptionLifecycleRoutes(app: Express, poolProvider: 
           renewalPaymentStatus === "paid" ? "paid" : "issued",
           amount,
           amount,
-          sub.currency || "USD",
+          renewalCurrency,
           paymentDate,
           renewalPaymentStatus === "paid" ? new Date() : null,
           JSON.stringify({
@@ -389,7 +452,7 @@ export function registerSubscriptionLifecycleRoutes(app: Express, poolProvider: 
           amount,
           paymentDate,
           invoiceId,
-          `Subscription renewal ${invoiceNumber} - ${holderName} - ${sub.plan_name || "plan"}`,
+          `Subscription renewal ${invoiceNumber} - ${holderName} - ${renewalPlan.name || sub.plan_name || "plan"}`,
           renewalPaymentStatus === "paid" ? "posted" : "pending",
           req.user?.email || req.user?.uid || "system",
           renewalPaymentStatus === "paid"
@@ -401,7 +464,7 @@ export function registerSubscriptionLifecycleRoutes(app: Express, poolProvider: 
             invoiceId,
             invoiceNumber,
             paymentStatus: renewalPaymentStatus,
-            currency: sub.currency || "USD",
+            currency: renewalCurrency,
           }),
         ],
       );
@@ -435,6 +498,7 @@ export function registerSubscriptionLifecycleRoutes(app: Express, poolProvider: 
       res.json({
         ok: true,
         subscriptionId: req.params.id,
+        newPlanVersionId: requestedPlanVersionId,
         newStartDate,
         newEndDate,
         paymentStatus: renewalPaymentStatus,
