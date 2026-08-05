@@ -403,6 +403,7 @@ export const subscriptionsV2Api = {
   renewSubscription: (
     id: string,
     payload: {
+      planVersionId?: string;
       paymentStatus: 'paid' | 'pending';
       paymentDate: string;
       confirmOutstandingPayment?: boolean;
@@ -411,7 +412,7 @@ export const subscriptionsV2Api = {
       paymentDate: new Date().toISOString().slice(0, 10),
     },
   ) =>
-    apiRequest<{ ok: boolean; newStartDate: string; newEndDate: string; paymentStatus: string; paymentDate: string; invoiceNumber: string }>(`/api/v2/subscriptions/${encodeURIComponent(id)}/renew`, { method: 'POST', body: JSON.stringify(payload) }),
+    apiRequest<{ ok: boolean; newPlanVersionId: string; newStartDate: string; newEndDate: string; paymentStatus: string; paymentDate: string; invoiceNumber: string }>(`/api/v2/subscriptions/${encodeURIComponent(id)}/renew`, { method: 'POST', body: JSON.stringify(payload) }),
 
   changePlan: (id: string, planVersionId: string) =>
     apiRequest<{ ok: boolean; newPlanVersionId: string; newEndDate: string }>(`/api/v2/subscriptions/${encodeURIComponent(id)}/change-plan`, { method: 'POST', body: JSON.stringify({ planVersionId }) }),
