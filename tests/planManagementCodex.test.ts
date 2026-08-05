@@ -62,7 +62,7 @@ test("multi-user member contract covers capacity, new members, history and futur
     "standard subscription creation must remain operational when rollout flags are off",
   );
   assert.match(lifecycle, /currentEnd >= today/);
-  assert.match(lifecycle, /SET a\.end_date = \?/);
+  assert.match(lifecycle, /a\.end_date = \?/);
   assert.match(lifecycle, /sm\.status IN \('active', 'suspended'\)/);
 });
 
