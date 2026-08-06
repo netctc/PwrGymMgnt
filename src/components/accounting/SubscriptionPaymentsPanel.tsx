@@ -12,6 +12,10 @@ function currentDate() { return new Date().toISOString().slice(0, 10); }
 function money(value: string, currency: string) {
   return new Intl.NumberFormat(undefined, { style: "currency", currency }).format(Number(value));
 }
+function displayDate(value: string) {
+  const [year, month, day] = value.split("-");
+  return year && month && day ? `${day}/${month}/${year}` : value;
+}
 
 export default function SubscriptionPaymentsPanel() {
   const [invoices, setInvoices] = useState<AccountingInvoiceV2[]>([]);
@@ -59,7 +63,7 @@ export default function SubscriptionPaymentsPanel() {
     </CardContent></Card>
     <Card><CardHeader><CardTitle>Receivables</CardTitle><CardDescription>Total, collected and pending amounts derived from the payment ledger.</CardDescription></CardHeader><CardContent>
       <Table><TableHeader><TableRow><TableHead>Invoice</TableHead><TableHead>Member</TableHead><TableHead>Plan</TableHead><TableHead>Total</TableHead><TableHead>Paid</TableHead><TableHead>Pending</TableHead><TableHead>Due date</TableHead><TableHead>Status</TableHead></TableRow></TableHeader>
-        <TableBody>{invoices.map((invoice) => <TableRow key={invoice.id}><TableCell>{invoice.invoiceNumber}</TableCell><TableCell>{invoice.memberName}</TableCell><TableCell>{invoice.planName}</TableCell><TableCell>{money(invoice.total, invoice.currency)}</TableCell><TableCell>{money(invoice.netPaid, invoice.currency)}</TableCell><TableCell>{money(invoice.balanceDue, invoice.currency)}</TableCell><TableCell>{invoice.dueDate}</TableCell><TableCell>{invoice.status}</TableCell></TableRow>)}</TableBody>
+        <TableBody>{invoices.map((invoice) => <TableRow key={invoice.id}><TableCell>{invoice.invoiceNumber}</TableCell><TableCell>{invoice.memberName}</TableCell><TableCell>{invoice.planName}</TableCell><TableCell>{money(invoice.total, invoice.currency)}</TableCell><TableCell>{money(invoice.netPaid, invoice.currency)}</TableCell><TableCell>{money(invoice.balanceDue, invoice.currency)}</TableCell><TableCell>{displayDate(invoice.dueDate)}</TableCell><TableCell>{invoice.status}</TableCell></TableRow>)}</TableBody>
       </Table>
     </CardContent></Card>
   </div>;
