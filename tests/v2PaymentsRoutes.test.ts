@@ -80,3 +80,17 @@ test("confirmed payments expose an auditable downloadable receipt", () => {
   assert.match(route, /Content-Disposition/);
   assert.match(api, /downloadReceipt/);
 });
+
+test("payment reversals are immutable, bounded and mirrored in accounting", () => {
+  const route = read("server/paymentsV2.ts");
+  const panel = read("src/components/accounting/SubscriptionPaymentsPanel.tsx");
+  const api = read("src/lib/paymentsV2Api.ts");
+  const migration = read("sql/033_v2_payment_reversals.sql");
+  assert.match(route, /payments\/:id\/reversals/);
+  assert.match(route, /REVERSAL_EXCEEDS_PAYMENT/);
+  assert.match(route, /'Payment Reversal'/);
+  assert.match(route, /invoice_payment_reversed/);
+  assert.match(panel, /Reverse erroneous payment/);
+  assert.match(api, /reversePayment/);
+  assert.match(migration, /'reversal'/);
+});

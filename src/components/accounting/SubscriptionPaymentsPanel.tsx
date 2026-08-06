@@ -25,7 +25,7 @@ export default function SubscriptionPaymentsPanel() {
   const [reason, setReason] = useState("");
   const [paymentMethod, setPaymentMethod] = useState("");
   const [reference, setReference] = useState("");
-  const [adjustmentType, setAdjustmentType] = useState<"waive" | "refund">("waive");
+  const [adjustmentType, setAdjustmentType] = useState<"waive" | "refund" | "reversal">("waive");
   const [adjustmentAmount, setAdjustmentAmount] = useState("");
   const [adjustmentReason, setAdjustmentReason] = useState("");
   const [paymentEventId, setPaymentEventId] = useState("");
@@ -59,7 +59,7 @@ export default function SubscriptionPaymentsPanel() {
     if (!selected) return;
     if (!(Number(adjustmentAmount) > 0)) return toast.error("Adjustment amount must be greater than zero");
     if (!adjustmentReason.trim()) return toast.error("A reason is required");
-    if (adjustmentType === "refund" && !paymentEventId) return toast.error("Select the payment being refunded");
+    if (adjustmentType !== "waive" && !paymentEventId) return toast.error("Select the original payment");
     setLoading(true);
     try {
       if (adjustmentType === "waive") {
@@ -67,11 +67,16 @@ export default function SubscriptionPaymentsPanel() {
           amount: adjustmentAmount, effectiveDate, reason: adjustmentReason,
         });
         toast.success(`Balance waived. Pending: ${money(result.summary.balanceDue, selected.currency)}`);
-      } else {
+      } else if (adjustmentType === "refund") {
         const result = await paymentsV2Api.refundPayment(paymentEventId, {
           amount: adjustmentAmount, effectiveDate, reason: adjustmentReason,
         });
         toast.success(result.entitlementCancelled ? "Full refund recorded and entitlement cancelled" : "Partial refund recorded");
+      } else {
+        const result = await paymentsV2Api.reversePayment(paymentEventId, {
+          amount: adjustmentAmount, effectiveDate, reason: adjustmentReason,
+        });
+        toast.success(`Payment reversed. Pending: ${money(result.summary.balanceDue, selected.currency)}`);
       }
       setAdjustmentAmount(""); setAdjustmentReason(""); setPaymentEventId("");
       await load();
@@ -96,23 +101,23 @@ export default function SubscriptionPaymentsPanel() {
         <div className="flex items-end"><Button type="submit" disabled={!selected || loading}>{loading ? "Saving…" : "Record payment"}</Button></div>
       </form>
     </CardContent></Card>
-    <Card><CardHeader><CardTitle>Waivers and refunds</CardTitle>
-      <CardDescription>Waivers are non-cash adjustments. Refunds create an accounting expense; a full refund cancels the subscription entitlement.</CardDescription>
+    <Card><CardHeader><CardTitle>Waivers and refunds / reversals</CardTitle>
+      <CardDescription>Reversals correct erroneous entries without deleting history. Refunds return money and may cancel entitlement.</CardDescription>
     </CardHeader><CardContent>
       <form className="grid gap-4 md:grid-cols-6" onSubmit={submitAdjustment}>
-        <div><Label>Operation</Label><select className="h-10 w-full rounded-md border bg-background px-3 text-sm" value={adjustmentType} onChange={(e) => { setAdjustmentType(e.target.value as "waive" | "refund"); setPaymentEventId(""); }}>
-          <option value="waive">Waive balance</option><option value="refund">Refund payment</option>
+        <div><Label>Operation</Label><select className="h-10 w-full rounded-md border bg-background px-3 text-sm" value={adjustmentType} onChange={(e) => { setAdjustmentType(e.target.value as "waive" | "refund" | "reversal"); setPaymentEventId(""); }}>
+          <option value="waive">Waive balance</option><option value="refund">Refund payment</option><option value="reversal">Reverse erroneous payment</option>
         </select></div>
         <div className="md:col-span-2"><Label>Invoice / member</Label><select className="h-10 w-full rounded-md border bg-background px-3 text-sm" value={selectedId} onChange={(e) => { setSelectedId(e.target.value); setPaymentEventId(""); }} required>
           <option value="">Select invoice</option>{invoices.map((invoice) => <option key={invoice.id} value={invoice.id}>{invoice.invoiceNumber} · {invoice.memberName}</option>)}
         </select></div>
-        {adjustmentType === "refund" && <div className="md:col-span-2"><Label>Payment to refund</Label><select className="h-10 w-full rounded-md border bg-background px-3 text-sm" value={paymentEventId} onChange={(e) => setPaymentEventId(e.target.value)} required>
+        {adjustmentType !== "waive" && <div className="md:col-span-2"><Label>Original payment</Label><select className="h-10 w-full rounded-md border bg-background px-3 text-sm" value={paymentEventId} onChange={(e) => setPaymentEventId(e.target.value)} required>
           <option value="">Select payment</option>{selected?.events.filter((item) => item.type === "payment").map((item) => <option key={item.id} value={item.id}>{displayDate(item.effectiveDate)} · {money(item.amount, selected.currency)}</option>)}
         </select></div>}
         <div><Label>Amount</Label><Input type="number" min="0.01" step="0.01" max={adjustmentType === "waive" ? selected?.balanceDue || undefined : undefined} value={adjustmentAmount} onChange={(e) => setAdjustmentAmount(e.target.value)} required /></div>
         <div><Label>Effective date</Label><DateInput value={effectiveDate} onChange={setEffectiveDate} required /></div>
         <div className="md:col-span-5"><Label>Reason</Label><Input value={adjustmentReason} onChange={(e) => setAdjustmentReason(e.target.value)} required /></div>
-        <div className="flex items-end"><Button type="submit" disabled={!selected || loading}>{loading ? "Saving…" : adjustmentType === "waive" ? "Waive balance" : "Record refund"}</Button></div>
+        <div className="flex items-end"><Button type="submit" disabled={!selected || loading}>{loading ? "Saving…" : adjustmentType === "waive" ? "Waive balance" : adjustmentType === "refund" ? "Record refund" : "Reverse payment"}</Button></div>
       </form>
     </CardContent></Card>
     <Card><CardHeader><CardTitle>Receivables</CardTitle><CardDescription>Total, collected and pending amounts derived from the payment ledger.</CardDescription></CardHeader><CardContent>

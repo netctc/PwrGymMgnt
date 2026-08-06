@@ -3,6 +3,7 @@ import type { Pool, PoolConnection } from "mysql2/promise";
 import { randomUUID } from "node:crypto";
 import { requirePermission, type AuthenticatedRequest } from "./rbac";
 import { deriveInvoicePaymentSummary, type PaymentEvent } from "./domain/v2/paymentLedger";
+import { moneyToMinor } from "./domain/v2/money";
 
 type PoolProvider = () => Pool | null;
 
@@ -407,6 +408,103 @@ export function registerPaymentsV2Routes(app: Express, poolProvider: PoolProvide
         [JSON.stringify({ invoiceId: invoice.invoice_id, subscriptionId: invoice.subscription_v2_id, paymentEventId: invoice.id, refundEventId: eventId, amount, reason, status: summary.status }), actor]);
       await connection.commit();
       res.status(201).json({ refundEventId: eventId, summary, entitlementCancelled: summary.status === "refunded", idempotentReplay: false });
+    } catch (error) { if (connection) await connection.rollback(); next(error); }
+    finally { connection?.release(); }
+  });
+
+  app.post("/api/v2/accounting/payments/:id/reversals", requirePermission("finance.write"), async (req: AuthenticatedRequest, res, next) => {
+    let connection: PoolConnection | null = null;
+    try {
+      const idempotencyKey = String(req.get("Idempotency-Key") || req.body.idempotencyKey || "").trim();
+      const amount = String(req.body.amount ?? "").trim();
+      const reason = String(req.body.reason || "").trim();
+      const effectiveDate = dateOnly(req.body.effectiveDate) || today();
+      if (!idempotencyKey) return res.status(400).json({ error: "Idempotency-Key is required", code: "PAYMENT_IDEMPOTENCY_REQUIRED" });
+      if (!reason) return res.status(400).json({ error: "Reversal reason is required", code: "REVERSAL_REASON_REQUIRED" });
+      if (effectiveDate > today()) return res.status(400).json({ error: "Reversal date cannot be in the future", code: "REVERSAL_DATE_FUTURE" });
+
+      connection = await requirePool(poolProvider).getConnection();
+      await connection.beginTransaction();
+      const [paymentRows]: any = await connection.query(
+        `SELECT pe.id, pe.invoice_id, pe.amount AS payment_amount,
+                i.invoice_number, i.subscription_v2_id, i.total, i.currency, i.due_date
+           FROM invoice_payment_events_v2 pe
+           JOIN invoices i ON i.id = pe.invoice_id
+          WHERE pe.id = ? AND pe.event_type = 'payment'
+            AND i.subscription_v2_id IS NOT NULL
+          LIMIT 1 FOR UPDATE`,
+        [req.params.id],
+      );
+      if (!paymentRows.length) { await connection.rollback(); return res.status(404).json({ error: "V2 payment not found" }); }
+      const invoice = paymentRows[0];
+      const [replayRows]: any = await connection.query(
+        `SELECT id, invoice_id FROM invoice_payment_events_v2 WHERE idempotency_key = ? LIMIT 1`,
+        [idempotencyKey],
+      );
+      if (replayRows.length) {
+        if (replayRows[0].invoice_id !== invoice.invoice_id) { await connection.rollback(); return res.status(409).json({ error: "Idempotency key belongs to another invoice", code: "PAYMENT_IDEMPOTENCY_CONFLICT" }); }
+        const summary = summarize({ ...invoice, id: invoice.invoice_id }, await loadEvents(connection, invoice.invoice_id, true));
+        await connection.commit();
+        return res.json({ reversalEventId: replayRows[0].id, summary, idempotentReplay: true });
+      }
+      const events = await loadEvents(connection, invoice.invoice_id, true);
+      const alreadyAdjusted = events
+        .filter((event) => {
+          if (event.event_type !== "refund" && event.event_type !== "reversal") return false;
+          const metadata = typeof event.data === "string" ? JSON.parse(event.data || "{}") : (event.data || {});
+          return metadata.refundedPaymentEventId === invoice.id || metadata.reversedPaymentEventId === invoice.id;
+        })
+        .reduce((sum, event) => sum + moneyToMinor(event.amount), 0n);
+      let reversalAmount: bigint;
+      try { reversalAmount = moneyToMinor(amount); }
+      catch (error: any) { await connection.rollback(); return res.status(400).json({ error: error.message, code: error.message }); }
+      if (reversalAmount <= 0n || reversalAmount + alreadyAdjusted > moneyToMinor(invoice.payment_amount)) {
+        await connection.rollback();
+        return res.status(400).json({ error: "Reversal exceeds the remaining original payment", code: "REVERSAL_EXCEEDS_PAYMENT" });
+      }
+      let summary;
+      try {
+        summary = deriveInvoicePaymentSummary({
+          total: String(invoice.total), dueDate: dateOnly(invoice.due_date) || today(), today: today(),
+          events: [...events.map((event): PaymentEvent => ({ type: event.event_type, amount: String(event.amount) })), { type: "reversal", amount }],
+        });
+      } catch (error: any) { await connection.rollback(); return res.status(400).json({ error: error.message, code: error.message }); }
+
+      const eventId = id("reverse");
+      const actor = req.user?.email || req.user?.uid || "system";
+      await connection.query(
+        `INSERT INTO invoice_payment_events_v2
+          (id, invoice_id, event_type, amount, currency, effective_date, reason, performed_by, idempotency_key, data)
+         VALUES (?, ?, 'reversal', ?, ?, ?, ?, ?, ?, ?)`,
+        [eventId, invoice.invoice_id, amount, invoice.currency, effectiveDate, reason, actor, idempotencyKey,
+          JSON.stringify({ source: "accounting", subscriptionId: invoice.subscription_v2_id, reversedPaymentEventId: invoice.id })],
+      );
+      await connection.query(
+        `UPDATE invoices SET status = ?, paid_at = CASE WHEN ? IN ('paid', 'waived') THEN paid_at ELSE NULL END,
+          data = JSON_SET(COALESCE(data, JSON_OBJECT()), '$.paymentStatus', ?, '$.amountPaid', ?, '$.amountPending', ?, '$.amountReversed', ?),
+          updated_at = NOW() WHERE id = ?`,
+        [summary.status, summary.status, summary.status, summary.netPaid, summary.balanceDue, summary.reversed, invoice.invoice_id],
+      );
+      await connection.query(
+        `UPDATE subscriptions SET payment_status = ?,
+          data = JSON_SET(COALESCE(data, JSON_OBJECT()), '$.amountPaid', ?, '$.amountPending', ?, '$.amountReversed', ?, '$.lastPaymentReversalDate', ?),
+          version = version + 1, updated_at = NOW() WHERE id = ?`,
+        [summary.status, summary.netPaid, summary.balanceDue, summary.reversed, effectiveDate, invoice.subscription_v2_id],
+      );
+      await connection.query(
+        `INSERT INTO finance_transactions
+          (id, type, category, amount, transaction_date, source, reference_type, reference_id, description, status, created_by, approved_by, data)
+         VALUES (?, 'expense', 'Payment Reversal', ?, ?, 'accounting', 'invoice_v2_payment_reversal', ?, ?, 'posted', ?, ?, ?)`,
+        [id("ftx"), amount, effectiveDate, eventId, `Reversal ${invoice.invoice_number}`, actor, actor,
+          JSON.stringify({ invoiceId: invoice.invoice_id, subscriptionId: invoice.subscription_v2_id, reversedPaymentEventId: invoice.id, reason })],
+      );
+      await connection.query(
+        `INSERT INTO audit_logs (action, details, performed_by) VALUES ('invoice_payment_reversed', ?, ?)`,
+        [JSON.stringify({ invoiceId: invoice.invoice_id, subscriptionId: invoice.subscription_v2_id, paymentEventId: invoice.id,
+          reversalEventId: eventId, amount, reason, amountPending: summary.balanceDue, status: summary.status }), actor],
+      );
+      await connection.commit();
+      res.status(201).json({ reversalEventId: eventId, summary, idempotentReplay: false });
     } catch (error) { if (connection) await connection.rollback(); next(error); }
     finally { connection?.release(); }
   });

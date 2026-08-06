@@ -1,6 +1,6 @@
 export type PaymentEventV2 = {
   id: string;
-  type: "payment" | "waive" | "refund";
+  type: "payment" | "waive" | "refund" | "reversal";
   amount: string;
   effectiveDate: string;
   reason: string;
@@ -60,6 +60,11 @@ export const paymentsV2Api = {
   refundPayment: (paymentEventId: string, input: { amount: string; effectiveDate: string; reason: string }) =>
     request<{ summary: Pick<AccountingInvoiceV2, "total" | "netPaid" | "balanceDue" | "status">; entitlementCancelled: boolean }>(
       `/api/v2/accounting/payments/${encodeURIComponent(paymentEventId)}/refunds`,
+      { method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify(input) },
+    ),
+  reversePayment: (paymentEventId: string, input: { amount: string; effectiveDate: string; reason: string }) =>
+    request<{ summary: Pick<AccountingInvoiceV2, "total" | "netPaid" | "balanceDue" | "status"> }>(
+      `/api/v2/accounting/payments/${encodeURIComponent(paymentEventId)}/reversals`,
       { method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify(input) },
     ),
 };

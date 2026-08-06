@@ -92,6 +92,7 @@ export class EntitlementService {
            SELECT invoice_id,
                   SUM(CASE WHEN event_type = 'payment' THEN amount
                            WHEN event_type = 'refund' THEN -amount
+                           WHEN event_type = 'reversal' THEN -amount
                            WHEN event_type = 'waive' THEN amount ELSE 0 END) AS net_paid
              FROM invoice_payment_events_v2
             GROUP BY invoice_id

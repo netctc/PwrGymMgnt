@@ -55,3 +55,15 @@ test("combines partial waivers and refunds without creating fictitious payments"
   assert.equal(partialRefund.balanceDue, "25.00");
   assert.equal(partialRefund.status, "partial");
 });
+
+test("reversals restore the prior balance without classifying the correction as a refund", () => {
+  const reversed = deriveInvoicePaymentSummary({
+    total: "100.00", dueDate: "2026-08-10", today: "2026-08-10",
+    events: [{ type: "payment", amount: "100.00" }, { type: "reversal", amount: "40.00" }],
+  });
+  assert.equal(reversed.netPaid, "60.00");
+  assert.equal(reversed.reversed, "40.00");
+  assert.equal(reversed.refunded, "0.00");
+  assert.equal(reversed.balanceDue, "40.00");
+  assert.equal(reversed.status, "partial");
+});
