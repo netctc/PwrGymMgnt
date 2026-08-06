@@ -20,6 +20,13 @@ import {
   normalizePaymentStatus,
 } from "./subscriptionPaymentRules";
 import { upsertTrainerPlanCommission } from "./trainerCommissions";
+import {
+  buildContractTerms,
+  claimContractCreation,
+  completeContractCreation,
+  createInitialContractPeriod,
+  hashContractRequest,
+} from "./domain/v2/contractCreation";
 
 type PoolProvider = () => Pool | null;
 type AuthenticatedRequest = Request & { user?: { uid?: string; email?: string; role?: string } };
@@ -415,38 +422,69 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
       const pv = pvRows[0];
       const confirmedOutstandingPayment = req.body.confirmOutstandingPayment === true;
 
-      const startDate = normalizeDate(req.body.startDate) || new Date().toISOString().slice(0, 10);
-      const endDate = normalizeDate(req.body.endDate) || addDays(startDate, Number(pv.duration_days));
       const rawPaymentStatus = normalizeString(req.body.paymentStatus);
       if (!["paid", "pending"].includes(rawPaymentStatus)) {
         return res.status(400).json({ error: "paymentStatus must be paid or pending" });
       }
-      if (endDate < startDate) {
-        return res.status(400).json({ error: "endDate cannot be before startDate" });
-      }
       const paymentStatus = normalizePaymentStatus(rawPaymentStatus);
       const today = new Date().toISOString().slice(0, 10);
-      const paymentDate =
-        paymentStatus === "paid" ? today : normalizeDate(req.body.paymentDate);
-      if (!paymentDate) {
+      const requestedStartDate =
+        normalizeDate(req.body.startDate) || today;
+      const requestedPaymentDate =
+        paymentStatus === "paid"
+          ? requestedStartDate
+          : normalizeDate(req.body.paymentDate);
+      if (!requestedPaymentDate) {
         return res.status(400).json({
-          error: "An estimated payment date is required for pending payments",
+          error: "An expected payment date is required for pending payments",
         });
       }
-      if (paymentStatus === "pending" && paymentDate < today) {
+      if (paymentStatus === "pending" && requestedPaymentDate < today) {
         return res.status(400).json({
-          error: "The estimated payment date cannot be in the past",
+          error: "The expected payment date cannot be in the past",
         });
       }
-      if (paymentStatus === "pending" && paymentDate > endDate) {
+      let terms;
+      try {
+        terms = buildContractTerms({
+          startDate: requestedStartDate,
+          endDate: normalizeDate(req.body.endDate) || undefined,
+          durationDays: pv.duration_days,
+          expectedPaymentDate: requestedPaymentDate,
+          price: pv.price,
+        });
+      } catch (error: any) {
         return res.status(400).json({
-          error: "The estimated payment date cannot be after the subscription end date",
+          error: error?.message || "Invalid contract terms",
+          code: error?.message || "INVALID_CONTRACT_TERMS",
         });
       }
+      const {
+        startDate,
+        endDate,
+        expectedPaymentDate: paymentDate,
+        price,
+      } = terms;
 
       const id = createId("sub");
       connection = await pool.getConnection();
       await connection.beginTransaction();
+      const idempotencyKey = normalizeString(req.get("Idempotency-Key"));
+      const correlationId = idempotencyKey || createId("cor");
+      if (idempotencyKey) {
+        const claimed = await claimContractCreation(
+          connection,
+          idempotencyKey,
+          hashContractRequest(req.body),
+        );
+        if (!claimed) {
+          await connection.rollback();
+          return res.status(409).json({
+            error: "This contract creation request was already processed",
+            code: "IDEMPOTENT_REQUEST_ALREADY_PROCESSED",
+          });
+        }
+      }
       const outstandingPayment = await findOutstandingSubscriptionPayment(
         connection,
         holderMemberId,
@@ -498,8 +536,15 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
       await connection.query(
         `INSERT INTO subscriptions (id, plan_id, plan_version_id, holder_member_id, status, start_date, end_date, auto_renew, price_paid, currency, payment_status, max_members)
          VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)`,
-        [id, pv.plan_id, planVersionId, holderMemberId, startDate, endDate, pv.auto_renew, Number(pv.price), pv.currency, paymentStatus, Number(pv.max_members)],
+        [id, pv.plan_id, planVersionId, holderMemberId, startDate, endDate, pv.auto_renew, price, pv.currency, paymentStatus, Number(pv.max_members)],
       );
+
+      const periodId = await createInitialContractPeriod(connection, {
+        subscriptionId: id,
+        terms,
+        actorId: req.user?.email || req.user?.uid || null,
+        correlationId,
+      });
 
       // Create subscription_member for holder
       const smId = createId("sm");
@@ -558,8 +603,8 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
           invoiceNumber,
           holderMemberId,
           paymentStatus === "paid" ? "paid" : "issued",
-          Number(pv.price || 0),
-          Number(pv.price || 0),
+          price,
+          price,
           pv.currency || "USD",
           paymentDate,
           paymentStatus === "paid" ? new Date() : null,
@@ -591,7 +636,7 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
                  'subscription', 'subscription_v2_payment', ?, ?, ?, ?, ?, ?)`,
         [
           createId("ftx"),
-          Number(pv.price || 0),
+          price,
           paymentDate,
           id,
           `Subscription payment ${invoiceNumber} - member ${holderMemberId} - ${pv.name || "plan"}`,
@@ -645,11 +690,20 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
           ],
         );
       }
+      if (idempotencyKey) {
+        await completeContractCreation(connection, idempotencyKey, 201, {
+          subscriptionId: id,
+          affiliationId: affId,
+          periodId,
+          invoiceNumber,
+        });
+      }
       await connection.commit();
       const [rows]: any = await pool.query("SELECT s.*, pv.name AS plan_name, pv.plan_type FROM subscriptions s LEFT JOIN plan_versions pv ON pv.id = s.plan_version_id WHERE s.id = ?", [id]);
       res.status(201).json({
         subscription: mapSubscription(rows[0]),
         affiliationId: affId,
+        periodId,
         invoiceNumber,
         paymentDate,
       });
