@@ -37,6 +37,7 @@ import {
   FileText,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import { formatDisplayDate as formatDate } from '../lib/businessDate';
 import { usePersistentState } from '../hooks/usePersistentState';
 import { useLocalization } from '../contexts/LocalizationContext';
 import {
@@ -104,15 +105,6 @@ function toMemberForm(member?: MembershipMember): MemberForm {
   };
 }
 
-function formatDate(value?: string | null) {
-  if (!value) return '—';
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return String(value).slice(0, 10);
-  const day = String(parsed.getDate()).padStart(2, '0');
-  const month = String(parsed.getMonth() + 1).padStart(2, '0');
-  const year = parsed.getFullYear();
-  return `${day}/${month}/${year}`;
-}
 
 function addDaysToDate(date: string, days: number) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(days)) return '';
