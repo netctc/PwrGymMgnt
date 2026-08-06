@@ -13,13 +13,14 @@ import { autoTable } from "jspdf-autotable";
 import { requirePermission } from "./rbac";
 import { isFeatureEnabled } from "./featureFlags";
 import { getSessionBalanceContext, mapBalance } from "./sessionLedger";
-import { createInitialCycle } from "./subscriptionCycles";
+import { allocateAffiliationInActiveCycle, createInitialCycle } from "./subscriptionCycles";
 import {
   assertNoOutstandingSubscriptionPayment,
   findOutstandingSubscriptionPayment,
   normalizePaymentStatus,
 } from "./subscriptionPaymentRules";
 import { upsertTrainerPlanCommission } from "./trainerCommissions";
+import { appendDomainAudit } from "./domain/v2/auditIdempotency";
 import {
   buildContractMembers,
   buildContractTerms,
@@ -998,6 +999,7 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
   });
 
   app.post("/api/v2/subscriptions/:id/members", requirePermission("membership.write"), async (req: AuthenticatedRequest, res, next) => {
+    let connection: any = null;
     try {
       const pool = requirePool(poolProvider);
       if (!await requireFeature(pool, "ENABLE_MULTI_USER_PLANS", res)) return;
@@ -1005,14 +1007,22 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
       const subscriptionId = req.params.id;
       const memberId = normalizeString(req.body.memberId);
       if (!memberId) return res.status(400).json({ error: "memberId is required" });
-      await assertNoOutstandingSubscriptionPayment(pool, memberId);
 
-      // Verify subscription exists and check capacity
-      const [subRows]: any = await pool.query(
-        "SELECT * FROM subscriptions WHERE id = ? AND status = 'active' AND end_date >= CURDATE()",
+      connection = await pool.getConnection();
+      await connection.beginTransaction();
+
+      const [subRows]: any = await connection.query(
+        `SELECT s.id, s.plan_version_id, s.start_date, s.end_date, s.max_members,
+                pv.plan_id, pv.sessions_unlimited, pv.sessions_per_cycle,
+                pv.distribution_model, pv.data AS plan_data
+           FROM subscriptions s
+           JOIN plan_versions pv ON pv.id = s.plan_version_id
+          WHERE s.id = ? AND s.status = 'active' AND s.end_date >= CURDATE()
+          LIMIT 1 FOR UPDATE`,
         [subscriptionId],
       );
-      if (subRows.length === 0) {
+      if (!subRows.length) {
+        await connection.rollback();
         return res.status(409).json({
           error: "Beneficiaries cannot be modified after the multi-user subscription has expired",
           code: "SUBSCRIPTION_EXPIRED",
@@ -1020,81 +1030,271 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
       }
       const sub = subRows[0];
 
-      const [countRows]: any = await pool.query(
-        "SELECT COUNT(*) AS c FROM subscription_members WHERE subscription_id = ? AND status IN ('active', 'suspended')",
-        [subscriptionId],
+      const [memberRows]: any = await connection.query(
+        "SELECT id, status FROM members WHERE id = ? LIMIT 1 FOR UPDATE",
+        [memberId],
       );
-      if (Number(countRows[0]?.c || 0) >= Number(sub.max_members)) {
-        return res.status(409).json({ error: "Subscription member limit reached", code: "CAPACITY_LIMIT_REACHED" });
+      if (!memberRows.length) {
+        await connection.rollback();
+        return res.status(404).json({ error: "Member not found", code: "MEMBER_NOT_FOUND" });
+      }
+      if (String(memberRows[0].status || "").trim().toLowerCase() !== "active") {
+        await connection.rollback();
+        return res.status(409).json({ error: "Only active members can be added", code: "MEMBER_NOT_ACTIVE" });
       }
 
-      // Check not already a member
-      const [existing]: any = await pool.query(
-        "SELECT id FROM subscription_members WHERE subscription_id = ? AND member_id = ? AND status IN ('active', 'suspended') LIMIT 1",
+      await assertNoOutstandingSubscriptionPayment(connection, memberId);
+
+      const [activeMemberRows]: any = await connection.query(
+        `SELECT id FROM subscription_members
+          WHERE subscription_id = ? AND status IN ('active', 'suspended')
+          FOR UPDATE`,
+        [subscriptionId],
+      );
+      if (activeMemberRows.length >= Number(sub.max_members)) {
+        await connection.rollback();
+        return res.status(409).json({
+          error: "Subscription member limit reached",
+          code: "CAPACITY_LIMIT_REACHED",
+        });
+      }
+
+      const [existingRows]: any = await connection.query(
+        `SELECT id FROM subscription_members
+          WHERE subscription_id = ? AND member_id = ?
+            AND status IN ('active', 'suspended')
+          LIMIT 1 FOR UPDATE`,
         [subscriptionId, memberId],
       );
-      if (existing.length > 0) return res.status(409).json({ error: "Member is already in this subscription" });
+      if (existingRows.length) {
+        await connection.rollback();
+        return res.status(409).json({
+          error: "Member is already in this subscription",
+          code: "MEMBER_ALREADY_ASSIGNED",
+        });
+      }
+
+      const [duplicatePlanRows]: any = await connection.query(
+        `SELECT a.id
+           FROM affiliations a
+           JOIN subscriptions s ON s.id = a.subscription_id
+          WHERE a.member_id = ?
+            AND s.plan_id = ?
+            AND a.status IN ('active', 'suspended', 'frozen')
+            AND s.status IN ('active', 'suspended', 'frozen')
+            AND a.end_date >= CURDATE()
+            AND s.end_date >= CURDATE()
+          LIMIT 1 FOR UPDATE`,
+        [memberId, sub.plan_id],
+      );
+      if (duplicatePlanRows.length) {
+        await connection.rollback();
+        return res.status(409).json({
+          error: "DUPLICATE_ACTIVE_PLAN",
+          code: "DUPLICATE_ACTIVE_PLAN",
+        });
+      }
 
       const smId = createId("sm");
-      const role = normalizeString(req.body.role) || "beneficiary";
-      await pool.query(
-        "INSERT INTO subscription_members (id, subscription_id, member_id, role, status, joined_at, invited_by) VALUES (?, ?, ?, ?, 'active', NOW(), ?)",
-        [smId, subscriptionId, memberId, role, req.user?.email || null],
-      );
-
-      // Create affiliation for the new member
       const affId = createId("aff");
-      const startDate = new Date().toISOString().slice(0, 10);
-      const endDate = sub.end_date instanceof Date ? sub.end_date.toISOString().slice(0, 10) : String(sub.end_date).slice(0, 10);
-      await pool.query(
-        `INSERT INTO affiliations (id, member_id, subscription_id, subscription_member_id, plan_version_id, status, role, is_primary, start_date, end_date, consumption_priority)
-         VALUES (?, ?, ?, ?, ?, 'active', ?, 0, ?, ?, 0)`,
-        [affId, memberId, subscriptionId, smId, sub.plan_version_id, role, startDate, endDate],
+      const role = "beneficiary";
+      const today = new Date().toISOString().slice(0, 10);
+      const subscriptionStart = String(sub.start_date).slice(0, 10);
+      const startDate = subscriptionStart > today ? subscriptionStart : today;
+      const endDate = String(sub.end_date).slice(0, 10);
+      const [primaryRows]: any = await connection.query(
+        `SELECT id FROM affiliations
+          WHERE member_id = ?
+            AND status IN ('active', 'suspended', 'frozen')
+            AND end_date >= CURDATE()
+          LIMIT 1 FOR UPDATE`,
+        [memberId],
       );
 
-      res.status(201).json({ subscriptionMember: { id: smId, memberId, role, status: "active" }, affiliationId: affId });
-    } catch (error) { next(error); }
+      await connection.query(
+        `INSERT INTO subscription_members
+          (id, subscription_id, member_id, role, status, joined_at, invited_by)
+         VALUES (?, ?, ?, ?, 'active', NOW(), ?)`,
+        [smId, subscriptionId, memberId, role, req.user?.email || req.user?.uid || null],
+      );
+      await connection.query(
+        `INSERT INTO affiliations
+          (id, member_id, subscription_id, subscription_member_id,
+           plan_version_id, status, role, is_primary, start_date, end_date,
+           consumption_priority)
+         VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, 0)`,
+        [
+          affId,
+          memberId,
+          subscriptionId,
+          smId,
+          sub.plan_version_id,
+          role,
+          primaryRows.length ? 0 : 1,
+          startDate,
+          endDate,
+        ],
+      );
+
+      let allocatedSessions: number | null = null;
+      if (!Boolean(sub.sessions_unlimited)) {
+        const [cycleRows]: any = await connection.query(
+          `SELECT id FROM subscription_cycles
+            WHERE subscription_id = ? AND status = 'active'
+            ORDER BY cycle_number DESC LIMIT 1 FOR UPDATE`,
+          [subscriptionId],
+        );
+        if (!cycleRows.length) {
+          throw Object.assign(new Error("ACTIVE_CYCLE_REQUIRED"), {
+            status: 409,
+            code: "ACTIVE_CYCLE_REQUIRED",
+          });
+        }
+        const planData = typeof sub.plan_data === "string"
+          ? JSON.parse(sub.plan_data || "{}")
+          : (sub.plan_data || {});
+        allocatedSessions = await allocateAffiliationInActiveCycle(connection, {
+          cycleId: cycleRows[0].id,
+          subscriptionId,
+          affiliationId: affId,
+          distributionModel: sub.distribution_model || "individual",
+          sessionsPerCycle: Number(sub.sessions_per_cycle || 0),
+          customQuantity: Number(
+            planData.beneficiarySessionsPerCycle || sub.sessions_per_cycle || 0,
+          ),
+          performedBy: req.user?.email || req.user?.uid || "system",
+        });
+      }
+
+      await appendDomainAudit(connection, {
+        entityType: "subscription",
+        entityId: subscriptionId,
+        eventType: "subscription_beneficiary_added",
+        actorId: req.user?.email || req.user?.uid || null,
+        correlationId: createId("cor"),
+        after: { memberId, subscriptionMemberId: smId, affiliationId: affId, allocatedSessions },
+      });
+      await connection.commit();
+      res.status(201).json({
+        subscriptionMember: { id: smId, memberId, role, status: "active" },
+        affiliationId: affId,
+        allocatedSessions,
+      });
+    } catch (error) {
+      if (connection) await connection.rollback();
+      next(error);
+    } finally {
+      if (connection) connection.release();
+    }
   });
 
   app.delete("/api/v2/subscriptions/:subId/members/:memberId", requirePermission("membership.write"), async (req: AuthenticatedRequest, res, next) => {
+    let connection: any = null;
     try {
       const pool = requirePool(poolProvider);
       if (!await requireFeature(pool, "ENABLE_MULTI_USER_PLANS", res)) return;
 
       const { subId, memberId } = req.params;
-      const [subscriptionRows]: any = await pool.query(
-        "SELECT id FROM subscriptions WHERE id = ? AND status = 'active' AND end_date >= CURDATE()",
+      connection = await pool.getConnection();
+      await connection.beginTransaction();
+
+      const [subscriptionRows]: any = await connection.query(
+        `SELECT s.id
+           FROM subscriptions s
+          WHERE s.id = ? AND s.status = 'active' AND s.end_date >= CURDATE()
+          LIMIT 1 FOR UPDATE`,
         [subId],
       );
-      if (subscriptionRows.length === 0) {
+      if (!subscriptionRows.length) {
+        await connection.rollback();
         return res.status(409).json({
           error: "Beneficiaries cannot be modified after the multi-user subscription has expired",
           code: "SUBSCRIPTION_EXPIRED",
         });
       }
 
-      // Cannot remove the holder
-      const [smRows]: any = await pool.query(
-        "SELECT id, role FROM subscription_members WHERE subscription_id = ? AND member_id = ? AND status IN ('active', 'suspended') LIMIT 1",
+      const [smRows]: any = await connection.query(
+        `SELECT id, role, status
+           FROM subscription_members
+          WHERE subscription_id = ? AND member_id = ?
+            AND status IN ('active', 'suspended')
+          LIMIT 1 FOR UPDATE`,
         [subId, memberId],
       );
-      if (smRows.length === 0) return res.status(404).json({ error: "Member not found in subscription" });
-      if (smRows[0].role === "holder") return res.status(400).json({ error: "Cannot remove the subscription holder" });
+      if (!smRows.length) {
+        await connection.rollback();
+        return res.status(404).json({ error: "Member not found in subscription" });
+      }
+      if (smRows[0].role === "holder") {
+        await connection.rollback();
+        return res.status(400).json({
+          error: "Cannot remove the subscription holder",
+          code: "SUBSCRIPTION_HOLDER_PROTECTED",
+        });
+      }
 
-      // Deactivate subscription_member
-      await pool.query(
+      const [affiliationRows]: any = await connection.query(
+        `SELECT id, status, is_primary
+           FROM affiliations
+          WHERE subscription_id = ? AND member_id = ?
+            AND status IN ('active', 'suspended', 'frozen')
+          FOR UPDATE`,
+        [subId, memberId],
+      );
+
+      await connection.query(
         "UPDATE subscription_members SET status = 'removed', left_at = NOW() WHERE id = ?",
         [smRows[0].id],
       );
-
-      // Cancel affiliated affiliations
-      await pool.query(
-        "UPDATE affiliations SET status = 'cancelled', updated_at = NOW() WHERE subscription_id = ? AND member_id = ? AND status = 'active'",
+      await connection.query(
+        `UPDATE affiliations
+            SET status = 'cancelled', is_primary = 0, updated_at = NOW()
+          WHERE subscription_id = ? AND member_id = ?
+            AND status IN ('active', 'suspended', 'frozen')`,
         [subId, memberId],
       );
 
+      if (affiliationRows.some((row: any) => Boolean(row.is_primary))) {
+        await connection.query(
+          `UPDATE affiliations
+              SET is_primary = 1, updated_at = NOW()
+            WHERE id = (
+              SELECT candidate.id FROM (
+                SELECT id
+                  FROM affiliations
+                 WHERE member_id = ?
+                   AND status = 'active'
+                   AND end_date >= CURDATE()
+                 ORDER BY consumption_priority ASC, end_date ASC, id ASC
+                 LIMIT 1
+              ) candidate
+            )`,
+          [memberId],
+        );
+      }
+
+      await appendDomainAudit(connection, {
+        entityType: "subscription",
+        entityId: subId,
+        eventType: "subscription_beneficiary_removed",
+        actorId: req.user?.email || req.user?.uid || null,
+        correlationId: createId("cor"),
+        before: {
+          memberId,
+          subscriptionMemberId: smRows[0].id,
+          affiliationIds: affiliationRows.map((row: any) => row.id),
+        },
+        after: { memberId, status: "removed" },
+        reason: normalizeString(req.body?.reason) || null,
+      });
+      await connection.commit();
       res.json({ ok: true, removed: memberId });
-    } catch (error) { next(error); }
+    } catch (error) {
+      if (connection) await connection.rollback();
+      next(error);
+    } finally {
+      if (connection) connection.release();
+    }
   });
 
   // --- Affiliations ---
