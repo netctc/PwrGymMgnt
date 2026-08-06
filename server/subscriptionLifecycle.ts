@@ -413,13 +413,14 @@ export function registerSubscriptionLifecycleRoutes(app: Express, poolProvider: 
       const renewalCurrency = renewalPlan.currency || sub.currency || "USD";
       await pool.query(
         `INSERT INTO invoices
-          (id, invoice_number, member_id, subscription_id, status,
-           subtotal, tax_amount, total, currency, due_date, paid_at, data)
-         VALUES (?, ?, ?, NULL, ?, ?, 0, ?, ?, ?, ?, ?)`,
+          (id, invoice_number, member_id, subscription_id, subscription_v2_id,
+           status, subtotal, tax_amount, total, currency, due_date, paid_at, data)
+         VALUES (?, ?, ?, NULL, ?, ?, ?, 0, ?, ?, ?, ?, ?)`,
         [
           invoiceId,
           invoiceNumber,
           sub.holder_member_id,
+          req.params.id,
           renewalPaymentStatus === "paid" ? "paid" : "issued",
           amount,
           amount,
