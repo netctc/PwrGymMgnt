@@ -34,13 +34,10 @@ function candidateReason(candidate: EntitlementCandidate, today: string, service
   return financial === "pending" ? "PAYMENT_PENDING" : financial === "partial" ? "PAYMENT_PARTIAL" : "ALLOWED";
 }
 
-export function evaluateCandidates(memberId: string, candidates: EntitlementCandidate[], atDate: unknown, serviceType?: string, affiliationId?: string): EntitlementDecision {
+export function evaluateCandidates(memberId: string, candidates: EntitlementCandidate[], atDate: unknown, serviceType?: string): EntitlementDecision {
   const today = parseBusinessDate(atDate);
-  const scopedCandidates = affiliationId
-    ? candidates.filter(candidate => candidate.affiliationId === affiliationId)
-    : candidates;
-  if (!scopedCandidates.length) return denial(memberId, "NO_ELIGIBLE_SUBSCRIPTION");
-  const evaluated = scopedCandidates.map(candidate => ({ candidate, reason: candidateReason(candidate, today, serviceType) }));
+  if (!candidates.length) return denial(memberId, "NO_ELIGIBLE_SUBSCRIPTION");
+  const evaluated = candidates.map(candidate => ({ candidate, reason: candidateReason(candidate, today, serviceType) }));
   const eligible = evaluated.filter(item => ["ALLOWED", "PAYMENT_PENDING", "PAYMENT_PARTIAL"].includes(item.reason));
   if (!eligible.length) return denial(memberId, evaluated[0].reason);
   eligible.sort((a, b) => Number(Boolean(b.candidate.isPrimary)) - Number(Boolean(a.candidate.isPrimary)) || Number(a.candidate.consumptionPriority ?? 0) - Number(b.candidate.consumptionPriority ?? 0) || a.candidate.affiliationEndDate.localeCompare(b.candidate.affiliationEndDate) || a.candidate.affiliationId.localeCompare(b.candidate.affiliationId));
@@ -53,7 +50,7 @@ export function evaluateCandidates(memberId: string, candidates: EntitlementCand
 export class EntitlementService {
   constructor(private readonly pool: Pool) {}
 
-  async evaluateEntitlement(memberId: string, serviceType: string | undefined, atDate: unknown, affiliationId?: string): Promise<EntitlementDecision> {
+  async evaluateEntitlement(memberId: string, serviceType: string | undefined, atDate: unknown): Promise<EntitlementDecision> {
     const [rows]: any = await this.pool.query(
       `SELECT m.id AS member_id, LOWER(m.status) AS member_status,
               s.id AS subscription_id, LOWER(s.status) AS contract_status,
@@ -62,33 +59,22 @@ export class EntitlementService {
               a.id AS affiliation_id, LOWER(a.status) AS affiliation_status,
               DATE_FORMAT(a.start_date, '%Y-%m-%d') AS affiliation_start_date,
               DATE_FORMAT(a.end_date, '%Y-%m-%d') AS affiliation_end_date,
-              DATE_FORMAT(
-                COALESCE(
-                  STR_TO_DATE(
-                    NULLIF(JSON_UNQUOTE(JSON_EXTRACT(s.data, '$.expectedPaymentDate')), 'null'),
-                    '%Y-%m-%d'
-                  ),
-                  (
-                    SELECT invoice.due_date
-                      FROM invoices invoice
-                     WHERE invoice.subscription_id = s.id
-                        OR JSON_UNQUOTE(
-                             JSON_EXTRACT(invoice.data, '$.subscriptionV2Id')
-                           ) = s.id
-                     ORDER BY invoice.created_at DESC
-                     LIMIT 1
-                  ),
-                  s.start_date
-                ),
-                '%Y-%m-%d'
-              ) AS expected_payment_date,
-              s.price_paid AS amount_due,
-              CASE WHEN s.payment_status IN ('paid', 'waived') THEN s.price_paid ELSE 0 END AS amount_paid,
-              s.currency AS currency, LOWER(s.payment_status) AS payment_status,
+              DATE_FORMAT(s.estimated_payment_date, '%Y-%m-%d') AS expected_payment_date,
+              COALESCE(i.total, s.price_snapshot) AS amount_due,
+              COALESCE(payments.net_paid, 0) AS amount_paid,
+              s.currency_snapshot AS currency, LOWER(s.payment_status) AS payment_status,
               a.is_primary, a.consumption_priority
          FROM members m
          JOIN affiliations a ON a.member_id = m.id
          JOIN subscriptions s ON s.id = a.subscription_id
+         LEFT JOIN invoices i ON i.subscription_v2_id = s.id
+         LEFT JOIN (
+           SELECT invoice_id,
+                  SUM(CASE WHEN event_type = 'payment' THEN amount
+                           WHEN event_type = 'refund' THEN -amount ELSE 0 END) AS net_paid
+             FROM invoice_payment_events_v2
+            GROUP BY invoice_id
+         ) payments ON payments.invoice_id = i.id
         WHERE m.id = ?`,
       [memberId],
     );
@@ -101,6 +87,6 @@ export class EntitlementService {
       amountPaid: String(row.amount_paid ?? "0"), currency: row.currency || "USD", paymentStatus: row.payment_status,
       isPrimary: Boolean(row.is_primary), consumptionPriority: Number(row.consumption_priority || 0), sessionsRemaining: null,
     }));
-    return evaluateCandidates(memberId, candidates, atDate, serviceType, affiliationId);
+    return evaluateCandidates(memberId, candidates, atDate, serviceType);
   }
 }
