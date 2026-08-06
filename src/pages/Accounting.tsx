@@ -18,6 +18,7 @@ import InlineAlert from "../components/InlineAlert";
 import ScreenReportActions from "../components/ScreenReportActions";
 import ListPagination from "../components/ListPagination";
 import { usePersistentState } from "../hooks/usePersistentState";
+import SubscriptionPaymentsPanel from "../components/accounting/SubscriptionPaymentsPanel";
 import { validateDateRange } from "../lib/dateRange";
 
 type TransactionForm = {
@@ -491,6 +492,7 @@ export default function Accounting() {
       <Tabs defaultValue="transactions" className="space-y-4">
         <TabsList className="flex flex-wrap">
           <TabsTrigger value="transactions">Transactions</TabsTrigger>
+          <TabsTrigger value="subscription-payments">Subscription Payments</TabsTrigger>
           <TabsTrigger value="payroll">Payroll Posting</TabsTrigger>
           <TabsTrigger value="loans">Loans</TabsTrigger>
           <TabsTrigger value="rentals">Rentals</TabsTrigger>
@@ -594,6 +596,10 @@ export default function Accounting() {
             </CardContent>
             {transactions.length > 0 && <ListPagination page={safeLedgerPage} pageSize={ledgerPageSize} total={transactions.length} onPageChange={setLedgerPage} onPageSizeChange={setLedgerPageSize} />}
           </Card>
+        </TabsContent>
+
+        <TabsContent value="subscription-payments" className="space-y-4">
+          <SubscriptionPaymentsPanel />
         </TabsContent>
 
         <TabsContent value="payroll" className="space-y-4">
