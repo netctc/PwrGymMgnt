@@ -35,3 +35,23 @@ test("derives waived and refunded and rejects invalid settlement", () => {
     events: [{ type: "refund", amount: "1.00" }],
   }), /REFUND_EXCEEDS_COLLECTED_AMOUNT/);
 });
+
+test("combines partial waivers and refunds without creating fictitious payments", () => {
+  const waivedPart = deriveInvoicePaymentSummary({
+    total: "100.00", dueDate: "2026-08-10", today: "2026-08-10",
+    events: [{ type: "payment", amount: "40.00" }, { type: "waive", amount: "10.00" }],
+  });
+  assert.equal(waivedPart.netPaid, "40.00");
+  assert.equal(waivedPart.waived, "10.00");
+  assert.equal(waivedPart.balanceDue, "50.00");
+  assert.equal(waivedPart.status, "partial");
+
+  const partialRefund = deriveInvoicePaymentSummary({
+    total: "100.00", dueDate: "2026-08-10", today: "2026-08-10",
+    events: [{ type: "payment", amount: "100.00" }, { type: "refund", amount: "25.00" }],
+  });
+  assert.equal(partialRefund.netPaid, "75.00");
+  assert.equal(partialRefund.refunded, "25.00");
+  assert.equal(partialRefund.balanceDue, "25.00");
+  assert.equal(partialRefund.status, "partial");
+});

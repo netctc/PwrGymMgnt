@@ -91,7 +91,8 @@ export class EntitlementService {
          LEFT JOIN (
            SELECT invoice_id,
                   SUM(CASE WHEN event_type = 'payment' THEN amount
-                           WHEN event_type = 'refund' THEN -amount ELSE 0 END) AS net_paid
+                           WHEN event_type = 'refund' THEN -amount
+                           WHEN event_type = 'waive' THEN amount ELSE 0 END) AS net_paid
              FROM invoice_payment_events_v2
             GROUP BY invoice_id
          ) payments ON payments.invoice_id = i.id

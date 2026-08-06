@@ -39,4 +39,14 @@ export const paymentsV2Api = {
       `/api/v2/accounting/invoices/${encodeURIComponent(invoiceId)}/payments`,
       { method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify(input) },
     ),
+  waiveBalance: (invoiceId: string, input: { amount: string; effectiveDate: string; reason: string }) =>
+    request<{ summary: Pick<AccountingInvoiceV2, "total" | "netPaid" | "balanceDue" | "status"> }>(
+      `/api/v2/accounting/invoices/${encodeURIComponent(invoiceId)}/waivers`,
+      { method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify(input) },
+    ),
+  refundPayment: (paymentEventId: string, input: { amount: string; effectiveDate: string; reason: string }) =>
+    request<{ summary: Pick<AccountingInvoiceV2, "total" | "netPaid" | "balanceDue" | "status">; entitlementCancelled: boolean }>(
+      `/api/v2/accounting/payments/${encodeURIComponent(paymentEventId)}/refunds`,
+      { method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify(input) },
+    ),
 };
