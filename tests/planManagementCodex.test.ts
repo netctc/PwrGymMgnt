@@ -272,6 +272,12 @@ test("limited multi-user plans expose distribution, cycles, immutable movements 
   assert.match(cycles, /distributionModel === "individual"/);
   assert.match(cycles, /distributionModel === "custom"/);
   assert.match(cycles, /allocateAffiliationInActiveCycle/);
+  assert.match(subscriptions, /subscription_beneficiary_added/);
+  assert.match(subscriptions, /subscription_beneficiary_removed/);
+  assert.match(subscriptions, /SUBSCRIPTION_HOLDER_PROTECTED/);
+  assert.match(subscriptions, /MEMBER_ALREADY_ASSIGNED/);
+  assert.match(subscriptions, /allocateAffiliationInActiveCycle/);
+  assert.match(subscriptions, /appendDomainAudit/);
   assert.match(subscriptions, /session-summary/);
   assert.match(subscriptions, /sessions\/purchase/);
   assert.match(subscriptions, /sessions\/register-event/);
