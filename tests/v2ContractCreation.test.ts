@@ -64,14 +64,36 @@ test("memberIds must be a valid array of identifiers", () => {
   );
 });
 
-test("subscription creation persists its canonical period and invoice relation", () => {
+test("subscription creation persists its canonical period and V2 invoice relation", () => {
   const source = readFileSync(
     new URL("../server/subscriptionsV2.ts", import.meta.url),
+    "utf8",
+  );
+  const lifecycle = readFileSync(
+    new URL("../server/subscriptionLifecycle.ts", import.meta.url),
+    "utf8",
+  );
+  const migration = readFileSync(
+    new URL("../sql/031_invoice_v2_subscription_link.sql", import.meta.url),
     "utf8",
   );
   assert.match(source, /buildContractTerms/);
   assert.match(source, /createInitialContractPeriod/);
   assert.match(source, /claimContractCreation/);
   assert.match(source, /completeContractCreation/);
-  assert.match(source, /holderMemberId,\s+id,\s+paymentStatus/);
+  assert.match(source, /subscription_id, subscription_v2_id/);
+  assert.match(source, /VALUES \(\?, \?, \?, NULL, \?/);
+  assert.match(lifecycle, /subscription_id, subscription_v2_id/);
+  assert.match(migration, /fk_invoices_subscription_v2/);
+  assert.match(migration, /REFERENCES subscriptions \(id\)/);
+});
+
+test("a newly created inactive holder is activated within contract creation", () => {
+  const source = readFileSync(
+    new URL("../server/domain/v2/contractCreation.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /role === "holder" && status === "inactive"/);
+  assert.match(source, /SET status = 'active', updated_at = NOW\(\)/);
+  assert.match(source, /WHERE id = \? AND LOWER\(TRIM\(status\)\) = 'inactive'/);
 });
