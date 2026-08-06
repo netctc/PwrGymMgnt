@@ -566,9 +566,9 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
       const invoiceNumber = createInvoiceNumber();
       await connection.query(
         `INSERT INTO invoices
-          (id, invoice_number, member_id, subscription_id, status,
-           subtotal, tax_amount, total, currency, due_date, paid_at, data)
-         VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`,
+          (id, invoice_number, member_id, subscription_id, subscription_v2_id,
+           status, subtotal, tax_amount, total, currency, due_date, paid_at, data)
+         VALUES (?, ?, ?, NULL, ?, ?, ?, 0, ?, ?, ?, ?, ?)`,
         [
           invoiceId,
           invoiceNumber,
@@ -849,13 +849,14 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
         invoiceNumber = createInvoiceNumber();
         await connection.query(
           `INSERT INTO invoices
-            (id, invoice_number, member_id, subscription_id, status,
-             subtotal, tax_amount, total, currency, due_date, paid_at, data)
-           VALUES (?, ?, ?, NULL, ?, ?, 0, ?, ?, ?, ?, ?)`,
+            (id, invoice_number, member_id, subscription_id, subscription_v2_id,
+             status, subtotal, tax_amount, total, currency, due_date, paid_at, data)
+           VALUES (?, ?, ?, NULL, ?, ?, ?, 0, ?, ?, ?, ?, ?)`,
           [
             invoiceId,
             invoiceNumber,
             rows[0].holder_member_id,
+            req.params.id,
             paymentStatus === "paid" ? "paid" : "issued",
             Number(rows[0].price_paid || 0),
             Number(rows[0].price_paid || 0),
