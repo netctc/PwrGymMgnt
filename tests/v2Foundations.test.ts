@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { assertExpectedPaymentDate, formatDisplayDate } from "../server/domain/v2/date";
+import { formatDisplayDate as formatClientDisplayDate } from "../src/lib/businessDate";
 import { moneyToMinor, subtractMoney } from "../server/domain/v2/money";
 import { evaluateCandidates } from "../server/domain/v2/entitlementService";
 import type { EntitlementCandidate } from "../server/domain/v2/contracts";
@@ -15,6 +16,8 @@ const base: EntitlementCandidate = {
 
 test("all visible business dates use dd/mm/yyyy", () => {
   assert.equal(formatDisplayDate("2026-08-06"), "06/08/2026");
+  assert.equal(formatClientDisplayDate("2026-08-06"), "06/08/2026");
+  assert.equal(formatClientDisplayDate("invalid"), "—");
   assert.throws(() => formatDisplayDate("2026-02-30"), /INVALID_BUSINESS_DATE/);
 });
 
