@@ -262,6 +262,7 @@ test("limited multi-user plans expose distribution, cycles, immutable movements 
   const wizard = read("src/pages/HybridSubscriptionWizard.tsx");
   const subscriptionsApi = read("src/lib/subscriptionsV2Api.ts");
   const planManagementApi = read("src/lib/planManagementApi.ts");
+  const contractCreation = read("server/domain/v2/contractCreation.ts");
 
   assert.match(management, /holderSessionsPerCycle/);
   assert.match(management, /beneficiarySessionsPerCycle/);
@@ -285,7 +286,7 @@ test("limited multi-user plans expose distribution, cycles, immutable movements 
   assert.match(subscriptions, /invoiceNumber/);
   assert.match(subscriptions, /subscription_v2_renewal_invoice/);
   assert.match(subscriptions, /paymentDate/);
-  assert.match(subscriptions, /DUPLICATE_ACTIVE_PLAN/);
+  assert.match(contractCreation, /DUPLICATE_ACTIVE_PLAN/);
   assert.match(subscriptions, /estimated payment date cannot be in the past/i);
   assert.match(payments, /OUTSTANDING_SUBSCRIPTION_PAYMENT/);
   assert.match(lifecycle, /current subscription payment must be settled/i);
