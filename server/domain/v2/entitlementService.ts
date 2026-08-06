@@ -67,7 +67,13 @@ export class EntitlementService {
          FROM members m
          JOIN affiliations a ON a.member_id = m.id
          JOIN subscriptions s ON s.id = a.subscription_id
-         LEFT JOIN invoices i ON i.subscription_v2_id = s.id
+         LEFT JOIN invoices i
+           ON i.subscription_v2_id = s.id
+          AND i.id = (
+            SELECT latest.id FROM invoices latest
+             WHERE latest.subscription_v2_id = s.id
+             ORDER BY latest.created_at DESC, latest.id DESC LIMIT 1
+          )
          LEFT JOIN (
            SELECT invoice_id,
                   SUM(CASE WHEN event_type = 'payment' THEN amount
