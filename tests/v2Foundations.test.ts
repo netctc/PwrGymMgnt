@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { assertExpectedPaymentDate, formatDisplayDate } from "../server/domain/v2/date";
 import { moneyToMinor, subtractMoney } from "../server/domain/v2/money";
 import { evaluateCandidates } from "../server/domain/v2/entitlementService";
@@ -45,4 +46,37 @@ test("selection across multiple plans is deterministic", () => {
   const a = { ...base, amountPaid: "100.00", paymentStatus: "paid" as const, isPrimary: false, consumptionPriority: 2 };
   const b = { ...a, subscriptionId: "sub_2", affiliationId: "aff_2", consumptionPriority: 1 };
   assert.equal(evaluateCandidates("member_1", [a, b], "2026-08-05").affiliationId, "aff_2");
+});
+
+test("an explicitly requested overdue affiliation cannot fall through to another plan", () => {
+  const valid: EntitlementCandidate = {
+    ...base,
+    subscriptionId: "sub_2",
+    affiliationId: "aff_2",
+    amountPaid: "100.00",
+    paymentStatus: "paid",
+  };
+  const decision = evaluateCandidates(
+    "member_1",
+    [base, valid],
+    "2026-08-11",
+    undefined,
+    "aff_1",
+  );
+  assert.equal(decision.allowed, false);
+  assert.equal(decision.reasonCode, "PAYMENT_OVERDUE");
+});
+
+test("all member access methods enforce the canonical entitlement decision", () => {
+  const source = readFileSync(
+    new URL("../server/accessAuthorization.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /new EntitlementService\(pool\)\.evaluateEntitlement/);
+  assert.match(source, /entitlement\.reasonCode !== "NO_ELIGIBLE_SUBSCRIPTION"/);
+  assert.match(source, /entitlement\.allowed[\s\S]*entitlement\.affiliationId/);
+  assert.ok(
+    source.indexOf("evaluateEntitlement") < source.indexOf("selectAffiliation(", source.indexOf("export async function authorizeAccess")),
+    "financial entitlement must be checked before affiliation/session selection",
+  );
 });
