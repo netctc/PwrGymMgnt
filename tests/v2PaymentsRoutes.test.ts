@@ -60,3 +60,23 @@ test("accounting UI manages waivers, refunds and their immutable history", () =>
   assert.match(api, /waiveBalance/);
   assert.match(api, /refundPayment/);
 });
+
+test("payments require traceable method and reference metadata", () => {
+  const route = read("server/paymentsV2.ts");
+  const panel = read("src/components/accounting/SubscriptionPaymentsPanel.tsx");
+  assert.match(route, /PAYMENT_METHOD_REQUIRED/);
+  assert.match(route, /PAYMENT_REFERENCE_REQUIRED/);
+  assert.match(route, /PAYMENT_DATE_FUTURE/);
+  assert.match(route, /paymentMethod, reference, notes/);
+  assert.match(panel, /Payment method/);
+  assert.match(panel, /Reference/);
+});
+
+test("confirmed payments expose an auditable downloadable receipt", () => {
+  const route = read("server/paymentsV2.ts");
+  const api = read("src/lib/paymentsV2Api.ts");
+  assert.match(route, /payments\/:id\/receipt/);
+  assert.match(route, /PowerGym payment receipt/);
+  assert.match(route, /Content-Disposition/);
+  assert.match(api, /downloadReceipt/);
+});

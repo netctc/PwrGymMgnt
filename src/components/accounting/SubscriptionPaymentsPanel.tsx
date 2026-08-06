@@ -23,6 +23,8 @@ export default function SubscriptionPaymentsPanel() {
   const [amountPaid, setAmountPaid] = useState("");
   const [effectiveDate, setEffectiveDate] = useState(currentDate());
   const [reason, setReason] = useState("");
+  const [paymentMethod, setPaymentMethod] = useState("");
+  const [reference, setReference] = useState("");
   const [adjustmentType, setAdjustmentType] = useState<"waive" | "refund">("waive");
   const [adjustmentAmount, setAdjustmentAmount] = useState("");
   const [adjustmentReason, setAdjustmentReason] = useState("");
@@ -42,9 +44,11 @@ export default function SubscriptionPaymentsPanel() {
     if (!(Number(amountPaid) > 0)) return toast.error("Paid amount must be greater than zero");
     setLoading(true);
     try {
-      const result = await paymentsV2Api.recordPayment(selected.id, { amountPaid, effectiveDate, reason });
+      if (!paymentMethod) return toast.error("Select a payment method");
+      if (!reference.trim()) return toast.error("Payment reference is required");
+      const result = await paymentsV2Api.recordPayment(selected.id, { amountPaid, effectiveDate, paymentMethod, reference, notes: reason });
       toast.success(`Payment recorded. Pending: ${money(result.summary.balanceDue, selected.currency)}`);
-      setAmountPaid(""); setReason("");
+      setAmountPaid(""); setReason(""); setReference("");
       await load();
     } catch (error: any) { toast.error(error.message); }
     finally { setLoading(false); }
@@ -79,14 +83,16 @@ export default function SubscriptionPaymentsPanel() {
     <Card><CardHeader><CardTitle>Subscription payments</CardTitle>
       <CardDescription>Record the amount received. The pending balance and payment status are calculated automatically.</CardDescription>
     </CardHeader><CardContent>
-      <form className="grid gap-4 md:grid-cols-5" onSubmit={submit}>
+      <form className="grid gap-4 md:grid-cols-6" onSubmit={submit}>
         <div className="md:col-span-2"><Label>Invoice / member</Label><select className="h-10 w-full rounded-md border bg-background px-3 text-sm" value={selectedId} onChange={(e) => setSelectedId(e.target.value)} required>
           <option value="">Select invoice</option>{invoices.filter((invoice) => invoice.balanceDue !== "0.00").map((invoice) => <option key={invoice.id} value={invoice.id}>{invoice.invoiceNumber} · {invoice.memberName} · {invoice.planName}</option>)}
         </select></div>
         <div><Label>Amount paid</Label><Input type="number" min="0.01" step="0.01" max={selected?.balanceDue || undefined} value={amountPaid} onChange={(e) => setAmountPaid(e.target.value)} required /></div>
         <div><Label>Payment date</Label><DateInput value={effectiveDate} onChange={setEffectiveDate} required /></div>
         <div><Label>Pending amount</Label><Input value={selected ? money(selected.balanceDue, selected.currency) : ""} readOnly /></div>
-        <div className="md:col-span-4"><Label>Reference / note</Label><Input value={reason} onChange={(e) => setReason(e.target.value)} /></div>
+        <div><Label>Payment method</Label><select className="h-10 w-full rounded-md border bg-background px-3 text-sm" value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)} required><option value="">Select method</option><option value="cash">Cash</option><option value="card">Card</option><option value="bank_transfer">Bank transfer</option><option value="other">Other</option></select></div>
+        <div className="md:col-span-2"><Label>Reference</Label><Input value={reference} onChange={(e) => setReference(e.target.value)} required /></div>
+        <div className="md:col-span-3"><Label>Notes</Label><Input value={reason} onChange={(e) => setReason(e.target.value)} /></div>
         <div className="flex items-end"><Button type="submit" disabled={!selected || loading}>{loading ? "Saving…" : "Record payment"}</Button></div>
       </form>
     </CardContent></Card>
@@ -114,8 +120,8 @@ export default function SubscriptionPaymentsPanel() {
         <TableBody>{invoices.map((invoice) => <TableRow key={invoice.id}><TableCell>{invoice.invoiceNumber}</TableCell><TableCell>{invoice.memberName}</TableCell><TableCell>{invoice.planName}</TableCell><TableCell>{money(invoice.total, invoice.currency)}</TableCell><TableCell>{money(invoice.netPaid, invoice.currency)}</TableCell><TableCell>{money(invoice.balanceDue, invoice.currency)}</TableCell><TableCell>{displayDate(invoice.dueDate)}</TableCell><TableCell>{invoice.status}</TableCell></TableRow>)}</TableBody>
       </Table>
       {selected && selected.events.length > 0 && <div className="mt-6"><h3 className="mb-2 text-sm font-medium">Adjustment history</h3>
-        <Table><TableHeader><TableRow><TableHead>Date</TableHead><TableHead>Type</TableHead><TableHead>Amount</TableHead><TableHead>Reason</TableHead><TableHead>Performed by</TableHead></TableRow></TableHeader>
-          <TableBody>{selected.events.map((item) => <TableRow key={item.id}><TableCell>{displayDate(item.effectiveDate)}</TableCell><TableCell className="capitalize">{item.type}</TableCell><TableCell>{money(item.amount, selected.currency)}</TableCell><TableCell>{item.reason}</TableCell><TableCell>{item.performedBy}</TableCell></TableRow>)}</TableBody>
+        <Table><TableHeader><TableRow><TableHead>Date</TableHead><TableHead>Type</TableHead><TableHead>Amount</TableHead><TableHead>Method / reference</TableHead><TableHead>Reason / notes</TableHead><TableHead>Performed by</TableHead><TableHead>Receipt</TableHead></TableRow></TableHeader>
+          <TableBody>{selected.events.map((item) => <TableRow key={item.id}><TableCell>{displayDate(item.effectiveDate)}</TableCell><TableCell className="capitalize">{item.type}</TableCell><TableCell>{money(item.amount, selected.currency)}</TableCell><TableCell>{item.type === "payment" ? `${item.paymentMethod} · ${item.reference}` : "—"}</TableCell><TableCell>{item.notes || item.reason}</TableCell><TableCell>{item.performedBy}</TableCell><TableCell>{item.type === "payment" ? <Button type="button" variant="outline" size="sm" onClick={() => paymentsV2Api.downloadReceipt(item.id).catch((error) => toast.error(error.message))}>Download</Button> : "—"}</TableCell></TableRow>)}</TableBody>
         </Table></div>}
     </CardContent></Card>
   </div>;

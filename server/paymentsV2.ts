@@ -27,7 +27,7 @@ function id(prefix: string) {
 
 async function loadEvents(connection: PoolConnection, invoiceId: string, lock = false) {
   const [rows]: any = await connection.query(
-    `SELECT id, event_type, amount, currency, effective_date, reason,
+    `SELECT id, event_type, amount, currency, effective_date, reason, data,
             performed_by, idempotency_key, created_at
        FROM invoice_payment_events_v2
       WHERE invoice_id = ?
@@ -73,7 +73,7 @@ export function registerPaymentsV2Routes(app: Express, poolProvider: PoolProvide
         const placeholders = invoiceIds.map(() => "?").join(",");
         const [eventRows]: any = await connection.query(
           `SELECT id, invoice_id, event_type, amount, currency, effective_date,
-                  reason, performed_by, idempotency_key, created_at
+                  reason, data, performed_by, idempotency_key, created_at
              FROM invoice_payment_events_v2
             WHERE invoice_id IN (${placeholders})
             ORDER BY created_at, id`,
@@ -95,15 +95,20 @@ export function registerPaymentsV2Routes(app: Express, poolProvider: PoolProvide
             dueDate: dateOnly(invoice.due_date),
             createdAt: invoice.created_at,
             ...summarize(invoice, invoiceEvents),
-            events: invoiceEvents.map((event) => ({
+            events: invoiceEvents.map((event) => {
+              const metadata = typeof event.data === "string" ? JSON.parse(event.data || "{}") : (event.data || {});
+              return ({
               id: event.id,
               type: event.event_type,
               amount: String(event.amount),
               effectiveDate: dateOnly(event.effective_date),
               reason: event.reason || "",
+              paymentMethod: metadata.paymentMethod || "",
+              reference: metadata.reference || "",
+              notes: metadata.notes || "",
               performedBy: event.performed_by || "",
               createdAt: event.created_at,
-            })),
+            });}),
           };
         }),
       });
@@ -120,7 +125,13 @@ export function registerPaymentsV2Routes(app: Express, poolProvider: PoolProvide
       const idempotencyKey = String(req.get("Idempotency-Key") || req.body.idempotencyKey || "").trim();
       const amountPaid = String(req.body.amountPaid ?? "").trim();
       const effectiveDate = dateOnly(req.body.effectiveDate) || today();
+      const paymentMethod = String(req.body.paymentMethod || "").trim();
+      const reference = String(req.body.reference || "").trim();
+      const notes = String(req.body.notes || "").trim();
       if (!idempotencyKey) return res.status(400).json({ error: "Idempotency-Key is required", code: "PAYMENT_IDEMPOTENCY_REQUIRED" });
+      if (!paymentMethod) return res.status(400).json({ error: "Payment method is required", code: "PAYMENT_METHOD_REQUIRED" });
+      if (!reference) return res.status(400).json({ error: "Payment reference is required", code: "PAYMENT_REFERENCE_REQUIRED" });
+      if (effectiveDate > today()) return res.status(400).json({ error: "Payment date cannot be in the future", code: "PAYMENT_DATE_FUTURE" });
 
       connection = await requirePool(poolProvider).getConnection();
       await connection.beginTransaction();
@@ -178,8 +189,8 @@ export function registerPaymentsV2Routes(app: Express, poolProvider: PoolProvide
            reason, performed_by, idempotency_key, data)
          VALUES (?, ?, 'payment', ?, ?, ?, ?, ?, ?, ?)`,
         [eventId, invoice.id, amountPaid, invoice.currency, effectiveDate,
-          String(req.body.reason || "Partial payment").trim(), actor, idempotencyKey,
-          JSON.stringify({ source: "accounting", subscriptionId: invoice.subscription_v2_id })],
+          notes || "Payment", actor, idempotencyKey,
+          JSON.stringify({ source: "accounting", subscriptionId: invoice.subscription_v2_id, paymentMethod, reference, notes })],
       );
       await connection.query(
         `UPDATE invoices
@@ -217,14 +228,14 @@ export function registerPaymentsV2Routes(app: Express, poolProvider: PoolProvide
         [id("ftx"), amountPaid, effectiveDate, eventId,
           `Payment ${invoice.invoice_number}`, actor, actor,
           JSON.stringify({ invoiceId: invoice.id, subscriptionId: invoice.subscription_v2_id,
-            amountPaid: summary.netPaid, amountPending: summary.balanceDue })],
+            amountPaid: summary.netPaid, amountPending: summary.balanceDue, paymentMethod, reference })],
       );
       await connection.query(
         `INSERT INTO audit_logs (action, details, performed_by)
          VALUES ('invoice_partial_payment_recorded', ?, ?)`,
         [JSON.stringify({ invoiceId: invoice.id, subscriptionId: invoice.subscription_v2_id,
           paymentEventId: eventId, amount: amountPaid, amountPaid: summary.netPaid,
-          amountPending: summary.balanceDue, status: summary.status }), actor],
+          amountPending: summary.balanceDue, status: summary.status, paymentMethod, reference, effectiveDate, notes }), actor],
       );
       await connection.commit();
       res.status(201).json({ paymentEventId: eventId, summary, idempotentReplay: false });
@@ -234,6 +245,29 @@ export function registerPaymentsV2Routes(app: Express, poolProvider: PoolProvide
     } finally {
       connection?.release();
     }
+  });
+
+  app.get("/api/v2/accounting/payments/:id/receipt", requirePermission("finance.read"), async (req, res, next) => {
+    try {
+      const [rows]: any = await requirePool(poolProvider).query(
+        `SELECT pe.id, pe.amount, pe.currency, pe.effective_date, pe.performed_by, pe.data,
+                i.invoice_number, CONCAT_WS(' ', m.first_name, m.last_name) AS member_name,
+                pv.name AS plan_name
+           FROM invoice_payment_events_v2 pe
+           JOIN invoices i ON i.id = pe.invoice_id
+           JOIN members m ON m.id = i.member_id
+           LEFT JOIN subscriptions s ON s.id = i.subscription_v2_id
+           LEFT JOIN plan_versions pv ON pv.id = s.plan_version_id
+          WHERE pe.id = ? AND pe.event_type = 'payment' LIMIT 1`, [req.params.id]);
+      if (!rows.length) return res.status(404).json({ error: "Payment receipt not found" });
+      const payment = rows[0];
+      const metadata = typeof payment.data === "string" ? JSON.parse(payment.data || "{}") : (payment.data || {});
+      const escape = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character] || character);
+      const html = `<!doctype html><html><head><meta charset="utf-8"><title>Receipt ${escape(payment.id)}</title><style>body{font:16px Arial;max-width:720px;margin:40px auto;color:#111}h1{margin-bottom:4px}.row{display:flex;justify-content:space-between;border-bottom:1px solid #ddd;padding:10px 0}.total{font-size:24px;font-weight:700}</style></head><body><h1>PowerGym payment receipt</h1><p>Receipt ${escape(payment.id)}</p><div class="row"><span>Invoice</span><b>${escape(payment.invoice_number)}</b></div><div class="row"><span>Member</span><b>${escape(payment.member_name)}</b></div><div class="row"><span>Plan</span><b>${escape(payment.plan_name)}</b></div><div class="row"><span>Payment date</span><b>${escape(dateOnly(payment.effective_date))}</b></div><div class="row"><span>Method</span><b>${escape(metadata.paymentMethod)}</b></div><div class="row"><span>Reference</span><b>${escape(metadata.reference)}</b></div><div class="row total"><span>Amount paid</span><span>${escape(payment.amount)} ${escape(payment.currency)}</span></div><p>Recorded by ${escape(payment.performed_by)}</p></body></html>`;
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.setHeader("Content-Disposition", `attachment; filename="receipt-${payment.invoice_number}-${payment.id}.html"`);
+      res.send(html);
+    } catch (error) { next(error); }
   });
 
   app.post("/api/v2/accounting/invoices/:id/waivers", requirePermission("finance.write"), async (req: AuthenticatedRequest, res, next) => {
