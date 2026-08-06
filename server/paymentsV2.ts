@@ -138,11 +138,15 @@ export function registerPaymentsV2Routes(app: Express, poolProvider: PoolProvide
       }
       const invoice = invoiceRows[0];
       const [replayRows]: any = await connection.query(
-        `SELECT id, amount FROM invoice_payment_events_v2
+        `SELECT id, invoice_id, amount FROM invoice_payment_events_v2
           WHERE idempotency_key = ? LIMIT 1`,
         [idempotencyKey],
       );
       if (replayRows.length) {
+        if (replayRows[0].invoice_id !== invoice.id) {
+          await connection.rollback();
+          return res.status(409).json({ error: "Idempotency key belongs to another invoice", code: "PAYMENT_IDEMPOTENCY_CONFLICT" });
+        }
         const events = await loadEvents(connection, invoice.id, true);
         const summary = summarize(invoice, events);
         await connection.commit();
