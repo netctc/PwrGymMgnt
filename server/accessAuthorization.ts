@@ -21,6 +21,7 @@ import {
   checkIdempotencyKey,
   storeIdempotencyKey,
 } from "./sessionLedger";
+import { EntitlementService } from "./domain/v2/entitlementService";
 
 type PoolProvider = () => Pool | null;
 type AuthenticatedRequest = Request & { user?: { uid?: string; email?: string; role?: string } };
@@ -500,14 +501,50 @@ export async function authorizeAccess(pool: Pool, req: AccessRequest): Promise<A
     return decision;
   }
 
+  // Step 3: Apply the canonical contract, payment and affiliation policy.
+  // Legacy access remains available only when the member has no V2 affiliation.
+  const entitlement = await new EntitlementService(pool).evaluateEntitlement(
+    identity.personId,
+    req.serviceType,
+    new Date(),
+    req.affiliationId,
+  );
+  if (
+    !entitlement.allowed &&
+    (
+      entitlement.reasonCode !== "NO_ELIGIBLE_SUBSCRIPTION" ||
+      Boolean(req.affiliationId)
+    )
+  ) {
+    const decision = buildDenied(
+      attemptId,
+      requestId,
+      req.affiliationId &&
+        entitlement.reasonCode === "NO_ELIGIBLE_SUBSCRIPTION"
+        ? "REQUESTED_AFFILIATION_NOT_ELIGIBLE"
+        : entitlement.reasonCode,
+      identity.personType,
+      identity.personId,
+      identity.personName,
+    );
+    decision.affiliationId = entitlement.affiliationId;
+    decision.subscriptionId = entitlement.subscriptionId;
+    await recordAttempt(pool, attemptId, req, decision);
+    return decision;
+  }
+
   // Session consumption at access is a core workflow and is always ledger-backed.
   const ledgerEnabled = true;
 
-  // Step 4: Select affiliation
+  // Step 4: Load session policy only for the affiliation selected by the
+  // canonical entitlement decision. This prevents a second rule engine from
+  // choosing a different (for example overdue) subscription.
   const selection = await selectAffiliation(
     pool,
     identity.personId,
-    req.affiliationId,
+    entitlement.allowed
+      ? entitlement.affiliationId || undefined
+      : req.affiliationId,
     req.reservationAffiliationId,
     req.serviceType,
     req.sessionAction,
