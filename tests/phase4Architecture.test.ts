@@ -20,6 +20,7 @@ test("Phase 4 application route modules are uniquely registered", () => {
     "trainer-commissions",
     "scheduling",
     "hr-payroll",
+    "subscription-payments-v2",
     "finance",
     "general-settings",
     "platform-security",

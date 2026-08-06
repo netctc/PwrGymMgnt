@@ -84,12 +84,13 @@ test("all member access methods enforce the canonical entitlement decision", () 
   );
 });
 
-test("entitlement payment date uses the operational JSON and invoice schema", () => {
+test("entitlement payment date uses the operational column and V2 invoice schema", () => {
   const source = readFileSync(
     new URL("../server/domain/v2/entitlementService.ts", import.meta.url),
     "utf8",
   );
-  assert.match(source, /JSON_EXTRACT\(s\.data, '\$\.expectedPaymentDate'\)/);
-  assert.match(source, /FROM invoices invoice/);
-  assert.doesNotMatch(source, /s\.estimated_payment_date/);
+  assert.match(source, /s\.estimated_payment_date/);
+  assert.match(source, /LEFT JOIN invoices i/);
+  assert.match(source, /i\.subscription_v2_id = s\.id/);
+  assert.doesNotMatch(source, /JSON_EXTRACT\(s\.data, '\$\.expectedPaymentDate'\)/);
 });

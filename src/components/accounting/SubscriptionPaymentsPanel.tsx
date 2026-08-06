@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
@@ -32,7 +32,7 @@ export default function SubscriptionPaymentsPanel() {
   }
   useEffect(() => { load().catch((error) => toast.error(error.message)); }, []);
 
-  async function submit(event: React.FormEvent) {
+  async function submit(event: FormEvent) {
     event.preventDefault();
     if (!selected) return;
     if (!(Number(amountPaid) > 0)) return toast.error("Paid amount must be greater than zero");
