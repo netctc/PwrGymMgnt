@@ -444,7 +444,7 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
           error: "The expected payment date cannot be in the past",
         });
       }
-      let terms;
+      let terms: ReturnType<typeof buildContractTerms>;
       try {
         terms = buildContractTerms({
           startDate: requestedStartDate,
@@ -597,11 +597,12 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
         `INSERT INTO invoices
           (id, invoice_number, member_id, subscription_id, status,
            subtotal, tax_amount, total, currency, due_date, paid_at, data)
-         VALUES (?, ?, ?, NULL, ?, ?, 0, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`,
         [
           invoiceId,
           invoiceNumber,
           holderMemberId,
+          id,
           paymentStatus === "paid" ? "paid" : "issued",
           price,
           price,
