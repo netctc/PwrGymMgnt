@@ -25,3 +25,11 @@ test("accounting UI captures paid amount and renders calculated balance", () => 
   assert.match(panel, /balanceDue/);
   assert.doesNotMatch(panel, /setPaymentStatus/);
 });
+
+test("access authorization reads the real net amount from the invoice ledger", () => {
+  const entitlement = read("server/domain/v2/entitlementService.ts");
+  assert.match(entitlement, /invoice_payment_events_v2/);
+  assert.match(entitlement, /event_type = 'payment'/);
+  assert.match(entitlement, /event_type = 'refund'/);
+  assert.match(entitlement, /payments\.net_paid/);
+});
