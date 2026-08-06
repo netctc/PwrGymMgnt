@@ -72,12 +72,18 @@ export async function createContractParticipants(
     `SELECT id, status FROM members WHERE id IN (${placeholders}) FOR UPDATE`,
     memberIds,
   );
-  const activeIds = new Set(
-    memberRows
-      .filter((row: any) => String(row.status || "").trim().toLowerCase() === "active")
-      .map((row: any) => String(row.id)),
+  const memberStatusById = new Map(
+    memberRows.map((row: any) => [
+      String(row.id),
+      String(row.status || "").trim().toLowerCase(),
+    ]),
   );
-  const invalidMemberIds = memberIds.filter((memberId) => !activeIds.has(memberId));
+  const invalidMemberIds = input.members
+    .filter(({ memberId, role }) => {
+      const status = memberStatusById.get(memberId);
+      return status !== "active" && !(role === "holder" && status === "inactive");
+    })
+    .map(({ memberId }) => memberId);
   if (invalidMemberIds.length) {
     throw Object.assign(new Error("CONTRACT_MEMBER_INVALID"), {
       status: 409,
@@ -125,6 +131,16 @@ export async function createContractParticipants(
         String(row.member_id),
       ),
     });
+  }
+
+  const holder = input.members.find((member) => member.role === "holder");
+  if (holder && memberStatusById.get(holder.memberId) === "inactive") {
+    await connection.query(
+      `UPDATE members
+          SET status = 'active', updated_at = NOW()
+        WHERE id = ? AND LOWER(TRIM(status)) = 'inactive'`,
+      [holder.memberId],
+    );
   }
 
   const participants: Array<ContractMember & {
