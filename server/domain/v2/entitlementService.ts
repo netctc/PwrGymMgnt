@@ -34,10 +34,13 @@ function candidateReason(candidate: EntitlementCandidate, today: string, service
   return financial === "pending" ? "PAYMENT_PENDING" : financial === "partial" ? "PAYMENT_PARTIAL" : "ALLOWED";
 }
 
-export function evaluateCandidates(memberId: string, candidates: EntitlementCandidate[], atDate: unknown, serviceType?: string): EntitlementDecision {
+export function evaluateCandidates(memberId: string, candidates: EntitlementCandidate[], atDate: unknown, serviceType?: string, affiliationId?: string): EntitlementDecision {
   const today = parseBusinessDate(atDate);
-  if (!candidates.length) return denial(memberId, "NO_ELIGIBLE_SUBSCRIPTION");
-  const evaluated = candidates.map(candidate => ({ candidate, reason: candidateReason(candidate, today, serviceType) }));
+  const scopedCandidates = affiliationId
+    ? candidates.filter(candidate => candidate.affiliationId === affiliationId)
+    : candidates;
+  if (!scopedCandidates.length) return denial(memberId, "NO_ELIGIBLE_SUBSCRIPTION");
+  const evaluated = scopedCandidates.map(candidate => ({ candidate, reason: candidateReason(candidate, today, serviceType) }));
   const eligible = evaluated.filter(item => ["ALLOWED", "PAYMENT_PENDING", "PAYMENT_PARTIAL"].includes(item.reason));
   if (!eligible.length) return denial(memberId, evaluated[0].reason);
   eligible.sort((a, b) => Number(Boolean(b.candidate.isPrimary)) - Number(Boolean(a.candidate.isPrimary)) || Number(a.candidate.consumptionPriority ?? 0) - Number(b.candidate.consumptionPriority ?? 0) || a.candidate.affiliationEndDate.localeCompare(b.candidate.affiliationEndDate) || a.candidate.affiliationId.localeCompare(b.candidate.affiliationId));
@@ -50,7 +53,7 @@ export function evaluateCandidates(memberId: string, candidates: EntitlementCand
 export class EntitlementService {
   constructor(private readonly pool: Pool) {}
 
-  async evaluateEntitlement(memberId: string, serviceType: string | undefined, atDate: unknown): Promise<EntitlementDecision> {
+  async evaluateEntitlement(memberId: string, serviceType: string | undefined, atDate: unknown, affiliationId?: string): Promise<EntitlementDecision> {
     const [rows]: any = await this.pool.query(
       `SELECT m.id AS member_id, LOWER(m.status) AS member_status,
               s.id AS subscription_id, LOWER(s.status) AS contract_status,
@@ -79,6 +82,6 @@ export class EntitlementService {
       amountPaid: String(row.amount_paid ?? "0"), currency: row.currency || "USD", paymentStatus: row.payment_status,
       isPrimary: Boolean(row.is_primary), consumptionPriority: Number(row.consumption_priority || 0), sessionsRemaining: null,
     }));
-    return evaluateCandidates(memberId, candidates, atDate, serviceType);
+    return evaluateCandidates(memberId, candidates, atDate, serviceType, affiliationId);
   }
 }
