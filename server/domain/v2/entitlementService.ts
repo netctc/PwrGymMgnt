@@ -62,10 +62,29 @@ export class EntitlementService {
               a.id AS affiliation_id, LOWER(a.status) AS affiliation_status,
               DATE_FORMAT(a.start_date, '%Y-%m-%d') AS affiliation_start_date,
               DATE_FORMAT(a.end_date, '%Y-%m-%d') AS affiliation_end_date,
-              DATE_FORMAT(s.estimated_payment_date, '%Y-%m-%d') AS expected_payment_date,
-              s.price_snapshot AS amount_due,
-              CASE WHEN s.payment_status IN ('paid', 'waived') THEN s.price_snapshot ELSE 0 END AS amount_paid,
-              s.currency_snapshot AS currency, LOWER(s.payment_status) AS payment_status,
+              DATE_FORMAT(
+                COALESCE(
+                  STR_TO_DATE(
+                    NULLIF(JSON_UNQUOTE(JSON_EXTRACT(s.data, '$.expectedPaymentDate')), 'null'),
+                    '%Y-%m-%d'
+                  ),
+                  (
+                    SELECT invoice.due_date
+                      FROM invoices invoice
+                     WHERE invoice.subscription_id = s.id
+                        OR JSON_UNQUOTE(
+                             JSON_EXTRACT(invoice.data, '$.subscriptionV2Id')
+                           ) = s.id
+                     ORDER BY invoice.created_at DESC
+                     LIMIT 1
+                  ),
+                  s.start_date
+                ),
+                '%Y-%m-%d'
+              ) AS expected_payment_date,
+              s.price_paid AS amount_due,
+              CASE WHEN s.payment_status IN ('paid', 'waived') THEN s.price_paid ELSE 0 END AS amount_paid,
+              s.currency AS currency, LOWER(s.payment_status) AS payment_status,
               a.is_primary, a.consumption_priority
          FROM members m
          JOIN affiliations a ON a.member_id = m.id
