@@ -80,3 +80,13 @@ test("all member access methods enforce the canonical entitlement decision", () 
     "financial entitlement must be checked before affiliation/session selection",
   );
 });
+
+test("entitlement payment date uses the operational JSON and invoice schema", () => {
+  const source = readFileSync(
+    new URL("../server/domain/v2/entitlementService.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /JSON_EXTRACT\(s\.data, '\$\.expectedPaymentDate'\)/);
+  assert.match(source, /FROM invoices invoice/);
+  assert.doesNotMatch(source, /s\.estimated_payment_date/);
+});
