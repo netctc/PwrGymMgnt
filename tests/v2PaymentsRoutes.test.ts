@@ -94,3 +94,55 @@ test("payment reversals are immutable, bounded and mirrored in accounting", () =
   assert.match(api, /reversePayment/);
   assert.match(migration, /'reversal'/);
 });
+
+test("renewal partial payments capture the received amount and never post the full invoice total as income", () => {
+  const route = read("server/subscriptionLifecycle.ts");
+  const members = read("src/pages/Members.tsx");
+  const api = read("src/lib/subscriptionsV2Api.ts");
+  assert.match(members, /Partially Paid/);
+  assert.match(members, /renewAmountPaid/);
+  assert.match(members, /Amount pending/);
+  assert.match(members, /subscriptionsV2Api\.updatePaymentStatus/);
+  assert.match(members, /Payment method and reference are required/);
+  assert.match(api, /amountPaid\?: string/);
+  assert.match(api, /paymentMethod\?: string/);
+  assert.match(route, /invoice_payment_events_v2/);
+  assert.match(route, /amountPaid/);
+  assert.match(route, /amountPending/);
+  assert.match(route, /PAYMENT_TRACEABILITY_REQUIRED/);
+  assert.match(route, /if \(paidMinor > 0n\) await pool\.query/);
+  assert.match(route, /"posted"/);
+});
+
+test("pending managed renewals resolve their invoice and receive useful payment defaults", () => {
+  const members = read("src/pages/Members.tsx");
+  const paymentsApi = read("src/lib/paymentsV2Api.ts");
+  const lifecycle = read("server/subscriptionLifecycle.ts");
+  assert.match(members, /getInvoiceSubscriptionV2Id\(invoice\) === multiSubscription\.id/);
+  assert.match(members, /subscriptionV2Id\?: string \| null/);
+  assert.match(members, /setRenewPaymentMethod\('cash'\)/);
+  assert.match(members, /paid from/);
+  assert.match(members, /suggestedPaymentReferenceRef/);
+  assert.match(members, /paymentsV2Api\.listInvoices\(\)/);
+  assert.match(members, /invoice\.subscriptionId === multiSubscription\.id/);
+  assert.match(paymentsApi, /function createIdempotencyKey/);
+  assert.doesNotMatch(paymentsApi, /crypto\.randomUUID\(\)/);
+  assert.doesNotMatch(lifecycle, /crypto\.randomUUID\(\)/);
+  assert.match(lifecycle, /randomBytes\(16\)/);
+});
+
+test("legacy managed invoices normalize server-side and initial partial subscriptions keep their balance", () => {
+  const subscriptions = read("server/subscriptionsV2.ts");
+  const members = read("src/pages/Members.tsx");
+  const api = read("src/lib/subscriptionsV2Api.ts");
+  assert.match(subscriptions, /subscription_v2_id = \?/);
+  assert.match(subscriptions, /subscription_id = \?/);
+  assert.match(subscriptions, /'\$\.subscriptionV2Id'/);
+  assert.match(subscriptions, /paymentStatus must be paid, partial or pending/);
+  assert.match(subscriptions, /Initial subscription payment/);
+  assert.match(subscriptions, /amountPending/);
+  assert.doesNotMatch(subscriptions, /crypto\.randomUUID\(\)/);
+  assert.match(members, /subscriptionIntent === 'new' \? selectedNewPlanVersion\?\.price/);
+  assert.match(members, /amountPaid: renewPaymentStatus === 'partial'/);
+  assert.match(api, /paymentReference\?: string/);
+});

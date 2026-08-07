@@ -253,7 +253,7 @@ export const subscriptionsV2Api = {
       };
     }>(`/api/v2/subscriptions${toQuery(params)}`),
 
-  createSubscription: (payload: { planVersionId: string; holderMemberId: string; startDate?: string; endDate?: string; paymentStatus?: string; paymentDate?: string; confirmOutstandingPayment?: boolean }) =>
+  createSubscription: (payload: { planVersionId: string; holderMemberId: string; startDate?: string; endDate?: string; paymentStatus?: string; paymentDate?: string; amountPaid?: string; paymentMethod?: string; paymentReference?: string; paymentNotes?: string; confirmOutstandingPayment?: boolean }) =>
     apiRequest<{ subscription: SubscriptionV2; affiliationId: string }>('/api/v2/subscriptions', { method: 'POST', body: JSON.stringify(payload) }),
 
   recordPendingPaymentDecision: (payload: {
@@ -271,10 +271,11 @@ export const subscriptionsV2Api = {
     id: string,
     paymentStatus: string,
     paymentDate?: string,
+    payment?: { amountPaid: string; paymentMethod: string; paymentReference: string; paymentNotes?: string },
   ) =>
     apiRequest<{ ok: boolean; previousPaymentStatus: string; paymentStatus: string; paymentDate: string; accountingStatus: string; invoiceNumber: string | null; paymentStatusLocked: boolean }>(
       `/api/v2/subscriptions/${encodeURIComponent(id)}/payment-status`,
-      { method: 'PATCH', body: JSON.stringify({ paymentStatus, paymentDate }) },
+      { method: 'PATCH', body: JSON.stringify({ paymentStatus, paymentDate, ...payment }) },
     ),
 
   getSessionSummary: (id: string) =>
@@ -404,15 +405,19 @@ export const subscriptionsV2Api = {
     id: string,
     payload: {
       planVersionId?: string;
-      paymentStatus: 'paid' | 'pending';
+      paymentStatus: 'paid' | 'partial' | 'pending';
       paymentDate: string;
+      amountPaid?: string;
+      paymentMethod?: string;
+      paymentReference?: string;
+      paymentNotes?: string;
       confirmOutstandingPayment?: boolean;
     } = {
       paymentStatus: 'pending',
       paymentDate: new Date().toISOString().slice(0, 10),
     },
   ) =>
-    apiRequest<{ ok: boolean; newPlanVersionId: string; newStartDate: string; newEndDate: string; paymentStatus: string; paymentDate: string; invoiceNumber: string }>(`/api/v2/subscriptions/${encodeURIComponent(id)}/renew`, { method: 'POST', body: JSON.stringify(payload) }),
+    apiRequest<{ ok: boolean; newPlanVersionId: string; newStartDate: string; newEndDate: string; paymentStatus: string; paymentDate: string; amountPaid: string; amountPending: string; invoiceNumber: string }>(`/api/v2/subscriptions/${encodeURIComponent(id)}/renew`, { method: 'POST', body: JSON.stringify(payload) }),
 
   changePlan: (id: string, planVersionId: string) =>
     apiRequest<{ ok: boolean; newPlanVersionId: string; newEndDate: string }>(`/api/v2/subscriptions/${encodeURIComponent(id)}/change-plan`, { method: 'POST', body: JSON.stringify({ planVersionId }) }),

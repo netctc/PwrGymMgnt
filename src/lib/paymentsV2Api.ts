@@ -20,6 +20,7 @@ export type AccountingInvoiceV2 = {
   planName: string;
   currency: string;
   dueDate: string;
+  createdAt?: string;
   total: string;
   netPaid: string;
   balanceDue: string;
@@ -35,12 +36,26 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   return data;
 }
 
+function createIdempotencyKey() {
+  const webCrypto = globalThis.crypto;
+  if (webCrypto?.randomUUID) return webCrypto.randomUUID();
+  if (webCrypto?.getRandomValues) {
+    const bytes = webCrypto.getRandomValues(new Uint8Array(16));
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    return [...bytes]
+      .map((value) => value.toString(16).padStart(2, "0"))
+      .join("");
+  }
+  return `payment-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
 export const paymentsV2Api = {
   listInvoices: () => request<{ invoices: AccountingInvoiceV2[] }>("/api/v2/accounting/invoices"),
   recordPayment: (invoiceId: string, input: { amountPaid: string; effectiveDate: string; paymentMethod: string; reference: string; notes?: string }) =>
     request<{ summary: Pick<AccountingInvoiceV2, "total" | "netPaid" | "balanceDue" | "status"> }>(
       `/api/v2/accounting/invoices/${encodeURIComponent(invoiceId)}/payments`,
-      { method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify(input) },
+      { method: "POST", headers: { "Idempotency-Key": createIdempotencyKey() }, body: JSON.stringify(input) },
     ),
   downloadReceipt: async (paymentEventId: string) => {
     const response = await fetch(`/api/v2/accounting/payments/${encodeURIComponent(paymentEventId)}/receipt`, { credentials: "include" });
@@ -55,16 +70,16 @@ export const paymentsV2Api = {
   waiveBalance: (invoiceId: string, input: { amount: string; effectiveDate: string; reason: string }) =>
     request<{ summary: Pick<AccountingInvoiceV2, "total" | "netPaid" | "balanceDue" | "status"> }>(
       `/api/v2/accounting/invoices/${encodeURIComponent(invoiceId)}/waivers`,
-      { method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify(input) },
+      { method: "POST", headers: { "Idempotency-Key": createIdempotencyKey() }, body: JSON.stringify(input) },
     ),
   refundPayment: (paymentEventId: string, input: { amount: string; effectiveDate: string; reason: string }) =>
     request<{ summary: Pick<AccountingInvoiceV2, "total" | "netPaid" | "balanceDue" | "status">; entitlementCancelled: boolean }>(
       `/api/v2/accounting/payments/${encodeURIComponent(paymentEventId)}/refunds`,
-      { method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify(input) },
+      { method: "POST", headers: { "Idempotency-Key": createIdempotencyKey() }, body: JSON.stringify(input) },
     ),
   reversePayment: (paymentEventId: string, input: { amount: string; effectiveDate: string; reason: string }) =>
     request<{ summary: Pick<AccountingInvoiceV2, "total" | "netPaid" | "balanceDue" | "status"> }>(
       `/api/v2/accounting/payments/${encodeURIComponent(paymentEventId)}/reversals`,
-      { method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify(input) },
+      { method: "POST", headers: { "Idempotency-Key": createIdempotencyKey() }, body: JSON.stringify(input) },
     ),
 };

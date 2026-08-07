@@ -37,7 +37,6 @@ import {
   FileText,
 } from 'lucide-react';
 import { toast } from 'sonner';
-import { formatDisplayDate as formatDate } from '../lib/businessDate';
 import { usePersistentState } from '../hooks/usePersistentState';
 import { useLocalization } from '../contexts/LocalizationContext';
 import {
@@ -49,6 +48,7 @@ import {
   type MaintenanceList,
   type ManagedPlan,
 } from '../lib/planManagementApi';
+import { paymentsV2Api } from '../lib/paymentsV2Api';
 
 type MemberForm = {
   id?: string;
@@ -78,6 +78,7 @@ const DEFAULT_MEMBER_STATUSES = [
 ];
 const DEFAULT_PAYMENT_STATUSES = [
   { value: 'paid', label: 'Paid' },
+  { value: 'partial', label: 'Partially Paid' },
   { value: 'pending', label: 'Pending' },
 ];
 
@@ -105,6 +106,15 @@ function toMemberForm(member?: MembershipMember): MemberForm {
   };
 }
 
+function formatDate(value?: string | null) {
+  if (!value) return '—';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return String(value).slice(0, 10);
+  const day = String(parsed.getDate()).padStart(2, '0');
+  const month = String(parsed.getMonth() + 1).padStart(2, '0');
+  const year = parsed.getFullYear();
+  return `${day}/${month}/${year}`;
+}
 
 function addDaysToDate(date: string, days: number) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(days)) return '';
@@ -123,6 +133,17 @@ function getLatestSubscriptionEndDate(subscriptions: MembershipSubscription[]) {
 
 function getLatestInvoice(invoices: MembershipInvoice[]) {
   return [...invoices].sort((a, b) => String(b.createdAt || b.dueDate || '').localeCompare(String(a.createdAt || a.dueDate || '')))[0] || null;
+}
+
+function getInvoiceSubscriptionV2Id(invoice: MembershipInvoice) {
+  const normalizedInvoice = invoice as MembershipInvoice & {
+    subscriptionV2Id?: string | null;
+  };
+  return (
+    normalizedInvoice.subscriptionV2Id ||
+    String(invoice.data?.subscriptionV2Id || '') ||
+    null
+  );
 }
 
 function dateValue(value?: string | null) {
@@ -356,9 +377,16 @@ export default function Members() {
   const [renewCurrentExpiry, setRenewCurrentExpiry] = useState('');
   const [renewCurrentPlan, setRenewCurrentPlan] = useState('');
   const [renewPaymentStatus, setRenewPaymentStatus] = useState<
-    '' | 'paid' | 'pending'
+    '' | 'paid' | 'partial' | 'pending'
   >('');
   const [renewPaymentDate, setRenewPaymentDate] = useState('');
+  const [renewAmountPaid, setRenewAmountPaid] = useState('');
+  const [renewExistingInvoiceId, setRenewExistingInvoiceId] = useState<string | null>(null);
+  const [renewExistingPaid, setRenewExistingPaid] = useState(0);
+  const [renewPaymentMethod, setRenewPaymentMethod] = useState('');
+  const [renewPaymentReference, setRenewPaymentReference] = useState('');
+  const [renewPaymentNotes, setRenewPaymentNotes] = useState('');
+  const suggestedPaymentReferenceRef = useRef('');
   const [renewMode, setRenewMode] = useState<'create' | 'edit'>('create');
   const [renewExistingLegacySubscriptionId, setRenewExistingLegacySubscriptionId] =
     useState<string | null>(null);
@@ -443,6 +471,47 @@ export default function Members() {
       ) || null,
     [availableNewSubscriptionPlans, newSubscriptionPlanVersionId],
   );
+  const renewalTotal = Number(
+    (subscriptionIntent === 'new' ? selectedNewPlanVersion?.price : undefined) ??
+      selectedRenewPlanVersion?.price ?? selectedRenewPlan?.price ?? 0,
+  );
+  const renewalAmountPending = useMemo(() => {
+    const paid = Number(renewAmountPaid);
+    const currentBalance = Math.max(0, renewalTotal - renewExistingPaid);
+    if (!Number.isFinite(renewalTotal) || !Number.isFinite(paid)) return currentBalance;
+    return Math.max(0, currentBalance - paid);
+  }, [renewAmountPaid, renewExistingPaid, renewalTotal]);
+  const suggestedPaymentReference = useMemo(() => {
+    if (!renewMember || !['paid', 'partial'].includes(renewPaymentStatus)) return '';
+    const memberName = `${renewMember.firstName || ''} ${renewMember.lastName || ''}`.trim();
+    const planName =
+      selectedRenewPlanVersion?.name ||
+      (subscriptionIntent === 'new' ? selectedNewPlanVersion?.name : '') ||
+      selectedRenewPlan?.name ||
+      renewMultiSubscription?.planName ||
+      renewCurrentPlan ||
+      'Plan';
+    const amountPaid =
+      renewPaymentStatus === 'paid' ? renewalTotal : Number(renewAmountPaid || 0);
+    const currency =
+      selectedRenewPlanVersion?.currency ||
+      (subscriptionIntent === 'new' ? selectedNewPlanVersion?.currency : '') ||
+      selectedRenewPlan?.currency ||
+      renewMultiSubscription?.currency ||
+      'USD';
+    return `${memberName} - ${planName} - ${formatMoney(amountPaid, currency)} paid from ${formatMoney(renewalTotal, currency)}`;
+  }, [renewAmountPaid, renewCurrentPlan, renewMember, renewMultiSubscription, renewPaymentStatus, renewalTotal, selectedNewPlanVersion, selectedRenewPlan, selectedRenewPlanVersion, subscriptionIntent]);
+
+  useEffect(() => {
+    const previousSuggestion = suggestedPaymentReferenceRef.current;
+    if (
+      suggestedPaymentReference &&
+      (!renewPaymentReference.trim() || renewPaymentReference === previousSuggestion)
+    ) {
+      setRenewPaymentReference(suggestedPaymentReference);
+    }
+    suggestedPaymentReferenceRef.current = suggestedPaymentReference;
+  }, [renewPaymentReference, suggestedPaymentReference]);
   const renewEndDate = useMemo(
     () => {
       if (renewMode === 'edit') return renewExistingEndDate;
@@ -819,6 +888,12 @@ export default function Members() {
     }
     setRenewPaymentStatus('');
     setRenewPaymentDate('');
+    setRenewAmountPaid('');
+    setRenewExistingInvoiceId(null);
+    setRenewExistingPaid(0);
+    setRenewPaymentMethod('cash');
+    setRenewPaymentReference('');
+    setRenewPaymentNotes('');
     setRenewStartDate(today());
     setRenewExistingLegacySubscriptionId(null);
     setRenewExistingEndDate('');
@@ -851,6 +926,12 @@ export default function Members() {
     setRenewCurrentPlan('');
     setRenewPaymentStatus('');
     setRenewPaymentDate('');
+    setRenewAmountPaid('');
+    setRenewExistingInvoiceId(null);
+    setRenewExistingPaid(0);
+    setRenewPaymentMethod('cash');
+    setRenewPaymentReference('');
+    setRenewPaymentNotes('');
     setRenewMode('create');
     setRenewExistingLegacySubscriptionId(null);
     setRenewExistingEndDate('');
@@ -933,23 +1014,64 @@ export default function Members() {
       }
       setRenewCurrentExpiry(currentExpiry);
 
-      const currentMultiSubscription =
-        multiSubscription?.status === 'active' &&
-        dateValue(multiSubscription.endDate) >= today()
-          ? multiSubscription
-          : null;
-      const multiSubscriptionInvoice = currentMultiSubscription
-        ? response.invoices.find((invoice) => {
+      let multiSubscriptionInvoice = multiSubscription
+        ? [...response.invoices]
+          .sort((a, b) => String(b.createdAt || b.dueDate || '').localeCompare(String(a.createdAt || a.dueDate || '')))
+          .find((invoice) => {
             const invoiceData = invoice.data || {};
             return (
-              invoiceData.subscriptionV2Id === currentMultiSubscription.id &&
+              getInvoiceSubscriptionV2Id(invoice) === multiSubscription.id &&
               (invoiceData.source !== 'subscription_v2_renewal' ||
                 !invoiceData.periodEnd ||
                 dateValue(invoiceData.periodEnd) ===
-                  dateValue(currentMultiSubscription.endDate))
+                  dateValue(multiSubscription.endDate)) &&
+              String(invoice.status || '').toLowerCase() !== 'void'
             );
           }) || null
         : null;
+      if (
+        multiSubscription &&
+        !multiSubscriptionInvoice &&
+        ['pending', 'partial', 'overdue'].includes(
+          String(multiSubscription.paymentStatus).toLowerCase(),
+        )
+      ) {
+        const accountingResponse = await paymentsV2Api.listInvoices();
+        const accountingInvoice = accountingResponse.invoices.find(
+          (invoice) =>
+            invoice.subscriptionId === multiSubscription.id &&
+            !['paid', 'waived', 'refunded'].includes(invoice.status),
+        );
+        if (accountingInvoice) {
+          multiSubscriptionInvoice = ({
+            id: accountingInvoice.id,
+            invoiceNumber: accountingInvoice.invoiceNumber,
+            memberId: accountingInvoice.memberId,
+            status: accountingInvoice.status,
+            subtotal: Number(accountingInvoice.total),
+            taxAmount: 0,
+            total: Number(accountingInvoice.total),
+            currency: accountingInvoice.currency,
+            dueDate: accountingInvoice.dueDate,
+            paidAt: null,
+            createdAt: accountingInvoice.createdAt || accountingInvoice.dueDate,
+            data: {
+              source: 'subscription_v2_renewal',
+              subscriptionV2Id: accountingInvoice.subscriptionId,
+              amountPaid: accountingInvoice.netPaid,
+              amountPending: accountingInvoice.balanceDue,
+              periodEnd: multiSubscription.endDate,
+            },
+          } as unknown) as MembershipInvoice;
+        }
+      }
+      const currentMultiSubscription =
+        multiSubscription &&
+        (multiSubscriptionInvoice ||
+          (multiSubscription.status === 'active' &&
+            dateValue(multiSubscription.endDate) >= today()))
+          ? multiSubscription
+          : null;
       const shouldEditMultiPayment = Boolean(
         currentMultiSubscription &&
           (['pending', 'partial', 'overdue'].includes(
@@ -989,6 +1111,8 @@ export default function Members() {
             ? 'paid'
             : 'pending';
         setRenewMode('edit');
+        setRenewExistingInvoiceId(multiSubscriptionInvoice?.id || null);
+        setRenewExistingPaid(Number(multiSubscriptionInvoice?.data?.amountPaid || 0));
         setRenewStartDate(dateValue(currentMultiSubscription.startDate));
         setRenewExistingEndDate(dateValue(currentMultiSubscription.endDate));
         setRenewPaymentStatus(paymentStatus);
@@ -1024,7 +1148,31 @@ export default function Members() {
       return;
     }
     if (!renewPaymentStatus) {
-      toast.error('Select Paid or Payment pending.');
+      toast.error('Select Paid, Partially Paid or Payment pending.');
+      return;
+    }
+    if (renewPaymentStatus === 'partial') {
+      if (subscriptionIntent === 'renew' && !renewMultiSubscription) {
+        toast.error('The managed renewal invoice was not found.');
+        return;
+      }
+      const amountPaid = Number(renewAmountPaid);
+      const availableBalance = Math.max(0, renewalTotal - renewExistingPaid);
+      if (!Number.isFinite(amountPaid) || amountPaid <= 0 || amountPaid >= availableBalance) {
+        toast.error('Amount paid must be greater than zero and lower than the current pending amount.');
+        return;
+      }
+      if (!renewPaymentMethod || !renewPaymentReference.trim()) {
+        toast.error('Payment method and reference are required.');
+        return;
+      }
+    }
+    if (
+      renewPaymentStatus === 'paid' &&
+      renewMode === 'create' &&
+      (!renewPaymentMethod || !renewPaymentReference.trim())
+    ) {
+      toast.error('Payment method and reference are required.');
       return;
     }
     if (!renewPaymentDate) {
@@ -1035,11 +1183,11 @@ export default function Members() {
       );
       return;
     }
-    if (renewPaymentStatus === 'pending' && renewPaymentDate > renewEndDate) {
+    if (['pending', 'partial'].includes(renewPaymentStatus) && renewPaymentDate > renewEndDate) {
       toast.error('Estimated payment date cannot be after End Date.');
       return;
     }
-    if (renewPaymentStatus === 'pending' && renewPaymentDate < today()) {
+    if (['pending', 'partial'].includes(renewPaymentStatus) && renewPaymentDate < today()) {
       toast.error('Estimated payment date cannot be in the past.');
       return;
     }
@@ -1074,6 +1222,10 @@ export default function Members() {
           endDate: renewEndDate,
           paymentStatus: renewPaymentStatus,
           paymentDate: renewPaymentDate,
+          amountPaid: renewPaymentStatus === 'partial' ? renewAmountPaid : undefined,
+          paymentMethod: renewPaymentStatus !== 'pending' ? renewPaymentMethod : undefined,
+          paymentReference: renewPaymentStatus !== 'pending' ? renewPaymentReference.trim() : undefined,
+          paymentNotes: renewPaymentStatus !== 'pending' ? renewPaymentNotes.trim() : undefined,
         };
         try {
           await subscriptionsV2Api.createSubscription(creationPayload);
@@ -1118,6 +1270,12 @@ export default function Members() {
             renewMultiSubscription.id,
             renewPaymentStatus,
             renewPaymentDate,
+            renewPaymentStatus === 'partial' ? {
+              amountPaid: renewAmountPaid,
+              paymentMethod: renewPaymentMethod,
+              paymentReference: renewPaymentReference.trim(),
+              paymentNotes: renewPaymentNotes.trim() || undefined,
+            } : undefined,
           );
         } else if (renewExistingLegacySubscriptionId) {
           await membershipApi.updateSubscriptionPaymentStatus(
@@ -1149,6 +1307,10 @@ export default function Members() {
             planVersionId: renewPlanVersionId,
             paymentStatus: renewPaymentStatus,
             paymentDate: renewPaymentDate,
+            amountPaid: renewPaymentStatus === 'partial' ? renewAmountPaid : undefined,
+            paymentMethod: renewPaymentStatus !== 'pending' ? renewPaymentMethod : undefined,
+            paymentReference: renewPaymentStatus !== 'pending' ? renewPaymentReference.trim() : undefined,
+            paymentNotes: renewPaymentStatus !== 'pending' ? renewPaymentNotes.trim() : undefined,
             confirmOutstandingPayment,
           },
         );
@@ -2126,8 +2288,9 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                   required
                   disabled={renewPaymentLocked}
                   onChange={(event) => {
-                    const value = event.target.value as '' | 'paid' | 'pending';
+                    const value = event.target.value as '' | 'paid' | 'partial' | 'pending';
                     setRenewPaymentStatus(value);
+                    if (value !== 'partial') setRenewAmountPaid('');
                     setRenewPaymentDate(
                       value === 'paid'
                         ? today()
@@ -2164,6 +2327,74 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                 </p>
               </div>
             </div>
+            {renewPaymentStatus === 'partial' && (
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="renewAmountPaid">Amount paid</Label>
+                  <Input
+                    id="renewAmountPaid"
+                    type="number"
+                    min="0.01"
+                    max={Math.max(0, renewalTotal - renewExistingPaid - 0.01)}
+                    step="0.01"
+                    value={renewAmountPaid}
+                    onChange={(event) => setRenewAmountPaid(event.target.value)}
+                    required
+                  />
+                  <p className="text-xs text-slate-500">Enter only the amount actually received.</p>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="renewAmountPending">Amount pending</Label>
+                  <Input
+                    id="renewAmountPending"
+                    value={formatMoney(renewalAmountPending, (subscriptionIntent === 'new' ? selectedNewPlanVersion?.currency : undefined) || selectedRenewPlanVersion?.currency || selectedRenewPlan?.currency || renewMultiSubscription?.currency || 'USD')}
+                    readOnly
+                    disabled
+                  />
+                  <p className="text-xs text-slate-500">Calculated automatically from the subscription total.</p>
+                </div>
+              </div>
+            )}
+            {['paid', 'partial'].includes(renewPaymentStatus) && renewMode === 'create' ||
+            renewPaymentStatus === 'partial' && renewMode === 'edit' ? (
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="renewPaymentMethod">Payment method</Label>
+                  <select
+                    id="renewPaymentMethod"
+                    className="h-9 w-full rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+                    value={renewPaymentMethod}
+                    onChange={(event) => setRenewPaymentMethod(event.target.value)}
+                    required
+                  >
+                    <option value="">Select payment method</option>
+                    <option value="cash">Cash</option>
+                    <option value="card">Card</option>
+                    <option value="bank_transfer">Bank transfer</option>
+                    <option value="other">Other</option>
+                  </select>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="renewPaymentReference">Payment reference</Label>
+                  <Input
+                    id="renewPaymentReference"
+                    value={renewPaymentReference}
+                    onChange={(event) => setRenewPaymentReference(event.target.value)}
+                    placeholder="Receipt, terminal or transfer reference"
+                    required
+                  />
+                </div>
+                <div className="space-y-2 md:col-span-2">
+                  <Label htmlFor="renewPaymentNotes">Payment notes</Label>
+                  <Input
+                    id="renewPaymentNotes"
+                    value={renewPaymentNotes}
+                    onChange={(event) => setRenewPaymentNotes(event.target.value)}
+                    placeholder="Optional notes"
+                  />
+                </div>
+              </div>
+            ) : null}
             <div className="flex flex-wrap justify-end gap-2 pt-2">
               {renewMember && (
                 <>
@@ -2183,6 +2414,7 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                   renewPaymentLocked ||
                   !renewPaymentStatus ||
                   !renewPaymentDate ||
+                  (renewPaymentStatus === 'partial' && !renewAmountPaid) ||
                   (subscriptionIntent === 'new'
                     ? !renewMember || !selectedNewPlanVersion
                     : renewMode === 'create' &&

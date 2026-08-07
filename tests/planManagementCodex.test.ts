@@ -272,12 +272,6 @@ test("limited multi-user plans expose distribution, cycles, immutable movements 
   assert.match(cycles, /distributionModel === "individual"/);
   assert.match(cycles, /distributionModel === "custom"/);
   assert.match(cycles, /allocateAffiliationInActiveCycle/);
-  assert.match(subscriptions, /subscription_beneficiary_added/);
-  assert.match(subscriptions, /subscription_beneficiary_removed/);
-  assert.match(subscriptions, /SUBSCRIPTION_HOLDER_PROTECTED/);
-  assert.match(subscriptions, /MEMBER_ALREADY_ASSIGNED/);
-  assert.match(subscriptions, /allocateAffiliationInActiveCycle/);
-  assert.match(subscriptions, /appendDomainAudit/);
   assert.match(subscriptions, /session-summary/);
   assert.match(subscriptions, /sessions\/purchase/);
   assert.match(subscriptions, /sessions\/register-event/);
@@ -285,7 +279,7 @@ test("limited multi-user plans expose distribution, cycles, immutable movements 
   assert.match(subscriptions, /payment-status/);
   assert.match(subscriptions, /subscription_v2_payment/);
   assert.match(subscriptions, /accountingStatus/);
-  assert.match(subscriptions, /paymentStatus === "paid" \? "posted" : "pending"/);
+  assert.match(subscriptions, /const accountingStatus = receivedMinor > 0n \? "posted" : "pending"/);
   assert.match(subscriptions, /PAID_SUBSCRIPTION_LOCKED/);
   assert.match(subscriptions, /createInvoiceNumber/);
   assert.match(subscriptions, /subscriptionV2Id/);

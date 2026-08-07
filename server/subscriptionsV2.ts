@@ -35,7 +35,7 @@ type PoolProvider = () => Pool | null;
 type AuthenticatedRequest = Request & { user?: { uid?: string; email?: string; role?: string } };
 
 function createId(prefix: string) {
-  return `${prefix}_${crypto.randomUUID().replace(/-/g, "")}`;
+  return `${prefix}_${crypto.randomBytes(16).toString("hex")}`;
 }
 
 function createInvoiceNumber() {
@@ -435,10 +435,27 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
       const confirmedOutstandingPayment = req.body.confirmOutstandingPayment === true;
 
       const rawPaymentStatus = normalizeString(req.body.paymentStatus);
-      if (!["paid", "pending"].includes(rawPaymentStatus)) {
-        return res.status(400).json({ error: "paymentStatus must be paid or pending" });
+      if (!["paid", "partial", "pending"].includes(rawPaymentStatus)) {
+        return res.status(400).json({ error: "paymentStatus must be paid, partial or pending" });
       }
       const paymentStatus = normalizePaymentStatus(rawPaymentStatus);
+      const priceMinor = moneyToMinor(pv.price);
+      let paidMinor = paymentStatus === "paid" ? priceMinor : 0n;
+      if (paymentStatus === "partial") {
+        try { paidMinor = moneyToMinor(req.body.amountPaid); }
+        catch { return res.status(400).json({ error: "amountPaid must be a valid monetary amount" }); }
+        if (paidMinor <= 0n || paidMinor >= priceMinor) {
+          return res.status(400).json({ error: "amountPaid must be greater than zero and lower than the subscription total" });
+        }
+      }
+      const amountPaid = minorToMoney(paidMinor);
+      const amountPending = minorToMoney(priceMinor - paidMinor);
+      const paymentMethod = normalizeString(req.body.paymentMethod).toLowerCase();
+      const paymentReference = normalizeString(req.body.paymentReference);
+      const paymentNotes = normalizeString(req.body.paymentNotes);
+      if (paidMinor > 0n && (!paymentMethod || !paymentReference)) {
+        return res.status(400).json({ error: "Payment method and reference are required", code: "PAYMENT_TRACEABILITY_REQUIRED" });
+      }
       const today = new Date().toISOString().slice(0, 10);
       const requestedStartDate =
         normalizeDate(req.body.startDate) || today;
@@ -514,6 +531,10 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
          VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)`,
         [id, pv.plan_id, planVersionId, holderMemberId, startDate, endDate, pv.auto_renew, price, pv.currency, paymentStatus, Number(pv.max_members)],
       );
+      await connection.query(
+        `UPDATE subscriptions SET data = JSON_SET(COALESCE(data, JSON_OBJECT()), '$.amountPaid', ?, '$.amountPending', ?, '$.expectedPaymentDate', ?) WHERE id = ?`,
+        [amountPaid, amountPending, ["pending", "partial"].includes(paymentStatus) ? paymentDate : null, id],
+      );
 
       const periodId = await createInitialContractPeriod(connection, {
         subscriptionId: id,
@@ -586,8 +607,10 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
             periodStart: startDate,
             periodEnd: endDate,
             paymentStatus,
+            amountPaid,
+            amountPending,
             expectedPaymentDate:
-              paymentStatus === "pending" ? paymentDate : null,
+              ["pending", "partial"].includes(paymentStatus) ? paymentDate : null,
           }),
         ],
       );
@@ -598,9 +621,17 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
               '$.expectedPaymentDate', ?
             )
           WHERE id = ?`,
-        [paymentStatus === "pending" ? paymentDate : null, id],
+        [["pending", "partial"].includes(paymentStatus) ? paymentDate : null, id].flat(),
       );
-      await connection.query(
+      if (paidMinor > 0n) await connection.query(
+        `INSERT INTO invoice_payment_events_v2
+          (id, invoice_id, event_type, amount, currency, effective_date, reason, performed_by, idempotency_key, data)
+         VALUES (?, ?, 'payment', ?, ?, ?, ?, ?, ?, ?)`,
+        [createId("pay"), invoiceId, amountPaid, pv.currency || "USD", requestedStartDate,
+          "Initial subscription payment", req.user?.email || req.user?.uid || "system",
+          `subscription-create:${invoiceId}:payment`, JSON.stringify({ source: "subscription_v2", subscriptionId: id, amountPaid, amountPending, paymentMethod, reference: paymentReference, notes: paymentNotes || undefined })],
+      );
+      if (paidMinor > 0n) await connection.query(
         `INSERT INTO finance_transactions
           (id, type, category, amount, transaction_date, source, reference_type,
            reference_id, description, status, created_by, approved_by, data)
@@ -608,20 +639,23 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
                  'subscription', 'subscription_v2_payment', ?, ?, ?, ?, ?, ?)`,
         [
           createId("ftx"),
-          price,
-          paymentDate,
+          amountPaid,
+          requestedStartDate,
           id,
           `Subscription payment ${invoiceNumber} - member ${holderMemberId} - ${pv.name || "plan"}`,
-          paymentStatus === "paid" ? "posted" : "pending",
+          "posted",
           req.user?.email || req.user?.uid || "system",
-          paymentStatus === "paid"
-            ? req.user?.email || req.user?.uid || "system"
-            : null,
+          req.user?.email || req.user?.uid || "system",
           JSON.stringify({
             source: "subscription_v2",
             subscriptionId: id,
             paymentStatus,
             invoiceNumber,
+            invoiceId,
+            amountPaid,
+            amountPending,
+            paymentMethod,
+            reference: paymentReference,
             currency: pv.currency || "USD",
           }),
         ],
@@ -742,6 +776,9 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
     try {
       const pool = requirePool(poolProvider);
       const paymentStatus = normalizePaymentStatus(req.body.paymentStatus);
+      if (!["paid", "partial", "pending"].includes(paymentStatus)) {
+        return res.status(400).json({ error: "paymentStatus must be paid, partial or pending" });
+      }
       connection = await pool.getConnection();
       await connection.beginTransaction();
       const [rows]: any = await connection.query(
@@ -779,14 +816,14 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
           error: "An estimated payment date is required for pending payments",
         });
       }
-      if (paymentStatus === "pending" && paymentDate < today) {
+      if (["pending", "partial"].includes(paymentStatus) && paymentDate < today) {
         await connection.rollback();
         return res.status(400).json({
           error: "The estimated payment date cannot be in the past",
         });
       }
       if (
-        paymentStatus === "pending" &&
+        ["pending", "partial"].includes(paymentStatus) &&
         paymentDate > String(rows[0].end_date).slice(0, 10)
       ) {
         await connection.rollback();
@@ -802,13 +839,15 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
       let accountingCategory = "Membership Subscription";
       let accountingDescriptionPrefix = "Subscription payment";
       const [invoiceRows]: any = await connection.query(
-        `SELECT id, invoice_number, data
+        `SELECT id, invoice_number, total, currency, data
            FROM invoices
-          WHERE JSON_UNQUOTE(JSON_EXTRACT(data, '$.subscriptionV2Id')) = ?
-          ORDER BY created_at DESC
+          WHERE subscription_v2_id = ?
+             OR JSON_UNQUOTE(JSON_EXTRACT(data, '$.subscriptionV2Id')) = ?
+             OR subscription_id = ?
+          ORDER BY (status IN ('issued', 'partial', 'pending', 'overdue')) DESC, created_at DESC
           LIMIT 1
           FOR UPDATE`,
-        [req.params.id],
+        [req.params.id, req.params.id, req.params.id],
       );
       const existingInvoiceData =
         typeof invoiceRows[0]?.data === "string"
@@ -817,6 +856,14 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
       if (invoiceRows.length) {
         invoiceId = invoiceRows[0].id;
         invoiceNumber = invoiceRows[0].invoice_number;
+        await connection.query(
+          `UPDATE invoices
+              SET subscription_v2_id = ?,
+                  data = JSON_SET(COALESCE(data, JSON_OBJECT()), '$.subscriptionV2Id', ?),
+                  updated_at = NOW()
+            WHERE id = ?`,
+          [req.params.id, req.params.id, invoiceId],
+        );
         if (existingInvoiceData.source === "subscription_v2_renewal") {
           accountingReferenceType = "subscription_v2_renewal_invoice";
           accountingReferenceId = invoiceId!;
@@ -875,26 +922,68 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
           ],
         );
       }
+      const totalMinor = moneyToMinor(invoiceRows[0]?.total ?? rows[0].price_paid ?? 0);
+      const currentDataPaid = moneyToMinor(existingInvoiceData.amountPaid ?? "0.00");
+      let receivedMinor = 0n;
+      if (paymentStatus === "partial") {
+        try { receivedMinor = moneyToMinor(req.body.amountPaid); }
+        catch { await connection.rollback(); return res.status(400).json({ error: "amountPaid must be a valid monetary amount" }); }
+        if (receivedMinor <= 0n || currentDataPaid + receivedMinor >= totalMinor) {
+          await connection.rollback();
+          return res.status(400).json({ error: "amountPaid must be greater than zero and lower than the current pending amount" });
+        }
+      } else if (paymentStatus === "paid") {
+        receivedMinor = totalMinor - currentDataPaid;
+      }
+      const netPaidMinor = currentDataPaid + receivedMinor;
+      const amountPaid = minorToMoney(netPaidMinor);
+      const amountPending = minorToMoney(totalMinor - netPaidMinor);
+      const paymentMethod = normalizeString(req.body.paymentMethod).toLowerCase();
+      const paymentReference = normalizeString(req.body.paymentReference);
+      const paymentNotes = normalizeString(req.body.paymentNotes);
+      if (paymentStatus === "partial" && (!paymentMethod || !paymentReference)) {
+        await connection.rollback();
+        return res.status(400).json({ error: "Payment method and reference are required", code: "PAYMENT_TRACEABILITY_REQUIRED" });
+      }
+      if (receivedMinor > 0n) await connection.query(
+        `INSERT INTO invoice_payment_events_v2
+          (id, invoice_id, event_type, amount, currency, effective_date, reason, performed_by, idempotency_key, data)
+         VALUES (?, ?, 'payment', ?, ?, ?, ?, ?, ?, ?)`,
+        [createId("pay"), invoiceId, minorToMoney(receivedMinor), rows[0].currency || "USD", today,
+          "Subscription payment", req.user?.email || req.user?.uid || "system",
+          normalizeString(req.get("Idempotency-Key")) || `subscription-payment:${invoiceId}:${createId("key")}`,
+          JSON.stringify({ source: "subscription_v2", subscriptionId: req.params.id, paymentMethod, reference: paymentReference, notes: paymentNotes || undefined })],
+      );
+      await connection.query(
+        `UPDATE invoices SET status = ?, paid_at = CASE WHEN ? = 'paid' THEN COALESCE(paid_at, NOW()) ELSE NULL END,
+            data = JSON_SET(COALESCE(data, JSON_OBJECT()), '$.paymentStatus', ?, '$.amountPaid', ?, '$.amountPending', ?), updated_at = NOW()
+          WHERE id = ?`,
+        [paymentStatus === "paid" ? "paid" : "issued", paymentStatus, paymentStatus, amountPaid, amountPending, invoiceId],
+      );
       await connection.query(
         `UPDATE subscriptions
             SET payment_status = ?,
                 data = JSON_SET(
                   COALESCE(data, JSON_OBJECT()),
                   '$.expectedPaymentDate', ?
+                  , '$.amountPaid', ?
+                  , '$.amountPending', ?
                 ),
                 version = version + 1,
                 updated_at = NOW()
           WHERE id = ?`,
         [
           paymentStatus,
-          paymentStatus === "pending" ? paymentDate : null,
+          ["pending", "partial"].includes(paymentStatus) ? paymentDate : null,
+          amountPaid,
+          amountPending,
           req.params.id,
         ],
       );
-      const accountingStatus = paymentStatus === "paid" ? "posted" : "pending";
+      const accountingStatus = receivedMinor > 0n ? "posted" : "pending";
       const holderName = `${rows[0].holder_first_name || ""} ${rows[0].holder_last_name || ""}`.trim();
       const accountingTransactionId = createId("ftx");
-      await connection.query(
+      if (receivedMinor > 0n) await connection.query(
         `INSERT INTO finance_transactions
           (id, type, category, amount, transaction_date, source, reference_type,
            reference_id, description, status, created_by, approved_by, data)
@@ -911,22 +1000,25 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
         [
           accountingTransactionId,
           accountingCategory,
-          Number(rows[0].price_paid || 0),
-          paymentDate,
+          minorToMoney(receivedMinor),
+          today,
           accountingReferenceType,
           accountingReferenceId,
           `${accountingDescriptionPrefix}${invoiceNumber ? ` ${invoiceNumber}` : ""} - ${holderName || "member"} - ${rows[0].plan_name || "plan"}`,
           accountingStatus,
           req.user?.email || req.user?.uid || "system",
-          paymentStatus === "paid"
-            ? req.user?.email || req.user?.uid || "system"
-            : null,
+          req.user?.email || req.user?.uid || "system",
           JSON.stringify({
             source: "subscription_v2",
             subscriptionId: req.params.id,
             paymentStatus,
             previousPaymentStatus,
             invoiceNumber,
+            invoiceId,
+            amountPaid,
+            amountPending,
+            paymentMethod,
+            reference: paymentReference,
             currency: rows[0].currency || "USD",
           }),
         ],
@@ -2373,6 +2465,17 @@ function mapSubscription(row: any) {
     legacySubscriptionId: row.legacy_subscription_id || null,
     source: "v2",
   };
+}
+
+function moneyToMinor(value: unknown) {
+  const raw = String(value ?? "").trim();
+  if (!/^\d+(?:\.\d{1,2})?$/.test(raw)) throw new Error("INVALID_MONETARY_AMOUNT");
+  const [whole, fraction = ""] = raw.split(".");
+  return BigInt(whole) * 100n + BigInt(fraction.padEnd(2, "0"));
+}
+
+function minorToMoney(value: bigint) {
+  return `${value / 100n}.${String(value % 100n).padStart(2, "0")}`;
 }
 
 function mapAffiliation(row: any) {

@@ -5,7 +5,7 @@
  * All operations are transactional and auditable.
  */
 
-import crypto from "crypto";
+import { randomBytes } from "node:crypto";
 import type { Express, Request, Response } from "express";
 import type { Pool } from "mysql2/promise";
 import { requirePermission } from "./rbac";
@@ -16,17 +16,18 @@ import {
   OUTSTANDING_PAYMENT_STATUSES,
 } from "./subscriptionPaymentRules";
 import { upsertTrainerPlanCommission } from "./trainerCommissions";
+import { minorToMoney, moneyToMinor } from "./domain/v2/money";
 
 type PoolProvider = () => Pool | null;
 type AuthenticatedRequest = Request & { user?: { uid?: string; email?: string; role?: string } };
 
 function createId(prefix: string) {
-  return `${prefix}_${crypto.randomUUID().replace(/-/g, "")}`;
+  return `${prefix}_${randomBytes(16).toString("hex")}`;
 }
 
 function createInvoiceNumber() {
   const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
-  return `INV-${stamp}-${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
+  return `INV-${stamp}-${randomBytes(3).toString("hex").toUpperCase()}`;
 }
 
 function requirePool(poolProvider: PoolProvider) {
@@ -226,9 +227,9 @@ export function registerSubscriptionLifecycleRoutes(app: Express, poolProvider: 
         });
       }
       const requestedPaymentStatus = normalizeString(req.body.paymentStatus).toLowerCase();
-      if (!["paid", "pending"].includes(requestedPaymentStatus)) {
+      if (!["paid", "partial", "pending"].includes(requestedPaymentStatus)) {
         return res.status(400).json({
-          error: "paymentStatus is required and must be paid or pending",
+          error: "paymentStatus is required and must be paid, partial or pending",
         });
       }
       const renewalPaymentStatus = normalizePaymentStatus(requestedPaymentStatus);
@@ -251,6 +252,30 @@ export function registerSubscriptionLifecycleRoutes(app: Express, poolProvider: 
         renewalPlan.status !== "active"
       ) {
         return res.status(409).json({ error: "Selected plan is not active" });
+      }
+      const amount = Number(renewalPlan.price || 0);
+      const totalMinor = moneyToMinor(renewalPlan.price || 0);
+      let paidMinor = renewalPaymentStatus === "paid" ? totalMinor : 0n;
+      if (renewalPaymentStatus === "partial") {
+        try {
+          paidMinor = moneyToMinor(req.body.amountPaid);
+        } catch {
+          return res.status(400).json({ error: "amountPaid must be a valid monetary amount", code: "INVALID_PARTIAL_PAYMENT_AMOUNT" });
+        }
+        if (paidMinor <= 0n || paidMinor >= totalMinor) {
+          return res.status(400).json({ error: "amountPaid must be greater than zero and lower than the invoice total", code: "INVALID_PARTIAL_PAYMENT_AMOUNT" });
+        }
+      }
+      const amountPaid = minorToMoney(paidMinor);
+      const amountPending = minorToMoney(totalMinor - paidMinor);
+      const paymentMethod = normalizeString(req.body.paymentMethod);
+      const paymentReference = normalizeString(req.body.paymentReference);
+      const paymentNotes = normalizeString(req.body.paymentNotes);
+      if (paidMinor > 0n && (!paymentMethod || !paymentReference)) {
+        return res.status(400).json({
+          error: "paymentMethod and paymentReference are required when money is received",
+          code: "PAYMENT_TRACEABILITY_REQUIRED",
+        });
       }
       const rawDurationDays = Number(renewalPlan.duration_days);
       const durationDays =
@@ -310,12 +335,12 @@ export function registerSubscriptionLifecycleRoutes(app: Express, poolProvider: 
           error: "An estimated payment date is required for pending payments",
         });
       }
-      if (renewalPaymentStatus === "pending" && paymentDate < today.toISOString().slice(0, 10)) {
+      if (["pending", "partial"].includes(renewalPaymentStatus) && paymentDate < today.toISOString().slice(0, 10)) {
         return res.status(400).json({
           error: "The estimated payment date cannot be in the past",
         });
       }
-      if (renewalPaymentStatus === "pending" && paymentDate > newEndDate) {
+      if (["pending", "partial"].includes(renewalPaymentStatus) && paymentDate > newEndDate) {
         return res.status(400).json({
           error: "The estimated payment date cannot be after the subscription end date",
         });
@@ -334,7 +359,9 @@ export function registerSubscriptionLifecycleRoutes(app: Express, poolProvider: 
                 payment_status = ?,
                 data = JSON_SET(
                   COALESCE(data, JSON_OBJECT()),
-                  '$.expectedPaymentDate', ?
+                  '$.expectedPaymentDate', ?,
+                  '$.amountPaid', ?,
+                  '$.amountPending', ?
                 ),
                 version = version + 1,
                 updated_at = NOW()
@@ -348,7 +375,9 @@ export function registerSubscriptionLifecycleRoutes(app: Express, poolProvider: 
           newStartDate,
           newEndDate,
           renewalPaymentStatus,
-          renewalPaymentStatus === "pending" ? paymentDate : null,
+          ["pending", "partial"].includes(renewalPaymentStatus) ? paymentDate : null,
+          amountPaid,
+          amountPending,
           req.params.id,
         ],
       );
@@ -409,12 +438,11 @@ export function registerSubscriptionLifecycleRoutes(app: Express, poolProvider: 
       );
       const invoiceId = createId("inv");
       const invoiceNumber = createInvoiceNumber();
-      const amount = Number(renewalPlan.price || 0);
       const renewalCurrency = renewalPlan.currency || sub.currency || "USD";
       await pool.query(
         `INSERT INTO invoices
-          (id, invoice_number, member_id, subscription_id, subscription_v2_id,
-           status, subtotal, tax_amount, total, currency, due_date, paid_at, data)
+          (id, invoice_number, member_id, subscription_id, subscription_v2_id, status,
+           subtotal, tax_amount, total, currency, due_date, paid_at, data)
          VALUES (?, ?, ?, NULL, ?, ?, ?, 0, ?, ?, ?, ?, ?)`,
         [
           invoiceId,
@@ -433,15 +461,30 @@ export function registerSubscriptionLifecycleRoutes(app: Express, poolProvider: 
             periodStart: newStartDate,
             periodEnd: newEndDate,
             paymentStatus: renewalPaymentStatus,
+            amountPaid,
+            amountPending,
             expectedPaymentDate:
-              renewalPaymentStatus === "pending" ? paymentDate : null,
+              ["pending", "partial"].includes(renewalPaymentStatus) ? paymentDate : null,
           }),
         ],
       );
       const holderName =
         `${sub.holder_first_name || ""} ${sub.holder_last_name || ""}`.trim() ||
         sub.holder_member_id;
-      await pool.query(
+      if (paidMinor > 0n) await pool.query(
+        `INSERT INTO invoice_payment_events_v2
+          (id, invoice_id, event_type, amount, currency, effective_date,
+           reason, performed_by, idempotency_key, data)
+         VALUES (?, ?, 'payment', ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          createId("pay"), invoiceId, amountPaid, renewalCurrency,
+          today.toISOString().slice(0, 10), "Subscription renewal payment",
+          req.user?.email || req.user?.uid || "system",
+          `subscription-renewal:${invoiceId}:payment`,
+          JSON.stringify({ source: "subscription_v2_renewal", subscriptionId: req.params.id, amountPaid, amountPending, paymentMethod, reference: paymentReference, notes: paymentNotes }),
+        ],
+      );
+      if (paidMinor > 0n) await pool.query(
         `INSERT INTO finance_transactions
           (id, type, category, amount, transaction_date, source,
            reference_type, reference_id, description, status,
@@ -450,21 +493,21 @@ export function registerSubscriptionLifecycleRoutes(app: Express, poolProvider: 
                  'subscription_v2_renewal_invoice', ?, ?, ?, ?, ?, ?)`,
         [
           createId("ftx"),
-          amount,
-          paymentDate,
+          amountPaid,
+          today.toISOString().slice(0, 10),
           invoiceId,
           `Subscription renewal ${invoiceNumber} - ${holderName} - ${renewalPlan.name || sub.plan_name || "plan"}`,
-          renewalPaymentStatus === "paid" ? "posted" : "pending",
+          "posted",
           req.user?.email || req.user?.uid || "system",
-          renewalPaymentStatus === "paid"
-            ? req.user?.email || req.user?.uid || "system"
-            : null,
+          req.user?.email || req.user?.uid || "system",
           JSON.stringify({
             source: "subscription_v2_renewal",
             subscriptionId: req.params.id,
             invoiceId,
             invoiceNumber,
             paymentStatus: renewalPaymentStatus,
+            amountPaid,
+            amountPending,
             currency: renewalCurrency,
           }),
         ],
@@ -504,6 +547,8 @@ export function registerSubscriptionLifecycleRoutes(app: Express, poolProvider: 
         newEndDate,
         paymentStatus: renewalPaymentStatus,
         paymentDate,
+        amountPaid,
+        amountPending,
         invoiceNumber,
       });
     } catch (error) { next(error); }
