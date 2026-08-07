@@ -2443,6 +2443,9 @@ function mapSubscription(row: any) {
     paymentStatus: row.payment_status || "pending",
     expectedPaymentDate:
       subscriptionData.expectedPaymentDate || null,
+    scheduledPlanVersionId: subscriptionData.scheduledPlanVersionId || null,
+    scheduledPlanName: subscriptionData.scheduledPlanName || null,
+    scheduledPlanEffectiveDate: subscriptionData.scheduledPlanEffectiveDate || null,
     maxMembers: Number(row.max_members || 1),
     activeMembers: Number(row.active_members || 1),
     sessionsUnlimited: row.sessions_unlimited !== undefined ? Boolean(row.sessions_unlimited) : true,

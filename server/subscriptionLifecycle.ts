@@ -119,7 +119,7 @@ export function registerSubscriptionLifecycleRoutes(app: Express, poolProvider: 
     } catch (error) { next(error); }
   });
 
-  // Change plan (upgrade/downgrade)
+  // Schedule a plan change for the next cycle. The current contract is immutable.
   app.post("/api/v2/subscriptions/:id/change-plan", requirePermission("membership.write"), async (req: AuthenticatedRequest, res, next) => {
     try {
       const pool = requirePool(poolProvider);
@@ -136,38 +136,64 @@ export function registerSubscriptionLifecycleRoutes(app: Express, poolProvider: 
       // Get current subscription
       const [subRows]: any = await pool.query("SELECT * FROM subscriptions WHERE id = ? AND status = 'active'", [req.params.id]);
       if (subRows.length === 0) return res.status(404).json({ error: "Active subscription not found" });
+      const subscription = subRows[0];
+      if (newPlanVersionId === subscription.plan_version_id) {
+        return res.status(409).json({ error: "The selected plan is already active", code: "PLAN_ALREADY_ACTIVE" });
+      }
+      const [memberRows]: any = await pool.query(
+        `SELECT COUNT(*) AS member_count FROM subscription_members
+          WHERE subscription_id = ? AND status IN ('active', 'suspended')`,
+        [req.params.id],
+      );
+      const memberCount = Number(memberRows[0]?.member_count || 0);
+      const maximumMembers = Math.max(1, Number(newPlan.max_members || 1));
+      if (memberCount > maximumMembers) {
+        return res.status(409).json({
+          error: `Selected plan allows ${maximumMembers} member(s), but this subscription currently has ${memberCount}`,
+          code: "PLAN_CAPACITY_EXCEEDED",
+        });
+      }
+      const currentEndDate = normalizeDate(subscription.end_date instanceof Date
+        ? subscription.end_date.toISOString().slice(0, 10)
+        : subscription.end_date);
+      if (!currentEndDate) return res.status(409).json({ error: "The current subscription end date is invalid" });
+      const effective = new Date(`${currentEndDate}T00:00:00.000Z`);
+      effective.setUTCDate(effective.getUTCDate() + 1);
+      const effectiveDate = effective.toISOString().slice(0, 10);
+      const reason = normalizeString(req.body.reason) || "Plan change scheduled by admin";
 
       const connection = await pool.getConnection();
       try {
         await connection.beginTransaction();
 
-        // Update subscription to new plan
-        const newEndDate = req.body.endDate || (() => {
-          const d = new Date();
-          d.setDate(d.getDate() + Number(newPlan.duration_days || 30));
-          return d.toISOString().slice(0, 10);
-        })();
-
         await connection.query(
-          `UPDATE subscriptions SET plan_version_id = ?, plan_id = ?, price_paid = ?, max_members = ?, end_date = ?, version = version + 1, updated_at = NOW()
-           WHERE id = ?`,
-          [newPlanVersionId, newPlan.plan_id, Number(newPlan.price), Number(newPlan.max_members), newEndDate, req.params.id],
+          `UPDATE subscriptions
+              SET data = JSON_SET(COALESCE(data, JSON_OBJECT()),
+                    '$.scheduledPlanVersionId', ?, '$.scheduledPlanId', ?,
+                    '$.scheduledPlanName', ?, '$.scheduledPlanEffectiveDate', ?,
+                    '$.scheduledPlanReason', ?),
+                  version = version + 1, updated_at = NOW()
+            WHERE id = ?`,
+          [newPlanVersionId, newPlan.plan_id, newPlan.name, effectiveDate, reason, req.params.id],
         );
 
-        // Update affiliations to reference new plan version
         await connection.query(
-          "UPDATE affiliations SET plan_version_id = ?, end_date = ?, updated_at = NOW() WHERE subscription_id = ? AND status = 'active'",
-          [newPlanVersionId, newEndDate, req.params.id],
+          `INSERT INTO subscription_member_history
+            (id, subscription_id, member_id, action, performed_by, details)
+           VALUES (?, ?, ?, 'plan_change_scheduled', ?, ?)`,
+          [createId("smh"), req.params.id, subscription.holder_member_id,
+           req.user?.email || req.user?.uid || null,
+           JSON.stringify({ fromPlanVersionId: subscription.plan_version_id, toPlanVersionId: newPlanVersionId, effectiveDate, reason })],
         );
 
         // Log the change
         await connection.query(
           "INSERT INTO outbox_events (id, event_type, payload, status) VALUES (?, 'plan_changed', ?, 'pending')",
-          [createId("evt"), JSON.stringify({ subscriptionId: req.params.id, newPlanVersionId, changedBy: req.user?.email })],
+          [createId("evt"), JSON.stringify({ subscriptionId: req.params.id, currentPlanVersionId: subscription.plan_version_id, newPlanVersionId, effectiveDate, reason, changedBy: req.user?.email })],
         );
 
         await connection.commit();
-        res.json({ ok: true, subscriptionId: req.params.id, newPlanVersionId, newEndDate });
+        res.json({ ok: true, subscriptionId: req.params.id, currentPlanVersionId: subscription.plan_version_id, scheduledPlanVersionId: newPlanVersionId, effectiveDate });
       } catch (error) {
         await connection.rollback();
         throw error;
@@ -234,8 +260,10 @@ export function registerSubscriptionLifecycleRoutes(app: Express, poolProvider: 
       }
       const renewalPaymentStatus = normalizePaymentStatus(requestedPaymentStatus);
 
+      const subscriptionData = typeof sub.data === "string" ? JSON.parse(sub.data || "{}") : sub.data || {};
+      const scheduledPlanVersionId = normalizeString(subscriptionData.scheduledPlanVersionId);
       const requestedPlanVersionId =
-        normalizeString(req.body.planVersionId) || sub.plan_version_id;
+        normalizeString(req.body.planVersionId) || scheduledPlanVersionId || sub.plan_version_id;
       const [pvRows]: any = await pool.query(
         `SELECT id, plan_id, name, duration_days, price, currency,
                 max_members, status
@@ -358,7 +386,9 @@ export function registerSubscriptionLifecycleRoutes(app: Express, poolProvider: 
                 end_date = ?,
                 payment_status = ?,
                 data = JSON_SET(
-                  COALESCE(data, JSON_OBJECT()),
+                  JSON_REMOVE(COALESCE(data, JSON_OBJECT()),
+                    '$.scheduledPlanVersionId', '$.scheduledPlanId', '$.scheduledPlanName',
+                    '$.scheduledPlanEffectiveDate', '$.scheduledPlanReason'),
                   '$.expectedPaymentDate', ?,
                   '$.amountPaid', ?,
                   '$.amountPending', ?
@@ -423,6 +453,7 @@ export function registerSubscriptionLifecycleRoutes(app: Express, poolProvider: 
             previousEndDate: sub.end_date,
             previousPlanVersionId: sub.plan_version_id,
             newPlanVersionId: requestedPlanVersionId,
+            scheduledPlanApplied: Boolean(scheduledPlanVersionId && scheduledPlanVersionId === requestedPlanVersionId),
             newStartDate,
             newEndDate,
             renewalPaymentStatus,

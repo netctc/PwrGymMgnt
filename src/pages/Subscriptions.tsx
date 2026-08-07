@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import {
   CreditCard,
+  CalendarClock,
   Download,
   Layers,
   MinusCircle,
@@ -22,6 +23,7 @@ import { formatDate } from '../lib/formatDate';
 import {
   subscriptionsV2Api,
   type SubscriptionV2,
+  type PlanVersion,
 } from '../lib/subscriptionsV2Api';
 import { planManagementApi, type MaintenanceList } from '../lib/planManagementApi';
 import { useLocalization } from '../contexts/LocalizationContext';
@@ -50,6 +52,13 @@ function statusBadge(status: string) {
   if (normalized === 'active' || normalized === 'paid') return 'default';
   if (['pending', 'partial', 'overdue'].includes(normalized)) return 'destructive';
   return 'secondary';
+}
+
+function nextDay(value: string) {
+  const date = new Date(`${value}T00:00:00.000Z`);
+  if (Number.isNaN(date.getTime())) return value;
+  date.setUTCDate(date.getUTCDate() + 1);
+  return date.toISOString().slice(0, 10);
 }
 
 export default function Subscriptions() {
@@ -108,6 +117,10 @@ export default function Subscriptions() {
           newMulti: 'اشتراك متعدد المستخدمين',
           currentCycle: 'الدورة الحالية',
           legacy: 'قديم',
+          schedulePlan: 'جدولة الخطة التالية',
+          nextPlan: 'الخطة التالية',
+          effective: 'تاريخ التطبيق',
+          confirmSchedule: 'جدولة التغيير',
         }
       : {
           title: 'Subscriptions',
@@ -160,6 +173,10 @@ export default function Subscriptions() {
           newMulti: 'New multi-user subscription',
           currentCycle: 'Current cycle',
           legacy: 'Legacy',
+          schedulePlan: 'Schedule next plan',
+          nextPlan: 'Next plan',
+          effective: 'Effective date',
+          confirmSchedule: 'Schedule change',
         };
 
   const [view, setView] = useState<DirectoryView>('individual_unlimited');
@@ -167,6 +184,7 @@ export default function Subscriptions() {
   const [planOptions, setPlanOptions] = useState<Array<{ id: string; name: string }>>([]);
   const [trainerOptions, setTrainerOptions] = useState<Array<{ id: string; name: string }>>([]);
   const [maintenanceLists, setMaintenanceLists] = useState<MaintenanceList[]>([]);
+  const [activePlanVersions, setActivePlanVersions] = useState<PlanVersion[]>([]);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
   const [memberStatus, setMemberStatus] = useState('all');
@@ -185,6 +203,10 @@ export default function Subscriptions() {
   const [savingAction, setSavingAction] = useState(false);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
+  const [planChangeSubscription, setPlanChangeSubscription] = useState<SubscriptionV2 | null>(null);
+  const [nextPlanVersionId, setNextPlanVersionId] = useState('');
+  const [planChangeReason, setPlanChangeReason] = useState('');
+  const [savingPlanChange, setSavingPlanChange] = useState(false);
 
   const loadSubscriptions = async () => {
     setLoading(true);
@@ -216,6 +238,12 @@ export default function Subscriptions() {
     planManagementApi.listMaintenance()
       .then((response) => setMaintenanceLists(response.lists))
       .catch(() => setMaintenanceLists([]));
+  }, []);
+
+  useEffect(() => {
+    subscriptionsV2Api.listPlanVersions()
+      .then((response) => setActivePlanVersions(response.planVersions.filter((plan) => plan.status === 'active')))
+      .catch(() => setActivePlanVersions([]));
   }, []);
 
   const listOptions = (keys: string[], fallback: Array<{ value: string; label: string }>) => {
@@ -350,6 +378,29 @@ export default function Subscriptions() {
     }
   };
 
+  const openPlanChange = (subscription: SubscriptionV2) => {
+    if (subscription.source === 'legacy' || subscription.status !== 'active') return;
+    const firstAlternative = activePlanVersions.find((plan) => plan.id !== subscription.planVersionId);
+    setPlanChangeSubscription(subscription);
+    setNextPlanVersionId(subscription.scheduledPlanVersionId || firstAlternative?.id || '');
+    setPlanChangeReason('');
+  };
+
+  const submitPlanChange = async () => {
+    if (!planChangeSubscription || !nextPlanVersionId || !planChangeReason.trim()) return;
+    setSavingPlanChange(true);
+    try {
+      const result = await subscriptionsV2Api.changePlan(planChangeSubscription.id, nextPlanVersionId, planChangeReason.trim());
+      toast.success(`${copy.schedulePlan}: ${result.effectiveDate}`);
+      setPlanChangeSubscription(null);
+      await loadSubscriptions();
+    } catch (error: any) {
+      toast.error(error.message || 'Unable to schedule the plan change');
+    } finally {
+      setSavingPlanChange(false);
+    }
+  };
+
   const renderCommonCells = (subscription: SubscriptionV2) => (
     <>
       <td className="px-4 py-3">
@@ -366,6 +417,16 @@ export default function Subscriptions() {
         <p className="text-xs text-slate-500">{subscription.id}</p>
         {subscription.source === 'legacy' && (
           <Badge variant="outline" className="mt-1">{copy.legacy}</Badge>
+        )}
+        {subscription.scheduledPlanName && (
+          <p className="mt-1 text-xs font-medium text-indigo-600">
+            {copy.nextPlan}: {subscription.scheduledPlanName} · {formatDate(subscription.scheduledPlanEffectiveDate || '')}
+          </p>
+        )}
+        {subscription.source !== 'legacy' && subscription.status === 'active' && (
+          <Button size="sm" variant="ghost" className="mt-1 h-7 px-2 text-xs" onClick={() => openPlanChange(subscription)}>
+            <CalendarClock className="mr-1 h-3.5 w-3.5" />{copy.schedulePlan}
+          </Button>
         )}
       </td>
       {view === 'individual_limited' && (
@@ -544,6 +605,22 @@ export default function Subscriptions() {
                 {actionState.action === 'deduct' ? copy.confirmDeduct : copy.confirmReturn}
               </Button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {planChangeSubscription && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4" onClick={() => setPlanChangeSubscription(null)}>
+          <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl" onClick={(event) => event.stopPropagation()}>
+            <h2 className="text-xl font-bold text-slate-900">{copy.schedulePlan}</h2>
+            <p className="mt-1 text-sm text-slate-500">{planChangeSubscription.holderName} · {planChangeSubscription.planName}</p>
+            <div className="mt-5 space-y-4">
+              <div><Label>{copy.nextPlan}</Label><select className={selectClassName} value={nextPlanVersionId} onChange={(event) => setNextPlanVersionId(event.target.value)}><option value="">—</option>{activePlanVersions.filter((plan) => plan.id !== planChangeSubscription.planVersionId).map((plan) => <option key={plan.id} value={plan.id}>{plan.name} · {plan.price} {plan.currency}</option>)}</select></div>
+              <div><Label>{copy.effective}</Label><Input value={planChangeSubscription.scheduledPlanEffectiveDate || nextDay(planChangeSubscription.endDate)} disabled /></div>
+              <div><Label>{copy.reason}</Label><Input value={planChangeReason} onChange={(event) => setPlanChangeReason(event.target.value)} placeholder={copy.reasonPlaceholder} /></div>
+              <p className="text-xs text-slate-500">The current plan, price, benefits and sessions remain unchanged until renewal.</p>
+            </div>
+            <div className="mt-6 flex justify-end gap-2"><Button variant="outline" onClick={() => setPlanChangeSubscription(null)}>{copy.close}</Button><Button onClick={() => void submitPlanChange()} disabled={savingPlanChange || !nextPlanVersionId || !planChangeReason.trim()}>{copy.confirmSchedule}</Button></div>
           </div>
         </div>
       )}

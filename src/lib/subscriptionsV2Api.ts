@@ -54,6 +54,9 @@ export type SubscriptionV2 = {
   currency: string;
   paymentStatus: string;
   expectedPaymentDate?: string | null;
+  scheduledPlanVersionId?: string | null;
+  scheduledPlanName?: string | null;
+  scheduledPlanEffectiveDate?: string | null;
   maxMembers: number;
   activeMembers?: number;
   sessionsUnlimited: boolean;
@@ -419,6 +422,6 @@ export const subscriptionsV2Api = {
   ) =>
     apiRequest<{ ok: boolean; newPlanVersionId: string; newStartDate: string; newEndDate: string; paymentStatus: string; paymentDate: string; amountPaid: string; amountPending: string; invoiceNumber: string }>(`/api/v2/subscriptions/${encodeURIComponent(id)}/renew`, { method: 'POST', body: JSON.stringify(payload) }),
 
-  changePlan: (id: string, planVersionId: string) =>
-    apiRequest<{ ok: boolean; newPlanVersionId: string; newEndDate: string }>(`/api/v2/subscriptions/${encodeURIComponent(id)}/change-plan`, { method: 'POST', body: JSON.stringify({ planVersionId }) }),
+  changePlan: (id: string, planVersionId: string, reason?: string) =>
+    apiRequest<{ ok: boolean; currentPlanVersionId: string; scheduledPlanVersionId: string; effectiveDate: string }>(`/api/v2/subscriptions/${encodeURIComponent(id)}/change-plan`, { method: 'POST', body: JSON.stringify({ planVersionId, reason }) }),
 };

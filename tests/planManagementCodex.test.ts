@@ -114,6 +114,32 @@ test("multi-user business rules synchronize expiry, preserve history and protect
   assert.match(membersPage, /holderActionLocked/);
 });
 
+test("plan changes are scheduled for the next cycle and applied only on renewal", () => {
+  const lifecycle = read("server/subscriptionLifecycle.ts");
+  const subscriptions = read("server/subscriptionsV2.ts");
+  const api = read("src/lib/subscriptionsV2Api.ts");
+  const page = read("src/pages/Subscriptions.tsx");
+  const changePlanRoute = lifecycle.slice(
+    lifecycle.indexOf('// Schedule a plan change for the next cycle'),
+    lifecycle.indexOf('// Renew subscription'),
+  );
+
+  assert.match(changePlanRoute, /scheduledPlanVersionId/);
+  assert.match(changePlanRoute, /scheduledPlanEffectiveDate/);
+  assert.match(changePlanRoute, /plan_change_scheduled/);
+  assert.match(changePlanRoute, /PLAN_CAPACITY_EXCEEDED/);
+  assert.doesNotMatch(changePlanRoute, /SET plan_version_id =/);
+  assert.doesNotMatch(changePlanRoute, /UPDATE affiliations SET plan_version_id/);
+  assert.match(lifecycle, /normalizeString\(req\.body\.planVersionId\) \|\| scheduledPlanVersionId \|\| sub\.plan_version_id/);
+  assert.match(lifecycle, /scheduledPlanApplied/);
+  assert.match(lifecycle, /JSON_REMOVE[\s\S]*scheduledPlanVersionId/);
+  assert.match(subscriptions, /scheduledPlanEffectiveDate/);
+  assert.match(api, /scheduledPlanVersionId/);
+  assert.match(page, /Schedule next plan/);
+  assert.match(page, /subscriptionsV2Api\.changePlan/);
+  assert.match(page, /current plan, price, benefits and sessions remain unchanged until renewal/i);
+});
+
 test("frontend routes plans to the new page and exposes settings list maintenance", () => {
   const app = read("src/App.tsx");
   const settings = read("src/pages/Settings.tsx");
