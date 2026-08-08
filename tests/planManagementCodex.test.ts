@@ -582,6 +582,11 @@ test("limited multi-user plans expose distribution, cycles, immutable movements 
   assert.match(membersPage, /recordPendingPaymentDecision/);
   assert.match(membersPage, /confirmOutstandingPayment: true/);
   assert.match(membersPage, /active or inactive plan with a pending payment/);
+  assert.match(membersPage, /Access status/);
+  assert.match(membersPage, /Subscription ID: \{plan\.subscriptionId\}/);
+  assert.match(membersPage, /Payment: \{plan\.paymentStatus/);
+  assert.match(membersPage, /subscriptionChangePlanUrl\(detail\.member\.id, plan\.subscriptionId\)/);
+  assert.match(membersPage, /Primary affiliation/);
   assert.match(subscriptionsApi, /typeof apiError === 'string'/);
   assert.match(subscriptionsApi, /apiError\?\.message/);
   assert.match(management, /multi_user_subscription_created_with_pending_payment_confirmed/);

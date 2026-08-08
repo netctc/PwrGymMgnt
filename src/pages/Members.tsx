@@ -226,6 +226,10 @@ function getMemberAccessState(member: MembershipMember) {
   return { allowed: false, label: 'Blocked', reason: 'No active subscription' };
 }
 
+function subscriptionChangePlanUrl(memberId: string, subscriptionId: string) {
+  return `/subscriptions?memberId=${encodeURIComponent(memberId)}&action=change-plan&subscriptionId=${encodeURIComponent(subscriptionId)}`;
+}
+
 export default function Members() {
   const { locale } = useLocalization();
   const [pageSearchParams, setPageSearchParams] = useSearchParams();
@@ -2541,6 +2545,27 @@ The secure QR token is embedded in the attached PDF/QR image.`;
             {detailLoading && <p className="text-sm text-slate-500">Loading profile...</p>}
             {detail && (
               <>
+                {(() => {
+                  const accessState = getMemberAccessState(detail.member);
+                  return (
+                    <Card className={accessState.allowed ? 'border-emerald-200 bg-emerald-50/40' : 'border-red-200 bg-red-50/40'}>
+                      <CardHeader>
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <CardTitle>Access status</CardTitle>
+                            <CardDescription>The current operational access decision for this member.</CardDescription>
+                          </div>
+                          <Badge variant={accessState.allowed ? 'default' : 'destructive'}>{accessState.label}</Badge>
+                        </div>
+                      </CardHeader>
+                      <CardContent className="text-sm">
+                        <p className="font-medium text-slate-900">{accessState.reason}</p>
+                        <p className="mt-1 text-slate-500">Member status, subscription validity, affiliation and payment status are evaluated separately.</p>
+                      </CardContent>
+                    </Card>
+                  );
+                })()}
+
                 <Card>
                   <CardHeader>
                     <CardTitle>{detail.member.firstName} {detail.member.lastName}</CardTitle>
@@ -2638,10 +2663,19 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                           ? (detail.member.plans || []).map((plan) => (
                           <div key={`${plan.subscriptionId}_${plan.affiliationId || plan.id}`} className="rounded-lg border p-3 text-sm">
                             <div className="flex justify-between gap-3">
-                              <p className="font-medium">{plan.planName}</p>
+                              <div>
+                                <p className="font-medium">{plan.planName}</p>
+                                <p className="break-all text-xs text-slate-500">Subscription ID: {plan.subscriptionId}</p>
+                              </div>
                               <Badge variant={badgeVariant(plan.status) as any}>{plan.status}</Badge>
                             </div>
                             <p className="text-slate-500">{formatDate(plan.startDate)} - {formatDate(plan.endDate)}</p>
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              <Badge variant="outline">Contract: {plan.subscriptionStatus}</Badge>
+                              <Badge variant="outline">Payment: {plan.paymentStatus || detail.member.paymentStatus || '—'}</Badge>
+                              <Badge variant="outline">Role: {plan.role || 'member'}</Badge>
+                              {plan.isPrimary && <Badge variant="secondary">Primary affiliation</Badge>}
+                            </div>
                             {plan.trainerName && (
                               <p className="text-slate-500">{multiUserCopy.responsibleTrainer}: {plan.trainerName}</p>
                             )}
@@ -2650,6 +2684,20 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                                 {multiUserCopy.sessionBalance}: {plan.sessionsConsumed || 0} / {plan.sessionsReserved || 0} / {plan.sessionsPending || 0}
                               </p>
                             )}
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              {plan.subscriptionStatus === 'active' && (
+                                <Button size="sm" variant="outline" asChild>
+                                  <Link to={subscriptionChangePlanUrl(detail.member.id, plan.subscriptionId)}>
+                                    <ArrowRightLeft className="mr-2 h-4 w-4" /> Change this plan
+                                  </Link>
+                                </Button>
+                              )}
+                              {plan.role === 'holder' && (
+                                <Button size="sm" variant="outline" asChild>
+                                  <Link to={manageBeneficiariesUrl(detail.member.id)}>{multiUserCopy.manage}</Link>
+                                </Button>
+                              )}
+                            </div>
                           </div>
                           ))
                           : detail.subscriptions.map((subscription) => (
