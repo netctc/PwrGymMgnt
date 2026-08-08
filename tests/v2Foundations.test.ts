@@ -89,7 +89,12 @@ test("entitlement payment date uses the operational column and V2 invoice schema
     new URL("../server/domain/v2/entitlementService.ts", import.meta.url),
     "utf8",
   );
-  assert.match(source, /s\.estimated_payment_date/);
+  assert.doesNotMatch(source, /s\.estimated_payment_date/);
+  assert.doesNotMatch(source, /s\.price_snapshot/);
+  assert.doesNotMatch(source, /s\.currency_snapshot/);
+  assert.match(source, /i\.due_date/);
+  assert.match(source, /COALESCE\(i\.total, s\.price_paid\) AS amount_due/);
+  assert.match(source, /s\.currency AS currency/);
   assert.match(source, /LEFT JOIN invoices i/);
   assert.match(source, /i\.subscription_v2_id = s\.id/);
   assert.doesNotMatch(source, /JSON_EXTRACT\(s\.data, '\$\.expectedPaymentDate'\)/);

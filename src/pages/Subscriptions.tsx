@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import {
   CreditCard,
@@ -10,6 +10,9 @@ import {
   RefreshCw,
   RotateCcw,
   Search,
+  Snowflake,
+  Play,
+  Ban,
   Users,
 } from 'lucide-react';
 import { Badge } from '../components/ui/badge';
@@ -61,8 +64,22 @@ function nextDay(value: string) {
   return date.toISOString().slice(0, 10);
 }
 
+function addDays(value: string, days: number) {
+  const date = new Date(`${value}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+function inclusiveDays(start: string, end: string) {
+  const startMs = Date.parse(`${start}T00:00:00.000Z`);
+  const endMs = Date.parse(`${end}T00:00:00.000Z`);
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs) return 0;
+  return Math.round((endMs - startMs) / 86400000) + 1;
+}
+
 export default function Subscriptions() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { locale } = useLocalization();
   const copy =
     locale === 'ar'
@@ -76,6 +93,7 @@ export default function Subscriptions() {
           memberStatus: 'حالة العضو',
           subscriptionStatus: 'حالة الاشتراك',
           paymentStatus: 'حالة الدفع',
+          expectedPaymentDate: 'تاريخ الدفع المتوقع',
           plan: 'الخطة',
           planType: 'نوع الخطة',
           trainer: 'المدرب',
@@ -121,6 +139,8 @@ export default function Subscriptions() {
           nextPlan: 'الخطة التالية',
           effective: 'تاريخ التطبيق',
           confirmSchedule: 'جدولة التغيير',
+          freeze: 'تجميد', resume: 'استئناف', freezeStart: 'بداية التجميد', freezeEnd: 'نهاية التجميد', resumeDate: 'تاريخ الاستئناف', confirmFreeze: 'تأكيد التجميد', confirmResume: 'تأكيد الاستئناف',
+          cancelSubscription: 'إلغاء الاشتراك', cancellationDate: 'تاريخ سريان الإلغاء', confirmCancellation: 'تأكيد إلغاء الاشتراك', cancellationWarning: 'سيتم إلغاء جميع المستفيدين والحجوزات المستقبلية. ستبقى المدفوعات والجلسات السابقة محفوظة.',
         }
       : {
           title: 'Subscriptions',
@@ -132,6 +152,7 @@ export default function Subscriptions() {
           memberStatus: 'Member status',
           subscriptionStatus: 'Subscription status',
           paymentStatus: 'Payment status',
+          expectedPaymentDate: 'Estimated payment date',
           plan: 'Plan',
           planType: 'Plan type',
           trainer: 'Trainer',
@@ -177,6 +198,8 @@ export default function Subscriptions() {
           nextPlan: 'Next plan',
           effective: 'Effective date',
           confirmSchedule: 'Schedule change',
+          freeze: 'Freeze', resume: 'Resume', freezeStart: 'Freeze start', freezeEnd: 'Freeze end', resumeDate: 'Resume date', confirmFreeze: 'Confirm freeze', confirmResume: 'Confirm resume',
+          cancelSubscription: 'Cancel subscription', cancellationDate: 'Effective cancellation date', confirmCancellation: 'Confirm cancellation', cancellationWarning: 'All beneficiaries and future reservations will be cancelled. Payment and completed-session history will be preserved.',
         };
 
   const [view, setView] = useState<DirectoryView>('individual_unlimited');
@@ -206,12 +229,32 @@ export default function Subscriptions() {
   const [planChangeSubscription, setPlanChangeSubscription] = useState<SubscriptionV2 | null>(null);
   const [nextPlanVersionId, setNextPlanVersionId] = useState('');
   const [planChangeReason, setPlanChangeReason] = useState('');
+  const [planChangePaymentStatus, setPlanChangePaymentStatus] = useState('pending');
+  const [planChangeExpectedPaymentDate, setPlanChangeExpectedPaymentDate] = useState('');
   const [savingPlanChange, setSavingPlanChange] = useState(false);
+  const [lifecycleSubscription, setLifecycleSubscription] = useState<SubscriptionV2 | null>(null);
+  const [lifecycleAction, setLifecycleAction] = useState<'freeze' | 'resume'>('freeze');
+  const today = new Date().toISOString().slice(0, 10);
+  const [freezeStartDate, setFreezeStartDate] = useState(today);
+  const [freezeEndDate, setFreezeEndDate] = useState(addDays(today, 6));
+  const [freezeDays, setFreezeDays] = useState('7');
+  const [lifecycleReason, setLifecycleReason] = useState('');
+  const [savingLifecycle, setSavingLifecycle] = useState(false);
+  const [cancellationSubscription, setCancellationSubscription] = useState<SubscriptionV2 | null>(null);
+  const [cancellationDate, setCancellationDate] = useState(today);
+  const [cancellationReason, setCancellationReason] = useState('');
+  const [savingCancellation, setSavingCancellation] = useState(false);
+  const requestedMemberId = searchParams.get('memberId') || '';
+  const requestedSubscriptionId = searchParams.get('subscriptionId') || '';
+  const requestedAction = searchParams.get('action') || '';
 
   const loadSubscriptions = async () => {
     setLoading(true);
     try {
       const response = await subscriptionsV2Api.listSubscriptions({
+        subscriptionId: requestedAction === 'change-plan' && requestedSubscriptionId
+          ? requestedSubscriptionId
+          : undefined,
         status: subscriptionStatus,
         memberStatus,
         paymentStatus,
@@ -262,8 +305,10 @@ export default function Subscriptions() {
   const paymentStatusOptions = listOptions(['payment_status', 'payment_statuses'], [
     { value: 'paid', label: copy.paid },
     { value: 'pending', label: copy.pending },
-    { value: 'partial', label: 'Partial' },
+    { value: 'partial', label: 'Partially paid' },
     { value: 'overdue', label: 'Overdue' },
+    { value: 'waived', label: 'Waived' },
+    { value: 'refunded', label: 'Refunded' },
   ]);
 
   useEffect(() => {
@@ -271,7 +316,17 @@ export default function Subscriptions() {
       void loadSubscriptions();
     }, 250);
     return () => window.clearTimeout(timeout);
-  }, [search, memberStatus, subscriptionStatus, paymentStatus, planId, planType, trainerId, from, to, sessionType]);
+  }, [search, memberStatus, subscriptionStatus, paymentStatus, planId, planType, trainerId, from, to, sessionType, requestedAction, requestedSubscriptionId]);
+
+  useEffect(() => {
+    if (requestedAction === 'change-plan' && requestedSubscriptionId) {
+      setSearch(requestedSubscriptionId);
+      setSubscriptionStatus('all');
+      return;
+    }
+    if (!requestedMemberId) return;
+    setSearch(requestedMemberId);
+  }, [requestedAction, requestedMemberId, requestedSubscriptionId]);
 
   const categorized = useMemo(
     () => ({
@@ -384,20 +439,126 @@ export default function Subscriptions() {
     setPlanChangeSubscription(subscription);
     setNextPlanVersionId(subscription.scheduledPlanVersionId || firstAlternative?.id || '');
     setPlanChangeReason('');
+    const effectiveDate = subscription.scheduledPlanEffectiveDate || nextDay(subscription.endDate);
+    const scheduledStatus = subscription.scheduledPaymentStatus || 'pending';
+    setPlanChangePaymentStatus(scheduledStatus);
+    setPlanChangeExpectedPaymentDate(
+      ['pending', 'partial'].includes(scheduledStatus)
+        ? subscription.scheduledExpectedPaymentDate || effectiveDate
+        : '',
+    );
   };
+
+  useEffect(() => {
+    if (loading || requestedAction !== 'change-plan' || subscriptions.length === 0) return;
+    const target = requestedSubscriptionId
+      ? subscriptions.find((subscription) => subscription.id === requestedSubscriptionId)
+      : subscriptions.find((subscription) => subscription.holderMemberId === requestedMemberId);
+    if (!target) return;
+    if (target.source === 'legacy') {
+      toast.error('Change plan is available only for V2 subscriptions');
+    } else if (target.status !== 'active') {
+      toast.error(`Change plan is unavailable while the subscription is ${target.status}`);
+    } else {
+      openPlanChange(target);
+    }
+    const next = new URLSearchParams(searchParams);
+    next.delete('action');
+    next.delete('subscriptionId');
+    setSearchParams(next, { replace: true });
+  }, [loading, requestedAction, requestedMemberId, requestedSubscriptionId, subscriptions]);
 
   const submitPlanChange = async () => {
     if (!planChangeSubscription || !nextPlanVersionId || !planChangeReason.trim()) return;
+    const effectiveDate = planChangeSubscription.scheduledPlanEffectiveDate || nextDay(planChangeSubscription.endDate);
+    if (['pending', 'partial'].includes(planChangePaymentStatus) && !planChangeExpectedPaymentDate) {
+      toast.error('Estimated payment date is required for pending or partially paid reservations');
+      return;
+    }
+    if (['pending', 'partial'].includes(planChangePaymentStatus) && planChangeExpectedPaymentDate < effectiveDate) {
+      toast.error('Estimated payment date cannot be before the new plan start date');
+      return;
+    }
     setSavingPlanChange(true);
     try {
-      const result = await subscriptionsV2Api.changePlan(planChangeSubscription.id, nextPlanVersionId, planChangeReason.trim());
-      toast.success(`${copy.schedulePlan}: ${result.effectiveDate}`);
+      const result = await subscriptionsV2Api.changePlan(planChangeSubscription.id, {
+        planVersionId: nextPlanVersionId,
+        reason: planChangeReason.trim(),
+        paymentStatus: planChangePaymentStatus,
+        expectedPaymentDate: ['pending', 'partial'].includes(planChangePaymentStatus)
+          ? planChangeExpectedPaymentDate
+          : undefined,
+      });
+      toast.success(`${copy.schedulePlan}: ${formatDate(result.effectiveDate)}`);
       setPlanChangeSubscription(null);
       await loadSubscriptions();
     } catch (error: any) {
       toast.error(error.message || 'Unable to schedule the plan change');
     } finally {
       setSavingPlanChange(false);
+    }
+  };
+
+  const openLifecycle = (subscription: SubscriptionV2, action: 'freeze' | 'resume') => {
+    setLifecycleSubscription(subscription);
+    setLifecycleAction(action);
+    setFreezeStartDate(today);
+    setFreezeEndDate(action === 'freeze' ? addDays(today, 6) : today);
+    setFreezeDays('7');
+    setLifecycleReason('');
+  };
+
+  const submitLifecycle = async () => {
+    if (!lifecycleSubscription || !lifecycleReason.trim()) return;
+    setSavingLifecycle(true);
+    try {
+      if (lifecycleAction === 'freeze') {
+        const requestedDays = Math.max(1, Math.trunc(Number(freezeDays) || 0));
+        const expectedEndDate = addDays(freezeStartDate, requestedDays - 1);
+        const result = await subscriptionsV2Api.freezeSubscription(lifecycleSubscription.id, { startDate: freezeStartDate, endDate: expectedEndDate, reason: lifecycleReason.trim() });
+        if (result.plannedDays !== requestedDays) {
+          throw new Error(`Freeze duration mismatch: requested ${requestedDays} day(s), server confirmed ${result.plannedDays}`);
+        }
+        toast.success(`${copy.freeze}: ${result.plannedDays} day(s)`);
+      } else {
+        const result = await subscriptionsV2Api.resumeSubscription(lifecycleSubscription.id, { resumeDate: freezeEndDate, reason: lifecycleReason.trim() });
+        toast.success(`${copy.resume}: +${result.extensionDays} day(s)`);
+      }
+      setLifecycleSubscription(null);
+      await loadSubscriptions();
+    } catch (error: any) {
+      toast.error(error.message || 'Subscription lifecycle update failed');
+    } finally {
+      setSavingLifecycle(false);
+    }
+  };
+
+  const openCancellation = (subscription: SubscriptionV2) => {
+    if (subscription.source === 'legacy' || !['active', 'frozen', 'suspended', 'pending'].includes(subscription.status)) return;
+    setCancellationSubscription(subscription);
+    setCancellationDate(today);
+    setCancellationReason('');
+  };
+
+  const submitCancellation = async () => {
+    if (!cancellationSubscription || !cancellationDate || !cancellationReason.trim()) return;
+    setSavingCancellation(true);
+    try {
+      const result = await subscriptionsV2Api.cancelSubscription(cancellationSubscription.id, {
+        effectiveDate: cancellationDate,
+        reason: cancellationReason.trim(),
+      });
+      const summary = result.status === 'scheduled'
+        ? `${copy.cancelSubscription}: ${formatDate(result.effectiveDate)}`
+        : `${copy.cancelSubscription}: ${result.affectedMembers || 0} member(s), ${result.cancelledBookings || 0} booking(s)`;
+      toast.success(summary);
+      if (result.refundReview?.required) toast.info('Refund review required. No automatic refund was created.');
+      setCancellationSubscription(null);
+      await loadSubscriptions();
+    } catch (error: any) {
+      toast.error(error.message || 'Unable to cancel the subscription');
+    } finally {
+      setSavingCancellation(false);
     }
   };
 
@@ -419,15 +580,15 @@ export default function Subscriptions() {
           <Badge variant="outline" className="mt-1">{copy.legacy}</Badge>
         )}
         {subscription.scheduledPlanName && (
-          <p className="mt-1 text-xs font-medium text-indigo-600">
-            {copy.nextPlan}: {subscription.scheduledPlanName} · {formatDate(subscription.scheduledPlanEffectiveDate || '')}
-          </p>
+          <div className="mt-1 text-xs font-medium text-indigo-600">
+            <p>{copy.nextPlan}: {subscription.scheduledPlanName} · {formatDate(subscription.scheduledPlanEffectiveDate || '')}</p>
+            <p>{copy.paymentStatus}: {subscription.scheduledPaymentStatus || 'pending'}{subscription.scheduledExpectedPaymentDate ? ` · ${copy.expectedPaymentDate}: ${formatDate(subscription.scheduledExpectedPaymentDate)}` : ''}</p>
+          </div>
         )}
         {subscription.source !== 'legacy' && subscription.status === 'active' && (
-          <Button size="sm" variant="ghost" className="mt-1 h-7 px-2 text-xs" onClick={() => openPlanChange(subscription)}>
-            <CalendarClock className="mr-1 h-3.5 w-3.5" />{copy.schedulePlan}
-          </Button>
+          <div className="mt-1 flex flex-wrap gap-1"><Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => openPlanChange(subscription)}><CalendarClock className="mr-1 h-3.5 w-3.5" />{copy.schedulePlan}</Button><Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => openLifecycle(subscription, 'freeze')}><Snowflake className="mr-1 h-3.5 w-3.5" />{copy.freeze}</Button><Button size="sm" variant="ghost" className="h-7 px-2 text-xs text-rose-600" onClick={() => openCancellation(subscription)}><Ban className="mr-1 h-3.5 w-3.5" />{copy.cancelSubscription}</Button></div>
         )}
+        {subscription.source !== 'legacy' && subscription.status === 'frozen' && <div className="mt-1 flex flex-wrap gap-1"><Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => openLifecycle(subscription, 'resume')}><Play className="mr-1 h-3.5 w-3.5" />{copy.resume}</Button><Button size="sm" variant="ghost" className="h-7 px-2 text-xs text-rose-600" onClick={() => openCancellation(subscription)}><Ban className="mr-1 h-3.5 w-3.5" />{copy.cancelSubscription}</Button></div>}
       </td>
       {view === 'individual_limited' && (
         <td className="px-4 py-3 text-sm text-slate-700">
@@ -616,11 +777,46 @@ export default function Subscriptions() {
             <p className="mt-1 text-sm text-slate-500">{planChangeSubscription.holderName} · {planChangeSubscription.planName}</p>
             <div className="mt-5 space-y-4">
               <div><Label>{copy.nextPlan}</Label><select className={selectClassName} value={nextPlanVersionId} onChange={(event) => setNextPlanVersionId(event.target.value)}><option value="">—</option>{activePlanVersions.filter((plan) => plan.id !== planChangeSubscription.planVersionId).map((plan) => <option key={plan.id} value={plan.id}>{plan.name} · {plan.price} {plan.currency}</option>)}</select></div>
-              <div><Label>{copy.effective}</Label><Input value={planChangeSubscription.scheduledPlanEffectiveDate || nextDay(planChangeSubscription.endDate)} disabled /></div>
+              <div><Label>{copy.effective}</Label><Input value={formatDate(planChangeSubscription.scheduledPlanEffectiveDate || nextDay(planChangeSubscription.endDate))} disabled /></div>
+              <div><Label>{copy.paymentStatus}</Label><select className={selectClassName} value={planChangePaymentStatus} onChange={(event) => { const status = event.target.value; setPlanChangePaymentStatus(status); setPlanChangeExpectedPaymentDate(['pending', 'partial'].includes(status) ? planChangeSubscription.scheduledPlanEffectiveDate || nextDay(planChangeSubscription.endDate) : ''); }}>{paymentStatusOptions.map((status) => <option key={status.value} value={status.value}>{status.label}</option>)}</select></div>
+              {['pending', 'partial'].includes(planChangePaymentStatus) && <div><Label>{copy.expectedPaymentDate}</Label><DateInput value={planChangeExpectedPaymentDate} onChange={setPlanChangeExpectedPaymentDate} min={planChangeSubscription.scheduledPlanEffectiveDate || nextDay(planChangeSubscription.endDate)} /></div>}
               <div><Label>{copy.reason}</Label><Input value={planChangeReason} onChange={(event) => setPlanChangeReason(event.target.value)} placeholder={copy.reasonPlaceholder} /></div>
               <p className="text-xs text-slate-500">The current plan, price, benefits and sessions remain unchanged until renewal.</p>
             </div>
             <div className="mt-6 flex justify-end gap-2"><Button variant="outline" onClick={() => setPlanChangeSubscription(null)}>{copy.close}</Button><Button onClick={() => void submitPlanChange()} disabled={savingPlanChange || !nextPlanVersionId || !planChangeReason.trim()}>{copy.confirmSchedule}</Button></div>
+          </div>
+        </div>
+      )}
+
+      {lifecycleSubscription && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4" onClick={() => setLifecycleSubscription(null)}>
+          <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl" onClick={(event) => event.stopPropagation()}>
+            <h2 className="text-xl font-bold text-slate-900">{lifecycleAction === 'freeze' ? copy.freeze : copy.resume}</h2>
+            <p className="mt-1 text-sm text-slate-500">{lifecycleSubscription.holderName} · {lifecycleSubscription.planName}</p>
+            <div className="mt-5 space-y-4">
+              {lifecycleAction === 'freeze' && <div><Label>{copy.freezeStart}</Label><DateInput value={freezeStartDate} onChange={(value) => { setFreezeStartDate(value); setFreezeEndDate(addDays(value, Math.max(1, Number(freezeDays) || 1) - 1)); }} /></div>}
+              {lifecycleAction === 'freeze' && <div><Label>Freeze duration (days)</Label><Input type="number" min="1" max="30" step="1" value={freezeDays} onChange={(event) => { const value = event.target.value; setFreezeDays(value); const days = Math.max(1, Math.trunc(Number(value) || 1)); setFreezeEndDate(addDays(freezeStartDate, days - 1)); }} /></div>}
+              <div><Label>{lifecycleAction === 'freeze' ? copy.freezeEnd : copy.resumeDate}</Label><DateInput value={freezeEndDate} onChange={(value) => { setFreezeEndDate(value); if (lifecycleAction === 'freeze') setFreezeDays(String(inclusiveDays(freezeStartDate, value))); }} /></div>
+              <div><Label>{copy.reason}</Label><Input value={lifecycleReason} onChange={(event) => setLifecycleReason(event.target.value)} placeholder={copy.reasonPlaceholder} /></div>
+              <p className="text-xs text-slate-500">Access is blocked while frozen. On resume, the contract end date is extended only when the selected plan version allows it.</p>
+            </div>
+            <div className="mt-6 flex justify-end gap-2"><Button variant="outline" onClick={() => setLifecycleSubscription(null)}>{copy.close}</Button><Button onClick={() => void submitLifecycle()} disabled={savingLifecycle || !lifecycleReason.trim() || !freezeEndDate}>{lifecycleAction === 'freeze' ? copy.confirmFreeze : copy.confirmResume}</Button></div>
+          </div>
+        </div>
+      )}
+
+      {cancellationSubscription && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4" onClick={() => setCancellationSubscription(null)}>
+          <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl" onClick={(event) => event.stopPropagation()}>
+            <h2 className="text-xl font-bold text-rose-700">{copy.cancelSubscription}</h2>
+            <p className="mt-1 text-sm text-slate-500">{cancellationSubscription.holderName} · {cancellationSubscription.planName}</p>
+            <div className="mt-5 space-y-4">
+              <div><Label>{copy.cancellationDate}</Label><DateInput value={cancellationDate} onChange={setCancellationDate} min={today} /></div>
+              <div><Label>{copy.reason}</Label><Input value={cancellationReason} onChange={(event) => setCancellationReason(event.target.value)} placeholder={copy.reasonPlaceholder} /></div>
+              <p className="rounded-lg bg-rose-50 p-3 text-sm text-rose-800">{copy.cancellationWarning}</p>
+              <p className="text-xs text-slate-500">Refund eligibility is recorded for manual review. This action never creates an automatic refund.</p>
+            </div>
+            <div className="mt-6 flex justify-end gap-2"><Button variant="outline" onClick={() => setCancellationSubscription(null)}>{copy.close}</Button><Button variant="destructive" onClick={() => void submitCancellation()} disabled={savingCancellation || !cancellationDate || !cancellationReason.trim()}>{copy.confirmCancellation}</Button></div>
           </div>
         </div>
       )}

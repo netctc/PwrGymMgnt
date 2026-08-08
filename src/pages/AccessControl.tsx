@@ -94,6 +94,7 @@ export default function AccessControl() {
     affiliationId?: string;
     confirmSessionConsumption?: boolean;
     sessionAction?: 'consume' | 'recover';
+    confirmSubscriptionResume?: boolean;
   } = {}) => {
     if (!memberId.trim()) { toast.error('Enter a member ID'); return; }
     setValidating(true);
@@ -114,10 +115,20 @@ export default function AccessControl() {
           options.sessionAction === 'recover'
             ? recoveryReason.trim()
             : undefined,
+        confirmSubscriptionResume: options.confirmSubscriptionResume,
       });
       setLastDecision(decision);
       if (decision.authorized) {
         toast.success(`Access granted: ${decision.personName || decision.personId}`);
+      } else if (decision.requiresSubscriptionResume && decision.subscriptionId) {
+        const accepted = window.confirm(
+          `Access is blocked because this subscription is frozen${decision.freezePlannedEndDate ? ` until ${decision.freezePlannedEndDate}` : ''}. Resume it now?`,
+        );
+        if (accepted) {
+          await handleValidate({ confirmSubscriptionResume: true });
+        } else {
+          toast.error('Access denied: SUBSCRIPTION_FROZEN');
+        }
       } else if (decision.sessionRecovered) {
         toast.success(
           `${sessionCopy.recovered}. ${sessionCopy.newBalance}: ${decision.sessionsRemaining}`,

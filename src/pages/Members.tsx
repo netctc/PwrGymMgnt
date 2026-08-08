@@ -7,6 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../co
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../components/ui/dialog';
 import { Input } from '../components/ui/input';
 import DateInput from '../components/DateInput';
+import { formatDate as formatSharedDate } from '../lib/formatDate';
 import { Label } from '../components/ui/label';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '../components/ui/sheet';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
@@ -35,6 +36,7 @@ import {
   RefreshCw,
   Search,
   FileText,
+  ArrowRightLeft,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { usePersistentState } from '../hooks/usePersistentState';
@@ -107,13 +109,7 @@ function toMemberForm(member?: MembershipMember): MemberForm {
 }
 
 function formatDate(value?: string | null) {
-  if (!value) return '—';
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return String(value).slice(0, 10);
-  const day = String(parsed.getDate()).padStart(2, '0');
-  const month = String(parsed.getMonth() + 1).padStart(2, '0');
-  const year = parsed.getFullYear();
-  return `${day}/${month}/${year}`;
+  return formatSharedDate(value);
 }
 
 function addDaysToDate(date: string, days: number) {
@@ -197,6 +193,37 @@ function badgeVariant(status?: string) {
   if (status === 'active' || status === 'paid') return 'default';
   if (status === 'archived' || status === 'expired') return 'destructive';
   return 'secondary';
+}
+
+function getMemberAccessState(member: MembershipMember) {
+  const memberStatus = getEffectiveMemberStatus(member);
+  const plans = member.plans || [];
+  const currentPlans = plans.filter(
+    (plan) =>
+      plan.subscriptionStatus === 'active' &&
+      ['active', 'suspended'].includes(plan.status) &&
+      (!plan.endDate || dateValue(plan.endDate) >= today()),
+  );
+  if (memberStatus !== 'active') {
+    return { allowed: false, label: 'Blocked', reason: `Member is ${memberStatus}` };
+  }
+  if (member.paymentAttentionRequired) {
+    return { allowed: false, label: 'Blocked', reason: `Payment ${member.paymentStatus || 'pending'}` };
+  }
+  if (currentPlans.some((plan) => plan.status === 'active')) {
+    return { allowed: true, label: 'Allowed', reason: 'Active affiliation' };
+  }
+  if (currentPlans.some((plan) => plan.status === 'suspended')) {
+    return { allowed: false, label: 'Blocked', reason: 'Affiliation suspended or frozen' };
+  }
+  if (
+    plans.length === 0 &&
+    member.currentPlan &&
+    dateValue(member.currentExpiry) >= today()
+  ) {
+    return { allowed: true, label: 'Allowed', reason: 'Active legacy subscription' };
+  }
+  return { allowed: false, label: 'Blocked', reason: 'No active subscription' };
 }
 
 export default function Members() {
@@ -410,6 +437,15 @@ export default function Members() {
     `/subscriptions/new-hybrid${memberId ? `?holderMemberId=${encodeURIComponent(memberId)}` : ''}`;
   const manageBeneficiariesUrl = (memberId: string) =>
     `/plans/multi-user?memberId=${encodeURIComponent(memberId)}`;
+  const changePlanUrl = (member: MembershipMember) => {
+    const subscriptionId =
+      (member.plans || []).find(
+        (plan) =>
+          plan.subscriptionStatus === 'active' &&
+          dateValue(plan.endDate) >= today(),
+      )?.subscriptionId || member.multiUserSubscriptionId || '';
+    return `/subscriptions?memberId=${encodeURIComponent(member.id)}&action=change-plan${subscriptionId ? `&subscriptionId=${encodeURIComponent(subscriptionId)}` : ''}`;
+  };
 
   const paginationPages = useMemo(() => {
     const candidates = [
@@ -1743,16 +1779,17 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                 <TableHead>Expiry</TableHead>
                 <TableHead>Joined</TableHead>
                 <TableHead>Last Access</TableHead>
-                <TableHead>Status</TableHead>
+                <TableHead>Member Status</TableHead>
+                <TableHead>Access</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {loading ? (
-                <TableRow><TableCell colSpan={8} className="py-8 text-center text-slate-500">Loading members...</TableCell></TableRow>
+                <TableRow><TableCell colSpan={9} className="py-8 text-center text-slate-500">Loading members...</TableCell></TableRow>
               ) : members.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={8} className="py-8">
+                  <TableCell colSpan={9} className="py-8">
                     <EmptyState
                       compact
                       title="No members match these filters"
@@ -1763,7 +1800,9 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                   </TableCell>
                 </TableRow>
               ) : (
-                members.map((member) => (
+                members.map((member) => {
+                  const accessState = getMemberAccessState(member);
+                  return (
                   <TableRow key={member.id} className={member.paymentAttentionRequired ? 'bg-red-50 hover:bg-red-100' : undefined}>
                     <TableCell>
                       {member.subscriptionType === 'multi_user' ? (
@@ -1920,9 +1959,14 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                     <TableCell>{formatDate(member.lastAccess)}</TableCell>
                     <TableCell><Badge variant={badgeVariant(getEffectiveMemberStatus(member)) as any}>{getEffectiveMemberStatus(member)}</Badge></TableCell>
                     <TableCell>
-                      <div className="flex justify-end gap-2">
+                      <Badge variant={accessState.allowed ? 'default' : 'destructive'}>{accessState.label}</Badge>
+                      <p className="mt-1 max-w-40 text-xs text-slate-500">{accessState.reason}</p>
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex flex-wrap justify-end gap-2">
                         <Button variant="outline" size="sm" onClick={() => openDetail(member)}><Eye className="mr-1 h-3.5 w-3.5" /> View</Button>
                         <Button variant="outline" size="sm" onClick={() => openRenew(member)}><CreditCard className="mr-1 h-3.5 w-3.5" /> Renew</Button>
+                        <Button variant="outline" size="sm" asChild><Link to={changePlanUrl(member)}><ArrowRightLeft className="mr-1 h-3.5 w-3.5" /> Change plan</Link></Button>
                         <Button variant="outline" size="sm" onClick={() => openQr(member)}><QrCode className="mr-1 h-3.5 w-3.5" /> QR</Button>
                         <Button variant="outline" size="sm" onClick={() => openEdit(member)}><Pencil className="mr-1 h-3.5 w-3.5" /> Edit</Button>
                         <Button
@@ -1941,7 +1985,8 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                       </div>
                     </TableCell>
                   </TableRow>
-                ))
+                  );
+                })
               )}
             </TableBody>
           </Table>
@@ -2518,6 +2563,15 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                     <div><span className="text-slate-500">Last Access:</span> {formatDate(detail.member.lastAccess)}</div>
                     <div><span className="text-slate-500">Member ID:</span> {detail.member.id}</div>
                     <div className="flex flex-wrap gap-2 md:col-span-2">
+                      <Button size="sm" onClick={() => { setDetailOpen(false); openRenew(detail.member); }}>
+                        <CreditCard className="mr-2 h-4 w-4" /> Renew subscription
+                      </Button>
+                      <Button size="sm" variant="outline" asChild>
+                        <Link to={changePlanUrl(detail.member)}><ArrowRightLeft className="mr-2 h-4 w-4" /> Change plan</Link>
+                      </Button>
+                      <Button size="sm" variant="outline" onClick={() => { setDetailOpen(false); openNewSubscription(detail.member); }}>
+                        <Plus className="mr-2 h-4 w-4" /> New subscription
+                      </Button>
                       <Button size="sm" variant="outline" asChild>
                         <Link to={newMultiUserUrl(detail.member.id)}>{multiUserCopy.create}</Link>
                       </Button>

@@ -21,6 +21,7 @@ import {
 } from "./subscriptionPaymentRules";
 import { upsertTrainerPlanCommission } from "./trainerCommissions";
 import { appendDomainAudit } from "./domain/v2/auditIdempotency";
+import { parseBusinessDate } from "./domain/v2/date";
 import {
   buildContractMembers,
   buildContractTerms,
@@ -33,6 +34,11 @@ import {
 
 type PoolProvider = () => Pool | null;
 type AuthenticatedRequest = Request & { user?: { uid?: string; email?: string; role?: string } };
+
+function optionalBusinessDate(value: unknown): string | null {
+  if (value === null || value === undefined || value === "") return null;
+  return parseBusinessDate(value);
+}
 
 function createId(prefix: string) {
   return `${prefix}_${crypto.randomBytes(16).toString("hex")}`;
@@ -146,6 +152,9 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
   app.get("/api/v2/subscriptions", requirePermission("membership.read"), async (req, res, next) => {
     try {
       const pool = requirePool(poolProvider);
+      const { reconcileExpiredSubscriptionFreezes } = await import("./subscriptionLifecycle");
+      await reconcileExpiredSubscriptionFreezes(pool);
+      const subscriptionId = normalizeString(req.query.subscriptionId);
       const memberId = normalizeString(req.query.memberId);
       const status = normalizeString(req.query.status) || "active";
       const memberStatus = normalizeString(req.query.memberStatus);
@@ -159,6 +168,10 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
       const search = normalizeString(req.query.search).toLowerCase();
       const where: string[] = [];
       const params: any[] = [];
+      if (subscriptionId) {
+        where.push("s.id = ?");
+        params.push(subscriptionId);
+      }
       if (memberId) {
         where.push(`(
           s.holder_member_id = ?
@@ -321,8 +334,8 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
           holderStatus: row.holder_status || "",
           holderAffiliationId: null,
           status: row.status,
-          startDate: row.start_date ? String(row.start_date).slice(0, 10) : "",
-          endDate: row.end_date ? String(row.end_date).slice(0, 10) : "",
+          startDate: optionalBusinessDate(row.start_date) || "",
+          endDate: optionalBusinessDate(row.end_date) || "",
           autoRenew: false,
           pricePaid: Number(row.price || 0),
           currency: row.currency || "USD",
@@ -342,6 +355,7 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
           source: "legacy",
         }))
         .filter((subscription: any) => {
+          if (subscriptionId && subscription.id !== subscriptionId) return false;
           if (memberId && subscription.holderMemberId !== memberId) return false;
           if (
             status !== "all" &&
@@ -1449,9 +1463,9 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
           distributionModel: row.distribution_model,
           cycleId: row.cycle_id || null,
           cycleNumber: row.cycle_number ? Number(row.cycle_number) : null,
-          cycleStartDate: row.cycle_start_date ? String(row.cycle_start_date).slice(0, 10) : null,
-          cycleEndDate: row.cycle_end_date ? String(row.cycle_end_date).slice(0, 10) : null,
-          nextResetDate: row.cycle_end_date ? String(row.cycle_end_date).slice(0, 10) : null,
+          cycleStartDate: optionalBusinessDate(row.cycle_start_date),
+          cycleEndDate: optionalBusinessDate(row.cycle_end_date),
+          nextResetDate: optionalBusinessDate(row.cycle_end_date),
           included: Number(row.included),
           assigned: Number(row.included),
           reserved: Number(row.reserved),
@@ -2435,8 +2449,8 @@ function mapSubscription(row: any) {
     holderStatus: row.holder_status || "",
     holderAffiliationId: row.holder_affiliation_id || null,
     status: row.status,
-    startDate: row.start_date ? String(row.start_date).slice(0, 10) : "",
-    endDate: row.end_date ? String(row.end_date).slice(0, 10) : "",
+    startDate: optionalBusinessDate(row.start_date) || "",
+    endDate: optionalBusinessDate(row.end_date) || "",
     autoRenew: Boolean(row.auto_renew),
     pricePaid: Number(row.price_paid || 0),
     currency: row.currency || "USD",
@@ -2446,6 +2460,8 @@ function mapSubscription(row: any) {
     scheduledPlanVersionId: subscriptionData.scheduledPlanVersionId || null,
     scheduledPlanName: subscriptionData.scheduledPlanName || null,
     scheduledPlanEffectiveDate: subscriptionData.scheduledPlanEffectiveDate || null,
+    scheduledPaymentStatus: subscriptionData.scheduledPaymentStatus || null,
+    scheduledExpectedPaymentDate: subscriptionData.scheduledExpectedPaymentDate || null,
     maxMembers: Number(row.max_members || 1),
     activeMembers: Number(row.active_members || 1),
     sessionsUnlimited: row.sessions_unlimited !== undefined ? Boolean(row.sessions_unlimited) : true,
@@ -2492,8 +2508,8 @@ function mapAffiliation(row: any) {
     status: row.status,
     role: row.role,
     isPrimary: Boolean(row.is_primary),
-    startDate: row.start_date ? String(row.start_date).slice(0, 10) : "",
-    endDate: row.end_date ? String(row.end_date).slice(0, 10) : "",
+    startDate: optionalBusinessDate(row.start_date) || "",
+    endDate: optionalBusinessDate(row.end_date) || "",
     sessionsUnlimited: row.sessions_unlimited !== undefined ? Boolean(row.sessions_unlimited) : true,
     subscriptionStatus: row.subscription_status || "",
     consumptionPriority: Number(row.consumption_priority || 0),

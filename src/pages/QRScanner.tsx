@@ -70,6 +70,15 @@ function readBarcodeDetector(): BrowserBarcodeDetectorConstructor | null {
   return typeof window !== 'undefined' ? ((window as any).BarcodeDetector as BrowserBarcodeDetectorConstructor | undefined) || null : null;
 }
 
+function createClientId(prefix = 'scan') {
+  const uuid = globalThis.crypto?.randomUUID?.();
+  if (uuid) return `${prefix}_${uuid}`;
+  const random = globalThis.crypto?.getRandomValues
+    ? Array.from(globalThis.crypto.getRandomValues(new Uint8Array(16)), value => value.toString(16).padStart(2, '0')).join('')
+    : `${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
+  return `${prefix}_${random}`;
+}
+
 function extractAccessToken(rawValue: string) {
   const trimmed = rawValue.trim();
   if (!trimmed) return '';
@@ -173,7 +182,7 @@ export default function QRScanner() {
     setResult('success');
     setScanData({ name, details, outcome });
     setScanHistory((current) => [
-      { id: crypto.randomUUID(), timestamp: new Date(), result: 'success', name, details },
+      { id: createClientId(), timestamp: new Date(), result: 'success', name, details },
       ...current,
     ].slice(0, 10));
     toast.success(outcome === 'recovery' ? details : `Access granted for ${name}`);
@@ -214,6 +223,18 @@ export default function QRScanner() {
             toast.info(sessionCopy.selectAction);
           } else if (decision.authorized) {
             completeDecision(decision);
+          } else if (decision.requiresSubscriptionResume && decision.subscriptionId) {
+            const accepted = window.confirm(
+              `Access is blocked because this subscription is frozen${decision.freezePlannedEndDate ? ` until ${decision.freezePlannedEndDate}` : ''}. Resume it now?`,
+            );
+            if (!accepted) throw new Error('SUBSCRIPTION_FROZEN');
+            const resumedDecision = await subscriptionsV2Api.authorizeAccess({
+              method: 'qr',
+              accessToken: cleanedToken,
+              confirmSubscriptionResume: true,
+            });
+            if (!resumedDecision.authorized) throw new Error(resumedDecision.reason || 'Access denied after resume');
+            completeDecision(resumedDecision);
           } else {
             throw new Error(decision.reason || 'Access denied');
           }
@@ -236,7 +257,7 @@ export default function QRScanner() {
         setResult('success');
         setScanData({ member: response.member, subscription: response.subscription, name, details });
         setScanHistory((current) => [
-          { id: crypto.randomUUID(), timestamp: new Date(), result: 'success', name, details },
+          { id: createClientId(), timestamp: new Date(), result: 'success', name, details },
           ...current,
         ].slice(0, 10));
         toast.success(`Access granted for ${name}`);
@@ -247,7 +268,7 @@ export default function QRScanner() {
       setScanData({ name: 'Access Denied', details: message });
       setLastError(message);
       setScanHistory((current) => [
-        { id: crypto.randomUUID(), timestamp: new Date(), result: 'error', name: 'Access Denied', details: message },
+        { id: createClientId(), timestamp: new Date(), result: 'error', name: 'Access Denied', details: message },
         ...current,
       ].slice(0, 10));
       toast.error(message);
@@ -277,7 +298,7 @@ export default function QRScanner() {
         sessionAction: action,
         confirmSessionConsumption: action === 'consume',
         recoveryReason: action === 'recover' ? recoveryReason.trim() : undefined,
-        idempotencyKey: `qr_${action}_${crypto.randomUUID()}`,
+        idempotencyKey: createClientId(`qr_${action}`),
       });
       if (decision.authorized) {
         completeDecision(decision);

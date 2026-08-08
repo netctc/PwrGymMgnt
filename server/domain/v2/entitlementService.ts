@@ -73,10 +73,13 @@ export class EntitlementService {
               a.id AS affiliation_id, LOWER(a.status) AS affiliation_status,
               DATE_FORMAT(a.start_date, '%Y-%m-%d') AS affiliation_start_date,
               DATE_FORMAT(a.end_date, '%Y-%m-%d') AS affiliation_end_date,
-              DATE_FORMAT(s.estimated_payment_date, '%Y-%m-%d') AS expected_payment_date,
-              COALESCE(i.total, s.price_snapshot) AS amount_due,
+              COALESCE(
+                DATE_FORMAT(i.due_date, '%Y-%m-%d'),
+                DATE_FORMAT(s.start_date, '%Y-%m-%d')
+              ) AS expected_payment_date,
+              COALESCE(i.total, s.price_paid) AS amount_due,
               COALESCE(payments.net_paid, 0) AS amount_paid,
-              s.currency_snapshot AS currency, LOWER(s.payment_status) AS payment_status,
+              s.currency AS currency, LOWER(s.payment_status) AS payment_status,
               a.is_primary, a.consumption_priority
          FROM members m
          JOIN affiliations a ON a.member_id = m.id

@@ -64,6 +64,7 @@ export type AccessRequest = {
   confirmSessionConsumption?: boolean;
   sessionAction?: "consume" | "recover";
   recoveryReason?: string;
+  confirmSubscriptionResume?: boolean;
   idempotencyKey?: string;
   requestId?: string;
 };
@@ -86,6 +87,8 @@ export type AccessDecision = {
   requiresConsumptionConfirmation?: boolean;
   requiresSessionAction?: boolean;
   sessionRecovered?: boolean;
+  requiresSubscriptionResume?: boolean;
+  freezePlannedEndDate?: string | null;
   affiliationOptions?: AffiliationOption[];
 };
 
@@ -501,6 +504,41 @@ export async function authorizeAccess(pool: Pool, req: AccessRequest): Promise<A
     return decision;
   }
 
+  // Reconcile and detect freezes before entitlement evaluation. Frozen
+  // affiliations are intentionally ineligible, so waiting until after the
+  // entitlement check would return a generic 403 and hide the audited Resume
+  // workflow from QR, manual, card and facial access clients.
+  const { reconcileExpiredSubscriptionFreezes } = await import("./subscriptionLifecycle");
+  await reconcileExpiredSubscriptionFreezes(pool);
+  const [freezeRows]: any = await pool.query(
+    `SELECT s.id AS subscription_id, DATE_FORMAT(f.planned_end_date, '%Y-%m-%d') AS planned_end_date
+       FROM subscriptions s
+       JOIN affiliations a ON a.subscription_id = s.id
+       JOIN subscription_freezes f ON f.subscription_id = s.id AND f.status = 'active'
+      WHERE a.member_id = ? AND s.status = 'frozen' AND a.status = 'frozen'
+      ORDER BY a.is_primary DESC, f.created_at DESC LIMIT 1`,
+    [identity.personId],
+  );
+  if (freezeRows.length) {
+    if (req.confirmSubscriptionResume) {
+      const { resumeActiveSubscriptionFreeze } = await import("./subscriptionLifecycle");
+      await resumeActiveSubscriptionFreeze(
+        pool,
+        freezeRows[0].subscription_id,
+        new Date().toISOString().slice(0, 10),
+        "Resumed by operator during access validation",
+        req.operatorEmail || "operator:access_control",
+      );
+    } else {
+      const decision = buildDenied(attemptId, requestId, "SUBSCRIPTION_FROZEN", identity.personType, identity.personId, identity.personName);
+      decision.subscriptionId = freezeRows[0].subscription_id;
+      decision.requiresSubscriptionResume = true;
+      decision.freezePlannedEndDate = freezeRows[0].planned_end_date;
+      await recordAttempt(pool, attemptId, req, decision);
+      return decision;
+    }
+  }
+
   // Step 3: Apply the canonical contract, payment and affiliation policy.
   // Legacy access remains available only when the member has no V2 affiliation.
   const entitlement = await new EntitlementService(pool).evaluateEntitlement(
@@ -570,6 +608,7 @@ export async function authorizeAccess(pool: Pool, req: AccessRequest): Promise<A
     await recordAttempt(pool, attemptId, req, decision);
     return decision;
   }
+
   const affiliation = selection.selected;
   if (!affiliation) {
     if (selection.reason) {
@@ -961,6 +1000,7 @@ export function registerAccessAuthorizationRoutes(app: Express, poolProvider: Po
           typeof req.body.recoveryReason === "string"
             ? req.body.recoveryReason.trim()
             : undefined,
+        confirmSubscriptionResume: req.body.confirmSubscriptionResume === true,
         idempotencyKey: req.headers["idempotency-key"] as string || req.body.idempotencyKey || null,
         requestId: (req as any).requestId || createId("req"),
       };
@@ -971,6 +1011,7 @@ export function registerAccessAuthorizationRoutes(app: Express, poolProvider: Po
         decision.requiresAffiliationSelection ||
         decision.requiresConsumptionConfirmation ||
         decision.requiresSessionAction ||
+        decision.requiresSubscriptionResume ||
         decision.sessionRecovered
           ? 200
           : 403;

@@ -13,6 +13,80 @@ test("plan management module exposes versioned plans and list maintenance", () =
   assert.match(source, /draft.*active.*suspended.*cancelled.*archived/);
 });
 
+test("subscription freeze and resume are dated, policy-aware and transactional", () => {
+  const lifecycle = read("server/subscriptionLifecycle.ts");
+  const page = read("src/pages/Subscriptions.tsx");
+  const api = read("src/lib/subscriptionsV2Api.ts");
+  const migration = read("sql/034_v2_subscription_freezes.sql");
+  assert.match(lifecycle, /subscription_freezes/);
+  assert.match(lifecycle, /maximumFreezesPerCycle/);
+  assert.match(lifecycle, /extendsEndDate/);
+  assert.match(lifecycle, /\/api\/v2\/subscriptions\/:id\/resume/);
+  assert.match(lifecycle, /UPDATE subscription_cycles SET end_date = DATE_ADD/);
+  assert.match(lifecycle, /UPDATE subscription_periods_v2 SET end_date = DATE_ADD/);
+  assert.match(lifecycle, /beginTransaction/);
+  assert.match(page, /openLifecycle\(subscription, 'freeze'\)/);
+  assert.match(page, /openLifecycle\(subscription, 'resume'\)/);
+  assert.match(api, /resumeSubscription/);
+  assert.match(migration, /CREATE TABLE IF NOT EXISTS subscription_freezes/);
+});
+
+test("subscription cancellation is dated, atomic, auditable and preserves financial history", () => {
+  const lifecycle = read("server/subscriptionLifecycle.ts");
+  const workers = read("server/workers.ts");
+  const page = read("src/pages/Subscriptions.tsx");
+  const api = read("src/lib/subscriptionsV2Api.ts");
+  const migration = read("sql/036_v2_subscription_cancellations.sql");
+  assert.match(lifecycle, /reason and effectiveDate are required/);
+  assert.match(lifecycle, /completeSubscriptionCancellation/);
+  assert.match(lifecycle, /beginTransaction/);
+  assert.match(lifecycle, /UPDATE affiliations SET status = 'cancelled'/);
+  assert.match(lifecycle, /UPDATE subscription_members SET status = 'cancelled'/);
+  assert.match(lifecycle, /UPDATE class_bookings booking/);
+  assert.match(lifecycle, /UPDATE private_sessions/);
+  assert.match(lifecycle, /automaticRefundCreated: false/);
+  assert.match(lifecycle, /subscription_member_history/);
+  assert.doesNotMatch(lifecycle.slice(lifecycle.indexOf("async function completeSubscriptionCancellation"), lifecycle.indexOf("export async function reconcileScheduledSubscriptionCancellations")), /DELETE FROM/);
+  assert.match(workers, /reconcileScheduledSubscriptionCancellations/);
+  assert.match(page, /openCancellation/);
+  assert.match(page, /Refund eligibility is recorded for manual review/);
+  assert.match(api, /effectiveDate/);
+  assert.match(migration, /CREATE TABLE IF NOT EXISTS subscription_cancellations/);
+});
+
+test("freeze validity, automatic resume and access blocking share the lifecycle workflow", () => {
+  const lifecycle = read("server/subscriptionLifecycle.ts");
+  const workers = read("server/workers.ts");
+  const access = read("server/accessAuthorization.ts");
+  const accessPage = read("src/pages/AccessControl.tsx");
+  const qrPage = read("src/pages/QRScanner.tsx");
+  const page = read("src/pages/Subscriptions.tsx");
+  const migration = read("sql/035_v2_freeze_validity_and_auto_resume.sql");
+  assert.match(lifecycle, /value instanceof Date/);
+  assert.match(lifecycle, /original_end_date/);
+  assert.match(lifecycle, /projectedEndDate/);
+  assert.match(lifecycle, /recalculatedEndDate/);
+  assert.match(lifecycle, /reconcileExpiredSubscriptionFreezes/);
+  assert.match(workers, /reconcileExpiredSubscriptionFreezes/);
+  assert.match(access, /SUBSCRIPTION_FROZEN/);
+  assert.match(access, /requiresSubscriptionResume/);
+  assert.match(access, /decision\.requiresSubscriptionResume\s*\|\|/);
+  assert.match(access, /confirmSubscriptionResume/);
+  assert.match(access, /resumeActiveSubscriptionFreeze/);
+  assert.match(qrPage, /confirmSubscriptionResume: true/);
+  assert.match(accessPage, /confirmSubscriptionResume: true/);
+  assert.ok(
+    access.indexOf("reconcileExpiredSubscriptionFreezes(pool)") <
+      access.indexOf("new EntitlementService(pool).evaluateEntitlement"),
+    "freeze reconciliation and Resume decision must run before entitlement can return a generic denial",
+  );
+  assert.match(access, /Resumed by operator during access validation/);
+  assert.match(migration, /original_end_date/);
+  assert.match(migration, /information_schema\.COLUMNS/);
+  assert.match(page, /Freeze duration \(days\)/);
+  assert.match(page, /Freeze duration mismatch/);
+});
+
 test("multi-user member contract covers capacity, new members, history and future bookings", () => {
   const source = read("server/planManagement.ts");
   const subscriptions = read("server/subscriptionsV2.ts");
@@ -138,6 +212,14 @@ test("plan changes are scheduled for the next cycle and applied only on renewal"
   assert.match(page, /Schedule next plan/);
   assert.match(page, /subscriptionsV2Api\.changePlan/);
   assert.match(page, /current plan, price, benefits and sessions remain unchanged until renewal/i);
+  assert.match(page, /planChangePaymentStatus/);
+  assert.match(page, /planChangeExpectedPaymentDate/);
+  assert.match(page, /Estimated payment date cannot be before the new plan start date/);
+  assert.match(api, /scheduledExpectedPaymentDate/);
+  assert.match(lifecycle, /scheduledPaymentStatus/);
+  assert.match(lifecycle, /scheduledExpectedPaymentDate/);
+  assert.match(lifecycle, /normalizePaymentStatus\(req\.body\.paymentStatus\)/);
+  assert.match(lifecycle, /INVALID_SCHEDULED_PAYMENT_DATE/);
 });
 
 test("frontend routes plans to the new page and exposes settings list maintenance", () => {
@@ -148,6 +230,28 @@ test("frontend routes plans to the new page and exposes settings list maintenanc
   assert.match(app, /subscriptions\/new-hybrid/);
   assert.match(app, /settings\/list-maintenance/);
   assert.match(settings, /listMaintenanceLabel/);
+});
+
+test("member directory V2 separates subscription actions and explains access state", () => {
+  const members = read("src/pages/Members.tsx");
+  const subscriptions = read("src/pages/Subscriptions.tsx");
+  const subscriptionsApi = read("src/lib/subscriptionsV2Api.ts");
+  const subscriptionsRoute = read("server/subscriptionsV2.ts");
+  assert.match(members, /Member Status/);
+  assert.match(members, /getMemberAccessState/);
+  assert.match(members, /Access/);
+  assert.match(members, /Renew subscription/);
+  assert.match(members, /New subscription/);
+  assert.match(members, /Change plan/);
+  assert.match(members, /action=change-plan/);
+  assert.match(subscriptions, /requestedAction !== 'change-plan'/);
+  assert.match(subscriptions, /subscriptionId: requestedAction === 'change-plan'/);
+  assert.match(subscriptions, /setSubscriptionStatus\('all'\)/);
+  assert.match(subscriptions, /const target = requestedSubscriptionId/);
+  assert.match(subscriptionsApi, /subscriptionId\?: string/);
+  assert.match(subscriptionsRoute, /const subscriptionId = normalizeString\(req\.query\.subscriptionId\)/);
+  assert.match(subscriptionsRoute, /where\.push\("s\.id = \?"\)/);
+  assert.match(subscriptions, /openPlanChange\(target\)/);
 });
 
 test("trainer plan assignments are versioned, audited and settled outside fixed payroll", () => {
@@ -434,6 +538,14 @@ test("limited multi-user plans expose distribution, cycles, immutable movements 
   assert.match(subscriptionsPage, /trainerOptions/);
   assert.match(subscriptionsPage, /planType/);
   assert.match(subscriptionsPage, /DateInput/);
+  assert.match(subscriptionsPage, /formatDate\(result\.effectiveDate\)/);
+  assert.match(subscriptions, /parseBusinessDate/);
+  assert.match(subscriptions, /optionalBusinessDate\(row\.end_date\)/);
+  assert.doesNotMatch(subscriptions, /String\(row\.end_date\)\.slice\(0, 10\)/);
+  assert.match(
+    subscriptionsPage,
+    /value=\{formatDate\(planChangeSubscription\.scheduledPlanEffectiveDate \|\| nextDay\(planChangeSubscription\.endDate\)\)\}/,
+  );
   assert.match(commissions, /PENDING_CUSTOMER_PAYMENT_CONFIRMATION_REQUIRED/);
   assert.match(commissions, /trainer_commission_paid_before_customer_collection/);
   assert.match(commissionsPage, /pendingPaymentWarning/);

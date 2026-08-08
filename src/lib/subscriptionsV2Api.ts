@@ -57,6 +57,8 @@ export type SubscriptionV2 = {
   scheduledPlanVersionId?: string | null;
   scheduledPlanName?: string | null;
   scheduledPlanEffectiveDate?: string | null;
+  scheduledPaymentStatus?: string | null;
+  scheduledExpectedPaymentDate?: string | null;
   maxMembers: number;
   activeMembers?: number;
   sessionsUnlimited: boolean;
@@ -236,6 +238,7 @@ export const subscriptionsV2Api = {
 
   // Subscriptions
   listSubscriptions: (params: {
+    subscriptionId?: string;
     memberId?: string;
     status?: string;
     memberStatus?: string;
@@ -378,6 +381,7 @@ export const subscriptionsV2Api = {
     confirmSessionConsumption?: boolean;
     sessionAction?: 'consume' | 'recover';
     recoveryReason?: string;
+    confirmSubscriptionResume?: boolean;
     idempotencyKey?: string;
   }) =>
     apiRequest<any>('/api/access/authorize', { method: 'POST', body: JSON.stringify(payload) }),
@@ -392,8 +396,11 @@ export const subscriptionsV2Api = {
     apiRequest<{ accessPoint: any }>('/api/access/points', { method: 'POST', body: JSON.stringify(payload) }),
 
   // Subscription Lifecycle
-  freezeSubscription: (id: string, reason?: string) =>
-    apiRequest<{ ok: boolean; previousStatus: string; newStatus: string }>(`/api/v2/subscriptions/${encodeURIComponent(id)}/freeze`, { method: 'POST', body: JSON.stringify({ reason }) }),
+  freezeSubscription: (id: string, payload: { startDate: string; endDate: string; reason: string }) =>
+    apiRequest<{ ok: boolean; previousStatus: string; newStatus: string; plannedDays: number; extendsEndDate: boolean }>(`/api/v2/subscriptions/${encodeURIComponent(id)}/freeze`, { method: 'POST', body: JSON.stringify(payload) }),
+
+  resumeSubscription: (id: string, payload: { resumeDate: string; reason: string }) =>
+    apiRequest<{ ok: boolean; previousStatus: string; newStatus: string; frozenDays: number; extensionDays: number; recalculatedEndDate: string }>(`/api/v2/subscriptions/${encodeURIComponent(id)}/resume`, { method: 'POST', body: JSON.stringify(payload) }),
 
   suspendSubscription: (id: string, reason?: string) =>
     apiRequest<{ ok: boolean; previousStatus: string; newStatus: string }>(`/api/v2/subscriptions/${encodeURIComponent(id)}/suspend`, { method: 'POST', body: JSON.stringify({ reason }) }),
@@ -401,8 +408,8 @@ export const subscriptionsV2Api = {
   reactivateSubscription: (id: string, reason?: string) =>
     apiRequest<{ ok: boolean; previousStatus: string; newStatus: string }>(`/api/v2/subscriptions/${encodeURIComponent(id)}/reactivate`, { method: 'POST', body: JSON.stringify({ reason }) }),
 
-  cancelSubscription: (id: string, reason?: string) =>
-    apiRequest<{ ok: boolean; previousStatus: string; newStatus: string }>(`/api/v2/subscriptions/${encodeURIComponent(id)}/cancel`, { method: 'POST', body: JSON.stringify({ reason }) }),
+  cancelSubscription: (id: string, payload: { effectiveDate: string; reason: string }) =>
+    apiRequest<{ ok: boolean; cancellationId: string; effectiveDate: string; status: 'scheduled' | 'completed'; affectedMembers?: number; cancelledBookings?: number; cancelledSessions?: number; refundReview?: { required: boolean; automaticRefundCreated: false } }>(`/api/v2/subscriptions/${encodeURIComponent(id)}/cancel`, { method: 'POST', body: JSON.stringify(payload) }),
 
   renewSubscription: (
     id: string,
@@ -422,6 +429,6 @@ export const subscriptionsV2Api = {
   ) =>
     apiRequest<{ ok: boolean; newPlanVersionId: string; newStartDate: string; newEndDate: string; paymentStatus: string; paymentDate: string; amountPaid: string; amountPending: string; invoiceNumber: string }>(`/api/v2/subscriptions/${encodeURIComponent(id)}/renew`, { method: 'POST', body: JSON.stringify(payload) }),
 
-  changePlan: (id: string, planVersionId: string, reason?: string) =>
-    apiRequest<{ ok: boolean; currentPlanVersionId: string; scheduledPlanVersionId: string; effectiveDate: string }>(`/api/v2/subscriptions/${encodeURIComponent(id)}/change-plan`, { method: 'POST', body: JSON.stringify({ planVersionId, reason }) }),
+  changePlan: (id: string, payload: { planVersionId: string; reason?: string; paymentStatus: string; expectedPaymentDate?: string }) =>
+    apiRequest<{ ok: boolean; currentPlanVersionId: string; scheduledPlanVersionId: string; effectiveDate: string; paymentStatus: string; expectedPaymentDate: string | null }>(`/api/v2/subscriptions/${encodeURIComponent(id)}/change-plan`, { method: 'POST', body: JSON.stringify(payload) }),
 };

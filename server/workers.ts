@@ -160,6 +160,7 @@ export async function drainOutbox(pool: Pool): Promise<{ processed: number; erro
           case "access_denied":
           case "subscription_cancelled":
           case "subscription_frozen":
+          case "subscription_resumed":
           case "subscription_suspended":
           case "plan_changed":
             appLogger.info("Outbox event processed", { eventType: event.event_type, eventId: event.id });
@@ -475,6 +476,14 @@ export function startWorkers(poolProvider: () => Pool | null, intervalMs = 60_00
 
       const expiryAlerts = await notifyExpiringSessionBalances(pool);
       if (expiryAlerts.created > 0) appLogger.info("Session expiry alerts created", expiryAlerts);
+
+      const { reconcileExpiredSubscriptionFreezes } = await import("./subscriptionLifecycle");
+      const freezes = await reconcileExpiredSubscriptionFreezes(pool);
+      if (freezes.resumed > 0) appLogger.info("Expired subscription freezes resumed", freezes);
+
+      const { reconcileScheduledSubscriptionCancellations } = await import("./subscriptionLifecycle");
+      const cancellations = await reconcileScheduledSubscriptionCancellations(pool);
+      if (cancellations.cancelled > 0) appLogger.info("Scheduled subscription cancellations completed", cancellations);
     } catch (error: any) {
       appLogger.error("Worker cycle failed", { error: error.message });
     }

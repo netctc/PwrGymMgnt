@@ -30,6 +30,7 @@ import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import DateInput from "../components/DateInput";
 import { useLocalization } from "../contexts/LocalizationContext";
+import { formatDate } from "../lib/formatDate";
 import { membershipApi, type MembershipMember } from "../lib/membershipApi";
 import {
   planManagementApi,
@@ -871,7 +872,7 @@ export default function HybridSubscriptionWizard() {
                 <div className="font-semibold">{selectedPlan?.name}</div>
                 <div className="text-xs">
                   {selectedPlan ? planTypeLabel(selectedPlan.planType) : ""} ·{" "}
-                  {startDate} → {endDate}
+                  {formatDate(startDate)} → {formatDate(endDate)}
                 </div>
               </div>
               <div className="rounded-lg bg-slate-50 p-4">
