@@ -240,7 +240,7 @@ test("member directory V2 separates subscription actions and explains access sta
   assert.match(members, /Member Status/);
   assert.match(members, /getMemberAccessState/);
   assert.match(members, /Access/);
-  assert.match(members, /Renew subscription/);
+  assert.match(members, /Renew (?:this )?[Ss]ubscription/);
   assert.match(members, /New subscription/);
   assert.match(members, /Change plan/);
   assert.match(members, /action=change-plan/);
@@ -462,6 +462,12 @@ test("limited multi-user plans expose distribution, cycles, immutable movements 
   assert.match(lifecycle, /Number\.isNaN\(sub\.end_date\.getTime\(\)\)/);
   assert.match(membersPage, /Estimated payment date cannot be after End Date/);
   assert.match(membersPage, /renewMode/);
+  assert.match(membersPage, /renewTargetSubscriptionId/);
+  assert.match(membersPage, /renewalCandidates\.length > 1/);
+  assert.match(membersPage, /plan\.subscriptionId === exactSubscriptionId/);
+  assert.match(membersPage, /subscription\.id === exactSubscriptionId/);
+  assert.match(membersPage, /Renew this subscription/);
+  assert.match(membersPage, /No subscription is available to renew/);
   assert.match(membersPage, /Subscription payment updated/);
   assert.match(membersPage, /Current Plan/);
   assert.match(membersPage, /Payment Status/);

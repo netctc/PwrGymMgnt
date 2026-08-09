@@ -6,6 +6,8 @@ import { formatDisplayDate as formatClientDisplayDate } from "../src/lib/busines
 import { moneyToMinor, subtractMoney } from "../server/domain/v2/money";
 import { evaluateCandidates } from "../server/domain/v2/entitlementService";
 import type { EntitlementCandidate } from "../server/domain/v2/contracts";
+import { evaluateMemberListAccess } from "../src/lib/memberAccess";
+import type { MembershipMember } from "../src/lib/membershipApi";
 
 const base: EntitlementCandidate = {
   memberId: "member_1", memberStatus: "active", subscriptionId: "sub_1", affiliationId: "aff_1",
@@ -36,6 +38,26 @@ test("pending permits access through expected payment date and overdue blocks ne
   const blocked = evaluateCandidates("member_1", [base], "2026-08-11");
   assert.equal(blocked.allowed, false);
   assert.equal(blocked.reasonCode, "PAYMENT_OVERDUE");
+});
+
+test("Members Directory permits pending and partial access until the expected payment date", () => {
+  const member: MembershipMember = {
+    id: "member_1", firstName: "Test", lastName: "Member", email: "test@example.com",
+    status: "active", currentExpiry: "2026-08-31",
+    plans: [{
+      id: "aff_1", affiliationId: "aff_1", subscriptionId: "sub_1", planId: "plan_1",
+      planVersionId: "version_1", planName: "Monthly", planType: "individual", role: "holder",
+      status: "active", subscriptionStatus: "active", paymentStatus: "pending",
+      expectedPaymentDate: "2026-08-20", isPrimary: true, startDate: "2026-08-01",
+      endDate: "2026-08-31", sessionsUnlimited: true, distributionModel: "individual",
+    }],
+  };
+  assert.equal(evaluateMemberListAccess(member, "2026-08-10").allowed, true);
+  assert.equal(evaluateMemberListAccess(member, "2026-08-20").allowed, true);
+  assert.equal(evaluateMemberListAccess(member, "2026-08-21").reason, "Payment overdue");
+  member.plans![0].paymentStatus = "partial";
+  assert.equal(evaluateMemberListAccess(member, "2026-08-20").allowed, true);
+  assert.equal(evaluateMemberListAccess(member, "2026-08-21").allowed, false);
 });
 
 test("another eligible subscription authorizes a member when one contract is overdue", () => {
@@ -98,4 +120,18 @@ test("entitlement payment date uses the operational column and V2 invoice schema
   assert.match(source, /LEFT JOIN invoices i/);
   assert.match(source, /i\.subscription_v2_id = s\.id/);
   assert.doesNotMatch(source, /JSON_EXTRACT\(s\.data, '\$\.expectedPaymentDate'\)/);
+});
+
+test("payment reconciliation suspends overdue contracts and payment recovery is scoped", () => {
+  const workers = readFileSync(new URL("../server/workers.ts", import.meta.url), "utf8");
+  const subscriptions = readFileSync(new URL("../server/subscriptionsV2.ts", import.meta.url), "utf8");
+  assert.match(workers, /reconcileOverdueSubscriptionPayments/);
+  assert.match(workers, /i\.due_date < CURDATE\(\)/);
+  assert.match(workers, /payment_status = 'overdue'/);
+  assert.match(workers, /automaticPaymentSuspension/);
+  assert.match(workers, /subscription_suspended_payment_overdue/);
+  assert.match(subscriptions, /recoverAutomaticSuspension/);
+  assert.match(subscriptions, /paymentSuspendedAffiliationIds/);
+  assert.match(subscriptions, /subscription_reactivated_payment_resolved/);
+  assert.match(subscriptions, /\["pending", "partial"\]\.includes\(paymentStatus\) \? paymentDate : null/);
 });

@@ -797,7 +797,7 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
       await connection.beginTransaction();
       const [rows]: any = await connection.query(
         `SELECT s.payment_status, s.price_paid, s.currency, s.start_date,
-                s.end_date, s.data, s.holder_member_id,
+                s.end_date, s.data, s.status, s.holder_member_id,
                 pv.name AS plan_name,
                 holder.first_name AS holder_first_name,
                 holder.last_name AS holder_last_name
@@ -901,7 +901,7 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
             paymentDate,
             paymentStatus,
             paymentStatus,
-            paymentStatus === "pending" ? paymentDate : null,
+            ["pending", "partial"].includes(paymentStatus) ? paymentDate : null,
             invoiceId,
           ],
         );
@@ -931,7 +931,7 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
               periodEnd: rows[0].end_date,
               paymentStatus,
               expectedPaymentDate:
-                paymentStatus === "pending" ? paymentDate : null,
+                ["pending", "partial"].includes(paymentStatus) ? paymentDate : null,
             }),
           ],
         );
@@ -974,6 +974,38 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
           WHERE id = ?`,
         [paymentStatus === "paid" ? "paid" : "issued", paymentStatus, paymentStatus, amountPaid, amountPending, invoiceId],
       );
+      const subscriptionData =
+        typeof rows[0].data === "string" ? JSON.parse(rows[0].data || "{}") : (rows[0].data || {});
+      const paymentSuspendedAffiliationIds = Array.isArray(subscriptionData.paymentSuspendedAffiliationIds)
+        ? subscriptionData.paymentSuspendedAffiliationIds.map(String)
+        : [];
+      const recoverAutomaticSuspension =
+        paymentStatus === "paid" &&
+        rows[0].status === "suspended" &&
+        subscriptionData.automaticPaymentSuspension === true;
+      if (recoverAutomaticSuspension) {
+        await connection.query(
+          `UPDATE subscriptions
+              SET status = 'active',
+                  data = JSON_REMOVE(COALESCE(data, JSON_OBJECT()),
+                    '$.automaticPaymentSuspension', '$.paymentSuspendedAffiliationIds', '$.paymentSuspendedAt'),
+                  version = version + 1, updated_at = NOW()
+            WHERE id = ?`,
+          [req.params.id],
+        );
+        if (paymentSuspendedAffiliationIds.length) {
+          await connection.query(
+            `UPDATE affiliations SET status = 'active', updated_at = NOW()
+              WHERE subscription_id = ? AND status = 'suspended'
+                AND id IN (${paymentSuspendedAffiliationIds.map(() => "?").join(",")})`,
+            [req.params.id, ...paymentSuspendedAffiliationIds],
+          );
+        }
+        await connection.query(
+          "INSERT INTO audit_logs (action, details, performed_by) VALUES ('subscription_reactivated_payment_resolved', ?, ?)",
+          [JSON.stringify({ subscriptionId: req.params.id, affiliationIds: paymentSuspendedAffiliationIds }), req.user?.email || req.user?.uid || "system"],
+        );
+      }
       await connection.query(
         `UPDATE subscriptions
             SET payment_status = ?,
@@ -1061,6 +1093,7 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
         ok: true,
         previousPaymentStatus,
         paymentStatus,
+        subscriptionReactivated: recoverAutomaticSuspension,
         paymentDate,
         accountingStatus,
         invoiceNumber,

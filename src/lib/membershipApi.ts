@@ -58,6 +58,7 @@ export type MembershipMember = {
     status: string;
     subscriptionStatus: string;
     paymentStatus?: string | null;
+    expectedPaymentDate?: string | null;
     isPrimary: boolean;
     startDate?: string | null;
     endDate?: string | null;

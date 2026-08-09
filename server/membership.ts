@@ -135,6 +135,14 @@ function mapMember(row: any) {
   };
 }
 
+function paymentRequiresAttention(status: unknown, expectedPaymentDate: unknown) {
+  const normalizedStatus = String(status || "").toLowerCase();
+  if (normalizedStatus === "overdue") return true;
+  if (!["pending", "partial"].includes(normalizedStatus)) return false;
+  const dueDate = dateOnly(expectedPaymentDate);
+  return Boolean(dueDate && dueDate < todayDateString());
+}
+
 async function getMultiUserMemberships(pool: Pool, memberId?: string) {
   const params: string[] = [];
   const memberFilter = memberId ? "AND a.member_id = ?" : "";
@@ -145,6 +153,14 @@ async function getMultiUserMemberships(pool: Pool, memberId?: string) {
             a.end_date AS affiliation_end_date,
             s.id AS subscription_id, s.status AS subscription_status,
             s.payment_status AS subscription_payment_status,
+            (
+              SELECT DATE_FORMAT(i_due.due_date, '%Y-%m-%d')
+                FROM invoices i_due
+               WHERE i_due.subscription_v2_id = s.id
+                 AND i_due.status <> 'void'
+               ORDER BY i_due.created_at DESC, i_due.id DESC
+               LIMIT 1
+            ) AS expected_payment_date,
             s.start_date AS subscription_start_date,
             s.end_date AS subscription_end_date,
             s.max_members,
@@ -207,6 +223,14 @@ async function getMemberPlanMemberships(pool: Pool, memberId?: string, includeHi
             a.role, a.status AS affiliation_status, a.is_primary,
             a.start_date, a.end_date,
             s.plan_id, s.status AS subscription_status, s.payment_status,
+            (
+              SELECT DATE_FORMAT(i_due.due_date, '%Y-%m-%d')
+                FROM invoices i_due
+               WHERE i_due.subscription_v2_id = s.id
+                 AND i_due.status <> 'void'
+               ORDER BY i_due.created_at DESC, i_due.id DESC
+               LIMIT 1
+            ) AS expected_payment_date,
             s.legacy_subscription_id,
             pv.id AS plan_version_id, pv.name AS plan_name,
             COALESCE(sp.description, pv.description) AS plan_description,
@@ -286,6 +310,7 @@ async function getMemberPlanMemberships(pool: Pool, memberId?: string, includeHi
       status: row.affiliation_status,
       subscriptionStatus: row.subscription_status,
       paymentStatus: row.payment_status || "pending",
+      expectedPaymentDate: dateOnly(row.expected_payment_date) || dateOnly(row.start_date),
       isPrimary: Boolean(row.is_primary),
       startDate: dateOnly(row.start_date),
       endDate: dateOnly(row.end_date),
@@ -368,7 +393,10 @@ function enrichMemberWithSubscription(
       multiUserMembers: [],
       multiUserCapacity: null,
       paymentStatus: member.paymentStatus || null,
-      paymentAttentionRequired: member.paymentStatus === "pending",
+      paymentAttentionRequired: paymentRequiresAttention(
+        member.paymentStatus,
+        member.paymentDueDate,
+      ),
       plans: memberPlans,
     };
   }
@@ -402,8 +430,9 @@ function enrichMemberWithSubscription(
       multiUserMembers: [],
       multiUserCapacity: null,
       paymentStatus: multiMembership.subscription_payment_status || null,
-      paymentAttentionRequired: ["pending", "partial", "overdue"].includes(
+      paymentAttentionRequired: paymentRequiresAttention(
         multiMembership.subscription_payment_status,
+        multiMembership.expected_payment_date || multiMembership.subscription_start_date,
       ),
       plans: memberPlans,
     };
@@ -420,7 +449,10 @@ function enrichMemberWithSubscription(
       multiUserMembers: [],
       multiUserCapacity: null,
       paymentStatus: member.paymentStatus || null,
-      paymentAttentionRequired: member.paymentStatus === "pending",
+      paymentAttentionRequired: paymentRequiresAttention(
+        member.paymentStatus,
+        member.paymentDueDate,
+      ),
       plans: memberPlans,
     };
   }
@@ -452,8 +484,9 @@ function enrichMemberWithSubscription(
       ),
     },
     paymentStatus: multiMembership.subscription_payment_status || null,
-    paymentAttentionRequired: ["pending", "partial", "overdue"].includes(
+    paymentAttentionRequired: paymentRequiresAttention(
       multiMembership.subscription_payment_status,
+      multiMembership.expected_payment_date || multiMembership.subscription_start_date,
     ),
     plans: memberPlans,
   };

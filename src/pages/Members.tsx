@@ -8,6 +8,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../components/
 import { Input } from '../components/ui/input';
 import DateInput from '../components/DateInput';
 import { formatDate as formatSharedDate } from '../lib/formatDate';
+import { evaluateMemberListAccess } from '../lib/memberAccess';
 import { Label } from '../components/ui/label';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '../components/ui/sheet';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
@@ -196,34 +197,7 @@ function badgeVariant(status?: string) {
 }
 
 function getMemberAccessState(member: MembershipMember) {
-  const memberStatus = getEffectiveMemberStatus(member);
-  const plans = member.plans || [];
-  const currentPlans = plans.filter(
-    (plan) =>
-      plan.subscriptionStatus === 'active' &&
-      ['active', 'suspended'].includes(plan.status) &&
-      (!plan.endDate || dateValue(plan.endDate) >= today()),
-  );
-  if (memberStatus !== 'active') {
-    return { allowed: false, label: 'Blocked', reason: `Member is ${memberStatus}` };
-  }
-  if (member.paymentAttentionRequired) {
-    return { allowed: false, label: 'Blocked', reason: `Payment ${member.paymentStatus || 'pending'}` };
-  }
-  if (currentPlans.some((plan) => plan.status === 'active')) {
-    return { allowed: true, label: 'Allowed', reason: 'Active affiliation' };
-  }
-  if (currentPlans.some((plan) => plan.status === 'suspended')) {
-    return { allowed: false, label: 'Blocked', reason: 'Affiliation suspended or frozen' };
-  }
-  if (
-    plans.length === 0 &&
-    member.currentPlan &&
-    dateValue(member.currentExpiry) >= today()
-  ) {
-    return { allowed: true, label: 'Allowed', reason: 'Active legacy subscription' };
-  }
-  return { allowed: false, label: 'Blocked', reason: 'No active subscription' };
+  return evaluateMemberListAccess(member);
 }
 
 function subscriptionChangePlanUrl(memberId: string, subscriptionId: string) {
@@ -425,6 +399,7 @@ export default function Members() {
   const [renewPaymentLocked, setRenewPaymentLocked] = useState(false);
   const [renewMultiSubscription, setRenewMultiSubscription] =
     useState<SubscriptionV2 | null>(null);
+  const [renewTargetSubscriptionId, setRenewTargetSubscriptionId] = useState('');
   const [qrOpen, setQrOpen] = useState(false);
   const [qrMember, setQrMember] = useState<MembershipMember | null>(null);
   const [accessToken, setAccessToken] = useState('');
@@ -957,7 +932,10 @@ export default function Members() {
     setPageSearchParams(next, { replace: true });
   }, [pageSearchParams, renewOpen]);
 
-  const openRenew = async (member: MembershipMember) => {
+  const openRenew = async (
+    member: MembershipMember,
+    targetSubscriptionId?: string,
+  ) => {
     setSubscriptionIntent('renew');
     setRenewMember(member);
     setRenewPlanId('');
@@ -977,6 +955,7 @@ export default function Members() {
     setRenewExistingEndDate('');
     setRenewPaymentLocked(false);
     setRenewMultiSubscription(null);
+    setRenewTargetSubscriptionId(targetSubscriptionId || '');
     setRenewStartDate(today());
     setRenewOpen(true);
 
@@ -987,8 +966,27 @@ export default function Members() {
           .listSubscriptions({ memberId: member.id, status: 'all' })
           .catch(() => ({ subscriptions: [] as SubscriptionV2[] })),
       ]);
+      const renewalCandidates = Array.from(
+        new Set([
+          ...(response.member.plans || member.plans || [])
+            .filter((plan) => plan.subscriptionId && plan.role !== 'beneficiary')
+            .map((plan) => plan.subscriptionId),
+          ...response.subscriptions.map((subscription) => subscription.id),
+        ]),
+      );
+      if (!targetSubscriptionId && renewalCandidates.length > 1) {
+        setRenewOpen(false);
+        toast.info('This member has multiple subscriptions. Select “Renew this subscription” from the required contract.');
+        await openDetail(member);
+        return;
+      }
+      const exactSubscriptionId = targetSubscriptionId || renewalCandidates[0] || '';
+      if (!exactSubscriptionId) {
+        throw new Error('No subscription is available to renew. Create a new subscription instead.');
+      }
+      setRenewTargetSubscriptionId(exactSubscriptionId);
       const preferredPlan = [...(response.member.plans || member.plans || [])]
-        .filter((plan) => plan.subscriptionId)
+        .filter((plan) => plan.subscriptionId === exactSubscriptionId)
         .sort(
           (a, b) =>
             Number(
@@ -1007,30 +1005,25 @@ export default function Members() {
           dateValue(b.endDate).localeCompare(dateValue(a.endDate)),
       );
       const multiSubscription =
-        (preferredPlan?.planVersionId
-          ? sortedMultiSubscriptions.find(
-              (subscription) =>
-                subscription.id === preferredPlan.subscriptionId,
-            )
-          : null) ||
-        (!preferredPlan ? sortedMultiSubscriptions[0] : null) ||
-        null;
+        sortedMultiSubscriptions.find(
+          (subscription) => subscription.id === exactSubscriptionId,
+        ) || null;
       const sortedLegacySubscriptions = [...response.subscriptions].sort(
         (a, b) =>
           Number(b.status === 'active') - Number(a.status === 'active') ||
           String(b.endDate).localeCompare(String(a.endDate)),
       );
       const latestLegacySubscription =
-        (!preferredPlan?.planVersionId
-          ? sortedLegacySubscriptions.find(
-              (subscription) =>
-                subscription.id === preferredPlan?.subscriptionId,
-            )
-          : null) ||
-        sortedLegacySubscriptions[0];
+        sortedLegacySubscriptions.find(
+          (subscription) => subscription.id === exactSubscriptionId,
+        );
+      if (!multiSubscription && !latestLegacySubscription) {
+        throw new Error(`Subscription ${exactSubscriptionId} was not found for this member.`);
+      }
       const currentExpiry =
         multiSubscription?.endDate ||
-        getLatestSubscriptionEndDate(response.subscriptions);
+        latestLegacySubscription?.endDate ||
+        '';
       setRenewMultiSubscription(multiSubscription);
       setRenewCurrentPlan(
         multiSubscription?.planName ||
@@ -2208,6 +2201,11 @@ The secure QR token is embedded in the attached PDF/QR image.`;
             {renewMember && (
               <div className="rounded-lg bg-slate-50 p-3 text-sm">
                 <p className="font-medium text-slate-900">{renewMember.firstName} {renewMember.lastName}</p>
+                {subscriptionIntent === 'renew' && renewTargetSubscriptionId && (
+                  <p className="break-all text-xs font-medium text-slate-700">
+                    Subscription ID: {renewTargetSubscriptionId}
+                  </p>
+                )}
                 <p className="text-slate-500">
                   Current plans: {renewCurrentPlan || 'No active plan'}
                 </p>
@@ -2588,9 +2586,6 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                     <div><span className="text-slate-500">Last Access:</span> {formatDate(detail.member.lastAccess)}</div>
                     <div><span className="text-slate-500">Member ID:</span> {detail.member.id}</div>
                     <div className="flex flex-wrap gap-2 md:col-span-2">
-                      <Button size="sm" onClick={() => { setDetailOpen(false); openRenew(detail.member); }}>
-                        <CreditCard className="mr-2 h-4 w-4" /> Renew subscription
-                      </Button>
                       <Button size="sm" variant="outline" asChild>
                         <Link to={changePlanUrl(detail.member)}><ArrowRightLeft className="mr-2 h-4 w-4" /> Change plan</Link>
                       </Button>
@@ -2685,6 +2680,17 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                               </p>
                             )}
                             <div className="mt-3 flex flex-wrap gap-2">
+                              {plan.role !== 'beneficiary' && (
+                                <Button
+                                  size="sm"
+                                  onClick={() => {
+                                    setDetailOpen(false);
+                                    void openRenew(detail.member, plan.subscriptionId);
+                                  }}
+                                >
+                                  <CreditCard className="mr-2 h-4 w-4" /> Renew this subscription
+                                </Button>
+                              )}
                               {plan.subscriptionStatus === 'active' && (
                                 <Button size="sm" variant="outline" asChild>
                                   <Link to={subscriptionChangePlanUrl(detail.member.id, plan.subscriptionId)}>
@@ -2708,6 +2714,17 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                               </div>
                               <p className="text-slate-500">{formatDate(subscription.startDate)} - {formatDate(subscription.endDate)}</p>
                               <p className="text-slate-500">{formatMoney(subscription.price, subscription.currency)}</p>
+                              <div className="mt-3">
+                                <Button
+                                  size="sm"
+                                  onClick={() => {
+                                    setDetailOpen(false);
+                                    void openRenew(detail.member, subscription.id);
+                                  }}
+                                >
+                                  <CreditCard className="mr-2 h-4 w-4" /> Renew this subscription
+                                </Button>
+                              </div>
                             </div>
                           ))}
                       </div>
