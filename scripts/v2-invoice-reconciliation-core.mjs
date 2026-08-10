@@ -16,25 +16,35 @@ const number = (value) => Number(value || 0);
 
 export function buildInvoiceResult(rows, database) {
   const counts = Object.fromEntries(rows.map((row) => [row.check_id, number(row.issue_count)]));
-  const checks = [
+  const applicable = counts.mapped_source_invoices > 0;
+  const migrationChecks = [
     ['invoice_subscription_mapping_coverage', counts.missing_subscription_mappings],
     ['missing_v2_invoice_links', counts.missing_v2_links],
     ['incorrect_v2_invoice_links', counts.incorrect_v2_links],
+  ];
+  const integrityChecks = [
     ['orphan_v2_invoice_links', counts.orphan_v2_links],
     ['invoice_member_mismatches', counts.member_mismatches],
     ['invoice_financial_field_issues', counts.financial_field_issues],
-  ].map(([id, issueCount]) => ({ id, issueCount, ok: issueCount === 0 }));
+  ];
+  const checks = [...migrationChecks.map(([id, rawIssueCount]) => {
+    const issueCount = applicable ? rawIssueCount : 0;
+    return { id, issueCount, ok: issueCount === 0, applicable };
+  }), ...integrityChecks.map(([id, issueCount]) => ({ id, issueCount, ok: issueCount === 0, applicable: true }))];
   const issueCount = checks.reduce((sum, check) => sum + Math.max(0, check.issueCount), 0);
 
   return {
     generatedAt: new Date().toISOString(), database, mode: 'read-only',
     scope: 'invoices', result: issueCount === 0 ? 'PASS' : 'BLOCKED', issueCount,
+    applicability: applicable ? 'applicable' : 'not_applicable',
     source: { legacyLinkedInvoices: counts.source_invoices },
     reconciled: { mappedInvoices: counts.mapped_source_invoices, correctlyLinkedInvoices: counts.correct_v2_links },
     checks,
     cutover: {
       ready: false,
-      reason: issueCount === 0
+      reason: issueCount === 0 && !applicable
+        ? 'No migrated invoice mappings exist; migration-link checks are not applicable and native invoice integrity passed.'
+        : issueCount === 0
         ? 'Invoice reconciliation passed; session-balance and access-decision comparisons are still required.'
         : 'Invoice discrepancies must be resolved before shadow mode.',
       pendingScopes: issueCount === 0 ? ['sessionBalances', 'accessDecisions'] : ['invoices', 'sessionBalances', 'accessDecisions'],

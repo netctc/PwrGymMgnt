@@ -4,6 +4,11 @@ This read-only gate validates invoices linked to legacy `member_subscriptions` a
 
 It never updates invoices. A `PASS` removes only `invoices` from the pending cutover scopes; session balances and access decisions remain mandatory.
 
+When the database contains no legacy-to-V2 migration mappings, migration-link
+checks are reported as `not_applicable`. Native legacy and V2 invoice integrity
+(foreign keys, member ownership, money fields and status) is still validated;
+the command passes only when those checks have no issues.
+
 Run:
 
 ```cmd

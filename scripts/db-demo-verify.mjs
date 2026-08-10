@@ -85,8 +85,9 @@ async function verifyDemoScenario(connection) {
   }
 
   const scenarioChecks = [
-    ['auth.adminsPreserved', 'Preserved admin and super_admin accounts', "SELECT COUNT(*) AS count FROM admin_users WHERE LOWER(TRIM(role)) IN ('admin','super_admin')", [], 2, 'critical', 'The reset requires existing admin and super_admin accounts.'],
-    ['auth.noExtraRoles', 'No non-admin authentication accounts', "SELECT CASE WHEN COUNT(*) = 0 THEN 1 ELSE 0 END AS count FROM admin_users WHERE COALESCE(LOWER(TRIM(role)), '') NOT IN ('admin','super_admin')", [], 1, 'critical', 'Only existing admin and super_admin authentication accounts may remain.'],
+    ['auth.accountsPreserved', 'Preserved authentication accounts', 'SELECT COUNT(*) AS count FROM admin_users', [], 1, 'critical', 'The operational reset must preserve existing authentication accounts.'],
+    ['workforce.staffPreserved', 'Preserved staff records', 'SELECT COUNT(*) AS count FROM staff', [], 1, 'critical', 'The operational reset must preserve existing staff.'],
+    ['workforce.employeesPreserved', 'Preserved employee records', 'SELECT COUNT(*) AS count FROM employees', [], 1, 'critical', 'The operational reset must preserve existing employees.'],
     ['features.enabled', 'Evolution feature flags enabled', 'SELECT COUNT(*) AS count FROM feature_flags WHERE enabled = 1', [], 6, 'critical', 'All current subscription, session and access features should be enabled for the demo.'],
     ['access.points', 'Configured access points', 'SELECT COUNT(*) AS count FROM access_points', [], 3, 'warning', 'Access-control testing needs entry, studio and exit points.'],
     ['members.total', 'Members', 'SELECT COUNT(*) AS count FROM members', [], 20, 'critical', 'The demo seed should create at least 20 members.'],
@@ -102,8 +103,8 @@ async function verifyDemoScenario(connection) {
     ['access.attempts', 'Access control decisions', 'SELECT COUNT(*) AS count FROM access_attempts', [], 5, 'warning', 'QR, card, biometric and manual access decisions should be represented.'],
     ['billing.invoices', 'Membership invoices', 'SELECT COUNT(*) AS count FROM invoices', [], 20, 'critical', 'Receipt and renewal screens need invoices.'],
     ['access.tokens', 'Active QR/e-card tokens', "SELECT COUNT(*) AS count FROM access_tokens WHERE LOWER(TRIM(status)) = 'active' AND expires_at > NOW()", [], 14, 'critical', 'QR Access needs active demo tokens.'],
-    ['employees.total', 'Employees', 'SELECT COUNT(*) AS count FROM employees', [], 10, 'critical', 'HR scenarios need 10 employees.'],
-    ['employees.trainers', 'Trainers', "SELECT COUNT(*) AS count FROM employees WHERE LOWER(TRIM(department)) = 'trainer'", [], 5, 'critical', 'Scheduling and PT need 5 trainers.'],
+    ['employees.total', 'Preserved employees', 'SELECT COUNT(*) AS count FROM employees', [], 1, 'critical', 'At least one preserved employee is required.'],
+    ['employees.trainers', 'Preserved trainers', "SELECT COUNT(*) AS count FROM employees WHERE LOWER(TRIM(department)) = 'trainer'", [], 1, 'warning', 'A trainer is recommended; otherwise the reset reuses another active employee for schedules.'],
     ['employees.departments', 'HR departments', 'SELECT COUNT(*) AS count FROM hr_departments', [], 8, 'warning', 'HR maintenance needs representative departments.'],
     ['employees.jobTitles', 'HR job titles', 'SELECT COUNT(*) AS count FROM hr_job_titles', [], 8, 'warning', 'HR maintenance needs representative job titles.'],
     ['training.private', 'Private training sessions', 'SELECT COUNT(*) AS count FROM private_sessions', [], 10, 'critical', 'PT screens need 10 sessions.'],

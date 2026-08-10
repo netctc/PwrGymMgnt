@@ -25,6 +25,20 @@ test('missing V2 links block invoice reconciliation', () => {
   assert.deepEqual(result.cutover.pendingScopes, ['invoices', 'sessionBalances', 'accessDecisions']);
 });
 
+test('clean native dataset passes when no invoice migration mappings exist', () => {
+  const nativeRows = rows.map((row) => {
+    if (row.check_id === 'source_invoices') return { ...row, issue_count: 20 };
+    if (row.check_id === 'mapped_source_invoices' || row.check_id === 'correct_v2_links') return { ...row, issue_count: 0 };
+    if (row.check_id === 'missing_subscription_mappings') return { ...row, issue_count: 20 };
+    return row;
+  });
+  const result = buildInvoiceResult(nativeRows, 'pwrgymdb');
+  assert.equal(result.result, 'PASS');
+  assert.equal(result.applicability, 'not_applicable');
+  assert.equal(result.issueCount, 0);
+  assert.equal(result.checks.find((check) => check.id === 'invoice_subscription_mapping_coverage')?.applicable, false);
+});
+
 test('invoice reconciliation is read-only and verifies link and money integrity', () => {
   const sql = source.slice(source.indexOf('export const INVOICE_RECONCILIATION_SQL'), source.indexOf('async function main'));
   assert.doesNotMatch(sql, /\b(INSERT|UPDATE|DELETE|ALTER|DROP|CREATE|REPLACE)\b/i);

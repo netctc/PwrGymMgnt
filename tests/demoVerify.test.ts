@@ -39,26 +39,56 @@ test('demo readiness formatter includes actionable check status lines', () => {
   assert.match(output, /OK Warehouse products: 30\/30/);
 });
 
-test('complete demo reset preserves only existing admin authentication accounts', () => {
+test('operational reset preserves existing identity, staff and authorization records', () => {
   const source = fs.readFileSync(path.join(process.cwd(), 'scripts/db-reset-demo.mjs'), 'utf8');
-  assert.match(source, /DELETE FROM admin_users WHERE COALESCE\(LOWER\(TRIM\(role\)\), ''\) NOT IN \('admin', 'super_admin'\)/);
-  assert.match(source, /at least one existing admin and one existing super_admin account are required/);
+  assert.doesNotMatch(source, /DELETE FROM (?:admin_users|users)/);
   assert.match(source, /authenticationAccountsCreated: 0/);
   assert.doesNotMatch(source, /'admin_users',\s*[\r\n]/);
+  assert.doesNotMatch(source, /\n\s*'staff',\s*\n|\n\s*'employees',\s*\n|\n\s*'role_permission_overrides',\s*\n/);
+  assert.match(source, /Existing users, staff, employees, roles, permissions and passwords were preserved/);
+  assert.match(source, /--database=/);
   assert.doesNotMatch(source, /Default password:/);
+});
+
+test('operational reset preserves HR reference catalogs without reinserting demo ids', () => {
+  const source = fs.readFileSync(path.join(process.cwd(), 'scripts/db-reset-demo.mjs'), 'utf8');
+  const resetTables = source.slice(source.indexOf('const RESET_TABLES = ['), source.indexOf('async function main()'));
+  const seedBody = source.slice(source.indexOf('async function seed('), source.indexOf('const RESET_TABLES = ['));
+
+  assert.doesNotMatch(resetTables, /['"]hr_departments['"]/);
+  assert.doesNotMatch(resetTables, /['"]hr_job_titles['"]/);
+  assert.doesNotMatch(seedBody, /bulkInsert\(connection, ['"]hr_departments['"]/);
+  assert.doesNotMatch(seedBody, /bulkInsert\(connection, ['"]hr_job_titles['"]/);
+  assert.match(seedBody, /inserted\.hr_departments = 0/);
+  assert.match(seedBody, /inserted\.hr_job_titles = 0/);
+});
+
+test('operational reset seeds a coherent V2 invoice payment ledger', () => {
+  const source = fs.readFileSync(path.join(process.cwd(), 'scripts/db-reset-demo.mjs'), 'utf8');
+  assert.match(source, /invoice_payment_events_v2/);
+  assert.match(source, /demo-v2-payment-/);
+  assert.match(source, /demo-v2-refund-/);
+  assert.match(source, /await connection\.beginTransaction\(\)/);
+  assert.match(source, /await connection\.rollback\(\)/);
+  assert.doesNotMatch(source, /TRUNCATE TABLE/);
+});
+
+test('operational reset keeps legacy and V2 invoice subscription links separate', () => {
+  const source = fs.readFileSync(path.join(process.cwd(), 'scripts/db-reset-demo.mjs'), 'utf8');
+  assert.match(source, /subscription_id: null,[\s\S]*subscription_v2_id: subscription\.id/);
+  assert.match(source, /validateInvoiceSubscriptionLinks\(dataset\)/);
+  assert.match(source, /unknown legacy subscription_id/);
+  assert.match(source, /unknown subscription_v2_id/);
+  assert.match(source, /expected exactly one legacy or V2 subscription link/);
+  assert.match(source, /\['id', 'invoice_number', 'member_id', 'subscription_id', 'subscription_v2_id'/);
 });
 
 test('complete demo reset covers operational and reference modules', () => {
   const source = fs.readFileSync(path.join(process.cwd(), 'scripts/db-reset-demo.mjs'), 'utf8');
   for (const table of [
-    'feature_flags',
-    'access_points',
-    'hr_departments',
-    'hr_job_titles',
     'warehouse_categories',
     'subscription_member_history',
     'warehouse_purchase_order_status_history',
-    'role_permission_overrides',
     'migration_mappings',
   ]) {
     assert.match(source, new RegExp(`['"]${table}['"]`));
