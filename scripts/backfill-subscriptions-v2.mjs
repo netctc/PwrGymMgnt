@@ -16,12 +16,45 @@
  */
 
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import process from 'node:process';
+import { fileURLToPath } from 'node:url';
 import mysql from 'mysql2/promise';
 import 'dotenv/config';
 import { getDatabaseEnv, getMissingDatabaseEnv } from './db-env.mjs';
 
-const DRY_RUN = process.argv.includes('--dry-run');
+const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const args = parseArgs(process.argv.slice(2));
+const DRY_RUN = args.dryRun;
 const BATCH_ID = `backfill_${new Date().toISOString().slice(0, 10)}_${crypto.randomUUID().slice(0, 8)}`;
+
+export function parseArgs(argv) {
+  const parsed = { dryRun: false, output: '' };
+  for (let index = 0; index < argv.length; index += 1) {
+    const token = argv[index];
+    if (token === '--dry-run') {
+      parsed.dryRun = true;
+      continue;
+    }
+    if (token === '--output' || token.startsWith('--output=')) {
+      const value = token.includes('=') ? token.slice(token.indexOf('=') + 1) : argv[++index];
+      if (!value) throw new Error('--output requires a file path.');
+      parsed.output = value;
+      continue;
+    }
+    throw new Error(`Unknown option: ${token}`);
+  }
+  return parsed;
+}
+
+function writeEvidence(summary) {
+  if (!args.output) return null;
+  const outputPath = path.resolve(PROJECT_ROOT, args.output);
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+  fs.writeFileSync(outputPath, `${JSON.stringify(summary, null, 2)}\n`, { flag: 'wx' });
+  return outputPath;
+}
 
 function createId(prefix) {
   return `${prefix}_${crypto.randomUUID().replace(/-/g, '')}`;
@@ -42,53 +75,12 @@ async function main() {
     password: dbConfig.password,
     database: dbConfig.database,
     connectTimeout: dbConfig.connectTimeout,
+    // Keep MySQL DATE values as YYYY-MM-DD strings. Converting a local-midnight
+    // Date with toISOString() can shift it to the previous UTC day.
+    dateStrings: ['DATE'],
   });
 
   console.log(`Connected to ${dbConfig.database}. Batch: ${BATCH_ID}. Dry run: ${DRY_RUN}`);
-
-  // Fix: rename legacy 'subscriptions' table if it has old schema (from 001_foundation_schema)
-  const [oldSchemaCheck] = await connection.query(
-    "SELECT COUNT(*) AS c FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'subscriptions' AND COLUMN_NAME = 'amount'"
-  );
-  if (Number(oldSchemaCheck[0]?.c || 0) > 0) {
-    console.log('  Detected legacy subscriptions table (from 001_foundation_schema). Renaming to subscriptions_legacy_v1...');
-    await connection.query("RENAME TABLE subscriptions TO subscriptions_legacy_v1");
-  }
-
-  // Ensure the new subscriptions table exists with correct schema
-  const [newTableCheck] = await connection.query(
-    "SELECT COUNT(*) AS c FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'subscriptions' AND COLUMN_NAME = 'plan_version_id'"
-  );
-  if (Number(newTableCheck[0]?.c || 0) === 0) {
-    console.log('  Creating subscriptions table with V2 schema...');
-    await connection.query(`
-      CREATE TABLE IF NOT EXISTS subscriptions (
-        id                      VARCHAR(64)   PRIMARY KEY,
-        plan_id                 VARCHAR(64)   NOT NULL,
-        plan_version_id         VARCHAR(64)   NOT NULL,
-        holder_member_id        VARCHAR(255)  NOT NULL,
-        status                  VARCHAR(32)   NOT NULL DEFAULT 'active',
-        start_date              DATE          NOT NULL,
-        end_date                DATE          NOT NULL,
-        auto_renew              TINYINT(1)    NOT NULL DEFAULT 0,
-        price_paid              DECIMAL(12,2) NOT NULL DEFAULT 0,
-        currency                VARCHAR(12)   NOT NULL DEFAULT 'USD',
-        payment_status          VARCHAR(32)   NOT NULL DEFAULT 'pending',
-        max_members             INT           NOT NULL DEFAULT 1,
-        notes                   TEXT          NULL,
-        version                 INT           NOT NULL DEFAULT 1,
-        legacy_subscription_id  VARCHAR(64)   NULL,
-        created_at              TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        updated_at              TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        data                    JSON          NULL,
-        INDEX idx_subscriptions_holder  (holder_member_id),
-        INDEX idx_subscriptions_status  (status),
-        INDEX idx_subscriptions_plan    (plan_version_id),
-        INDEX idx_subscriptions_dates   (status, end_date),
-        INDEX idx_subscriptions_legacy  (legacy_subscription_id)
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-    `);
-  }
 
   // Verify schema: ensure required tables exist with expected columns
   const requiredTables = ['plan_versions', 'subscriptions', 'subscription_members', 'affiliations', 'migration_mappings'];
@@ -98,8 +90,7 @@ async function main() {
       [table]
     );
     if (Number(rows[0]?.c || 0) === 0) {
-      console.error(`ERROR: Table '${table}' does not exist. Run 'npm run db:migrate' first.`);
-      process.exit(1);
+      throw new Error(`Table '${table}' does not exist. Run 'npm run db:migrate' first.`);
     }
   }
   // Verify subscriptions has plan_version_id column
@@ -107,14 +98,18 @@ async function main() {
     "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'subscriptions' AND COLUMN_NAME = 'plan_version_id'"
   );
   if (cols.length === 0) {
-    console.error("ERROR: Table 'subscriptions' is missing 'plan_version_id' column after fix attempt.");
-    process.exit(1);
+    throw new Error("Table 'subscriptions' is not the V2 schema (missing plan_version_id). Run 'npm run db:migrate' before backfill; this command never renames or creates schema objects.");
   }
   console.log('Schema verification passed.');
+
+  if (!DRY_RUN) await connection.beginTransaction();
+
+  try {
 
   // Step 1: Ensure plan_versions exist for each subscription_plan
   const [plans] = await connection.query('SELECT * FROM subscription_plans');
   let planVersionsCreated = 0;
+  let planVersionsReused = 0;
 
   for (const plan of plans) {
     // Check if already migrated
@@ -124,20 +119,36 @@ async function main() {
     );
     if (existing.length > 0) continue;
 
-    const pvId = createId('pv');
+    const [existingVersions] = await connection.query(
+      `SELECT id, version_number
+         FROM plan_versions
+        WHERE plan_id = ?
+        ORDER BY version_number DESC, created_at DESC, id DESC
+        LIMIT 1`,
+      [plan.id]
+    );
+    const reusedVersion = existingVersions[0] || null;
+    const pvId = reusedVersion?.id || createId('pv');
     if (!DRY_RUN) {
-      await connection.query(
-        `INSERT INTO plan_versions (id, plan_id, version_number, name, description, plan_type, price, currency, duration_days, auto_renew, max_members, sessions_unlimited, sessions_per_cycle, cycle_frequency, distribution_model, status, published_at)
-         VALUES (?, ?, 1, ?, ?, 'individual', ?, ?, ?, 0, 1, 1, NULL, 'monthly', 'individual', 'active', NOW())`,
-        [pvId, plan.id, plan.name, plan.description || null, Number(plan.price || 0), plan.currency || 'USD', Number(plan.duration_days || 30)]
-      );
+      if (!reusedVersion) {
+        await connection.query(
+          `INSERT INTO plan_versions (id, plan_id, version_number, name, description, plan_type, price, currency, duration_days, auto_renew, max_members, sessions_unlimited, sessions_per_cycle, cycle_frequency, distribution_model, status, published_at)
+           VALUES (?, ?, 1, ?, ?, 'individual', ?, ?, ?, 0, 1, 1, NULL, 'monthly', 'individual', 'active', NOW())`,
+          [pvId, plan.id, plan.name, plan.description || null, Number(plan.price || 0), plan.currency || 'USD', Number(plan.duration_days || 30)]
+        );
+      }
       await connection.query(
         "INSERT INTO migration_mappings (id, source_table, source_id, target_table, target_id, migration_batch) VALUES (?, 'subscription_plans', ?, 'plan_versions', ?, ?)",
         [createId('mm'), plan.id, pvId, BATCH_ID]
       );
     }
-    planVersionsCreated++;
-    console.log(`  PLAN VERSION: ${plan.name} → ${pvId}`);
+    if (reusedVersion) {
+      planVersionsReused++;
+      console.log(`  PLAN VERSION REUSED: ${plan.name} → ${pvId} (version ${reusedVersion.version_number})`);
+    } else {
+      planVersionsCreated++;
+      console.log(`  PLAN VERSION CREATED: ${plan.name} → ${pvId}`);
+    }
   }
 
   // Step 2: Migrate member_subscriptions → subscriptions + affiliations
@@ -188,8 +199,8 @@ async function main() {
     const subId = createId('sub');
     const smId = createId('sm');
     const affId = createId('aff');
-    const startDate = ms.start_date instanceof Date ? ms.start_date.toISOString().slice(0, 10) : ms.start_date ? String(ms.start_date).slice(0, 10) : new Date().toISOString().slice(0, 10);
-    const endDate = ms.end_date instanceof Date ? ms.end_date.toISOString().slice(0, 10) : ms.end_date ? String(ms.end_date).slice(0, 10) : new Date().toISOString().slice(0, 10);
+    const startDate = ms.start_date ? String(ms.start_date).slice(0, 10) : new Date().toISOString().slice(0, 10);
+    const endDate = ms.end_date ? String(ms.end_date).slice(0, 10) : new Date().toISOString().slice(0, 10);
     const status = String(ms.status || 'active').toLowerCase().trim();
 
     if (!DRY_RUN) {
@@ -230,15 +241,38 @@ async function main() {
   }
 
   // Summary
+  const summary = {
+    generatedAt: new Date().toISOString(),
+    database: dbConfig.database,
+    batchId: BATCH_ID,
+    mode: DRY_RUN ? 'dry-run' : 'apply',
+    source: { plans: plans.length, memberSubscriptions: memberSubs.length },
+    proposed: {
+      planVersionsCreated,
+      planVersionsReused,
+      subscriptions: subsCreated,
+      affiliations: affiliationsCreated,
+    },
+    committed: !DRY_RUN,
+  };
+  if (!DRY_RUN) await connection.commit();
+  const evidencePath = writeEvidence(summary);
   console.log(`\n${'='.repeat(60)}`);
   console.log(`Backfill complete${DRY_RUN ? ' (DRY RUN — no changes made)' : ''}`);
   console.log(`  Batch: ${BATCH_ID}`);
   console.log(`  Plan versions created: ${planVersionsCreated}`);
+  console.log(`  Plan versions reused: ${planVersionsReused}`);
   console.log(`  Subscriptions created: ${subsCreated}`);
   console.log(`  Affiliations created: ${affiliationsCreated}`);
   console.log(`  Source plans: ${plans.length}`);
   console.log(`  Source member_subscriptions: ${memberSubs.length}`);
   console.log(`${'='.repeat(60)}`);
+  if (evidencePath) console.log(`  Evidence: ${evidencePath}`);
+
+  } catch (error) {
+    if (!DRY_RUN) await connection.rollback();
+    throw error;
+  }
 
   await connection.end();
 }

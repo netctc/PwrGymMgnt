@@ -1030,6 +1030,7 @@ async function startServer() {
       error: {
         message: publicMessage,
         status,
+        code: err?.code || null,
         requestId: (req as any).requestId || null,
         dbConnected: Boolean(pool),
       }

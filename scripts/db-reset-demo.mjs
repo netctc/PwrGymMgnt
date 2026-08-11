@@ -8,7 +8,7 @@ import { getDatabaseEnv, getMissingDatabaseEnv } from './db-env.mjs';
 const CONFIRMATION = 'RESET_DEMO_DATA';
 
 function parseArgs(argv = process.argv.slice(2)) {
-  const args = { confirm: '', migrate: true, allowProduction: false, dryRun: false, json: false, backupConfirmed: false };
+  const args = { confirm: '', database: '', migrate: true, allowProduction: false, dryRun: false, json: false, backupConfirmed: false };
   for (const arg of argv) {
     if (arg === '--skip-migrations') args.migrate = false;
     else if (arg === '--allow-production') args.allowProduction = true;
@@ -16,6 +16,7 @@ function parseArgs(argv = process.argv.slice(2)) {
     else if (arg === '--json') args.json = true;
     else if (arg === '--backup-confirmed') args.backupConfirmed = true;
     else if (arg.startsWith('--confirm=')) args.confirm = arg.slice('--confirm='.length);
+    else if (arg.startsWith('--database=')) args.database = arg.slice('--database='.length);
   }
   return args;
 }
@@ -108,10 +109,48 @@ async function ensureDemoSchemaCompatibility(connection) {
   await addColumnIfMissing(connection, 'payroll_items', 'paid_at', 'DATETIME NULL');
 }
 
-async function truncateIfExists(connection, tableName) {
+async function deleteIfExists(connection, tableName) {
   if (!(await tableExists(connection, tableName))) return false;
-  await connection.query(`TRUNCATE TABLE \`${tableName}\``);
+  await connection.query(`DELETE FROM \`${tableName}\``);
   return true;
+}
+
+async function loadPreservedWorkforce(connection) {
+  const [employees] = await connection.query(
+    `SELECT id, first_name, last_name, department
+       FROM employees
+      WHERE LOWER(TRIM(COALESCE(employment_status, 'active'))) = 'active'
+      ORDER BY CASE WHEN LOWER(TRIM(department)) = 'trainer' THEN 0 ELSE 1 END, id`,
+  );
+  if (!employees.length) throw new Error('Reset aborted: at least one active preserved employee/staff record is required.');
+  const [accessPoints] = await connection.query("SELECT id FROM access_points WHERE LOWER(TRIM(COALESCE(status, 'active'))) = 'active' ORDER BY id LIMIT 1");
+  if (!accessPoints.length) throw new Error('Reset aborted: at least one active preserved access point is required.');
+  return { employees, accessPointId: accessPoints[0].id };
+}
+
+function usePreservedEnvironment(dataset, employees, accessPointId) {
+  const trainers = employees.filter((row) => String(row.department || '').trim().toLowerCase() === 'trainer');
+  const trainerPool = trainers.length ? trainers : employees;
+  const employeeByDemoId = new Map(dataset.employees.map((row, index) => [row.id, trainerPool[index % trainerPool.length]]));
+  const resolve = (id) => employeeByDemoId.get(id) || trainerPool[0];
+  for (const row of dataset.classSessions) {
+    const employee = resolve(row.trainer_id);
+    row.trainer_id = employee.id;
+    row.trainer_name = `${employee.first_name} ${employee.last_name}`.trim();
+  }
+  for (const row of dataset.privateSessions) {
+    const employee = resolve(row.trainer_id);
+    row.trainer_id = employee.id;
+    row.trainer_name = `${employee.first_name} ${employee.last_name}`.trim();
+  }
+  for (const row of dataset.legacyClasses) row.instructor_id = resolve(row.instructor_id).id;
+  for (const row of dataset.accessAttempts) row.access_point_id = accessPointId;
+  dataset.employees = [];
+  dataset.staff = [];
+  dataset.attendance = [];
+  dataset.payrollRuns = [];
+  dataset.payrollItems = [];
+  return dataset;
 }
 
 async function bulkInsert(connection, table, columns, rows) {
@@ -536,6 +575,7 @@ function buildDemoDataset() {
       invoice_number: `INV-DEMO-${pad(i, 4)}`,
       member_id: memberId,
       subscription_id: subId,
+      subscription_v2_id: null,
       status: pending ? 'issued' : expired ? 'overdue' : 'paid',
       subtotal,
       tax_amount: tax,
@@ -1165,6 +1205,46 @@ function buildDemoDataset() {
     { id: 'price_rule_002', name: 'Apparel Seasonal Promo', product_id: null, category: 'Apparel', price_tier: 'retail', discount_type: 'percentage', discount_value: 15, starts_at: dateOffset(-10), ends_at: dateOffset(20), status: 'active', data: mysqlJson({ demo: true }) },
   ];
   const evolution = buildEvolutionDataset(subscriptionPlans);
+  const v2Invoices = evolution.subscriptions.map((subscription, index) => {
+    const total = money(Number(subscription.price_paid));
+    const paid = subscription.payment_status === 'paid';
+    const partial = subscription.payment_status === 'partial';
+    const refunded = subscription.payment_status === 'refunded';
+    return {
+      id: `v2_inv_${pad(index + 1)}`,
+      invoice_number: `INV-V2-DEMO-${pad(index + 1, 4)}`,
+      member_id: subscription.holder_member_id,
+      // Keep the legacy and V2 foreign keys in their own domains. The legacy
+      // column references member_subscriptions; subscription_v2_id references
+      // subscriptions.
+      subscription_id: null,
+      subscription_v2_id: subscription.id,
+      status: refunded ? 'refunded' : paid ? 'paid' : partial ? 'partial' : subscription.payment_status === 'overdue' ? 'overdue' : 'issued',
+      subtotal: total,
+      tax_amount: 0,
+      total,
+      currency: subscription.currency,
+      due_date: subscription.start_date,
+      paid_at: paid || refunded ? dateTimeOffset(-5, 12, 0) : null,
+      data: mysqlJson({ demo: true, model: 'v2' }),
+    };
+  });
+  const invoicePaymentEvents = v2Invoices.flatMap((invoice, index) => {
+    const subscription = evolution.subscriptions[index];
+    const events = [];
+    if (['paid', 'refunded'].includes(subscription.payment_status)) {
+      events.push({ id: `v2_pay_${pad(index + 1)}`, invoice_id: invoice.id, event_type: 'payment', amount: invoice.total, currency: invoice.currency, effective_date: invoice.due_date, reason: 'Coherent V2 demo payment', performed_by: 'system', idempotency_key: `demo-v2-payment-${invoice.id}`, data: mysqlJson({ demo: true }) });
+    } else if (subscription.payment_status === 'partial') {
+      events.push({ id: `v2_pay_${pad(index + 1)}`, invoice_id: invoice.id, event_type: 'payment', amount: money(invoice.total / 2), currency: invoice.currency, effective_date: invoice.due_date, reason: 'Coherent V2 demo partial payment', performed_by: 'system', idempotency_key: `demo-v2-partial-${invoice.id}`, data: mysqlJson({ demo: true }) });
+    } else if (subscription.payment_status === 'waived') {
+      events.push({ id: `v2_waive_${pad(index + 1)}`, invoice_id: invoice.id, event_type: 'waive', amount: invoice.total, currency: invoice.currency, effective_date: invoice.due_date, reason: 'Coherent V2 demo waiver', performed_by: 'system', idempotency_key: `demo-v2-waive-${invoice.id}`, data: mysqlJson({ demo: true }) });
+    }
+    if (subscription.payment_status === 'refunded') {
+      events.push({ id: `v2_refund_${pad(index + 1)}`, invoice_id: invoice.id, event_type: 'refund', amount: invoice.total, currency: invoice.currency, effective_date: dateOffset(-2), reason: 'Coherent V2 demo refund', performed_by: 'system', idempotency_key: `demo-v2-refund-${invoice.id}`, data: mysqlJson({ demo: true }) });
+    }
+    return events;
+  });
+  invoices.push(...v2Invoices);
 
   return {
     adminUsers,
@@ -1188,6 +1268,7 @@ function buildDemoDataset() {
     sessionMovements: evolution.movements,
     accessAttempts: evolution.accessAttempts,
     invoices,
+    invoicePaymentEvents,
     accessTokens,
     employees,
     staff,
@@ -1225,14 +1306,39 @@ function buildDemoDataset() {
   };
 }
 
+function validateInvoiceSubscriptionLinks(dataset) {
+  const legacySubscriptionIds = new Set(dataset.memberSubscriptions.map(({ id }) => id));
+  const v2SubscriptionIds = new Set(dataset.subscriptionsV2.map(({ id }) => id));
+  const issues = [];
+
+  for (const invoice of dataset.invoices) {
+    if (Boolean(invoice.subscription_id) === Boolean(invoice.subscription_v2_id)) {
+      issues.push(`${invoice.id}: expected exactly one legacy or V2 subscription link`);
+    }
+    if (invoice.subscription_id && !legacySubscriptionIds.has(invoice.subscription_id)) {
+      issues.push(`${invoice.id}: unknown legacy subscription_id ${invoice.subscription_id}`);
+    }
+    if (invoice.subscription_v2_id && !v2SubscriptionIds.has(invoice.subscription_v2_id)) {
+      issues.push(`${invoice.id}: unknown subscription_v2_id ${invoice.subscription_v2_id}`);
+    }
+  }
+
+  if (issues.length > 0) {
+    throw new Error(`Demo dataset invoice-link validation failed: ${issues.join('; ')}`);
+  }
+}
+
 async function seed(connection, dataset) {
   const inserted = {};
   inserted.admin_users = 0;
   inserted.users = 0;
-  inserted.feature_flags = await bulkInsert(connection, 'feature_flags', ['id', 'flag_key', 'enabled', 'scope', 'scope_value', 'description'], dataset.featureFlags);
-  inserted.access_points = await bulkInsert(connection, 'access_points', ['id', 'name', 'branch', 'zone', 'direction', 'access_methods', 'status', 'cooldown_seconds'], dataset.accessPoints);
-  inserted.hr_departments = await bulkInsert(connection, 'hr_departments', ['id', 'name', 'code', 'status'], dataset.hrDepartments);
-  inserted.hr_job_titles = await bulkInsert(connection, 'hr_job_titles', ['id', 'name', 'department_id', 'status'], dataset.hrJobTitles);
+  inserted.feature_flags = 0;
+  inserted.access_points = 0;
+  // HR reference data belongs to the preserved workforce. Re-inserting the
+  // demo ids here would collide with existing departments/job titles and roll
+  // the complete operational reset back (for example, duplicate `dept_gen`).
+  inserted.hr_departments = 0;
+  inserted.hr_job_titles = 0;
   inserted.warehouse_categories = await bulkInsert(connection, 'warehouse_categories', ['id', 'name', 'slug', 'parent_id', 'description', 'status', 'data'], dataset.warehouseCategories);
   inserted.subscription_plans = await bulkInsert(connection, 'subscription_plans', ['id', 'name', 'description', 'duration_days', 'price', 'currency', 'status', 'data'], dataset.subscriptionPlans);
   inserted.plans = await bulkInsert(connection, 'plans', ['id', 'name', 'price', 'duration_days', 'status', 'data'], dataset.plans);
@@ -1247,10 +1353,11 @@ async function seed(connection, dataset) {
   inserted.session_balances = await bulkInsert(connection, 'session_balances', ['id', 'context_type', 'context_id', 'cycle_id', 'included', 'carried_over', 'purchased', 'adjustments_positive', 'refunds', 'reserved', 'consumed', 'expired', 'adjustments_negative', 'available', 'last_movement_id', 'version'], dataset.sessionBalances);
   inserted.session_movements = await bulkInsert(connection, 'session_movements', ['id', 'balance_id', 'affiliation_id', 'cycle_id', 'movement_type', 'quantity', 'direction', 'balance_before', 'balance_after', 'reference_type', 'reference_id', 'related_movement_id', 'reason', 'performed_by', 'idempotency_key', 'created_at', 'data'], dataset.sessionMovements);
   inserted.access_attempts = await bulkInsert(connection, 'access_attempts', ['id', 'access_point_id', 'person_type', 'person_id', 'method', 'decision', 'denial_reason', 'affiliation_id', 'movement_id', 'confidence_score', 'idempotency_key', 'request_id', 'created_at', 'data'], dataset.accessAttempts);
-  inserted.invoices = await bulkInsert(connection, 'invoices', ['id', 'invoice_number', 'member_id', 'subscription_id', 'status', 'subtotal', 'tax_amount', 'total', 'currency', 'due_date', 'paid_at', 'data'], dataset.invoices);
+  inserted.invoices = await bulkInsert(connection, 'invoices', ['id', 'invoice_number', 'member_id', 'subscription_id', 'subscription_v2_id', 'status', 'subtotal', 'tax_amount', 'total', 'currency', 'due_date', 'paid_at', 'data'], dataset.invoices);
+  inserted.invoice_payment_events_v2 = await bulkInsert(connection, 'invoice_payment_events_v2', ['id', 'invoice_id', 'event_type', 'amount', 'currency', 'effective_date', 'reason', 'performed_by', 'idempotency_key', 'data'], dataset.invoicePaymentEvents);
   inserted.access_tokens = await bulkInsert(connection, 'access_tokens', ['id', 'member_id', 'token_hash', 'status', 'expires_at', 'revoked_at', 'data'], dataset.accessTokens);
-  inserted.employees = await bulkInsert(connection, 'employees', ['id', 'employee_code', 'first_name', 'last_name', 'email', 'phone', 'department', 'job_title', 'employment_status', 'contract_type', 'hire_date', 'base_salary', 'pay_frequency', 'allowance_housing', 'allowance_transport', 'allowance_medical', 'deduction_tax', 'deduction_insurance', 'vacation_days_remaining', 'data'], dataset.employees);
-  inserted.staff = await bulkInsert(connection, 'staff', ['id', 'first_name', 'last_name', 'email', 'role', 'status', 'data'], dataset.staff);
+  inserted.employees = 0;
+  inserted.staff = 0;
   inserted.class_sessions = await bulkInsert(connection, 'class_sessions', ['id', 'title', 'trainer_id', 'trainer_name', 'capacity', 'start_time', 'end_time', 'room', 'status', 'class_type', 'level', 'branch', 'data'], dataset.classSessions);
   inserted.classes = await bulkInsert(connection, 'classes', ['id', 'name', 'instructor_id', 'start_time', 'end_time', 'capacity', 'data'], dataset.legacyClasses);
   inserted.class_bookings = await bulkInsert(connection, 'class_bookings', ['id', 'class_id', 'member_id', 'member_name', 'status', 'booked_at', 'cancelled_at', 'data'], dataset.classBookings);
@@ -1280,12 +1387,15 @@ async function seed(connection, dataset) {
   inserted.security_audit_events = await bulkInsert(connection, 'security_audit_events', ['request_id', 'actor_id', 'actor_email', 'actor_role', 'method', 'path', 'module', 'action', 'status_code', 'duration_ms', 'ip_address', 'user_agent', 'severity', 'metadata'], dataset.securityAuditEvents);
   inserted.security_events = await bulkInsert(connection, 'security_events', ['event_type', 'severity', 'actor_email', 'ip_address', 'details', 'metadata'], dataset.securityEvents);
   inserted.audit_logs = await bulkInsert(connection, 'audit_logs', ['action', 'details', 'performed_by'], dataset.auditLogs);
-  inserted.settings = await bulkInsert(connection, 'settings', ['id', 'data'], dataset.settings);
-  if (await tableExists(connection, 'appSettings')) inserted.appSettings = await bulkInsert(connection, 'appSettings', ['id', 'data'], dataset.appSettings);
+  inserted.settings = 0;
+  inserted.appSettings = 0;
   return inserted;
 }
 
 const RESET_TABLES = [
+  'subscription_cancellations',
+  'subscription_freezes',
+  'invoice_payment_events_v2',
   'ecard_delivery_logs',
   'password_reset_tokens',
   'data_integrity_runs',
@@ -1315,8 +1425,6 @@ const RESET_TABLES = [
   'payroll_items',
   'payroll_runs',
   'employee_attendance',
-  'hr_job_titles',
-  'hr_departments',
   'private_sessions',
   'private_classes',
   'class_bookings',
@@ -1331,7 +1439,6 @@ const RESET_TABLES = [
   'subscription_members',
   'access_attempts',
   'access_replay_locks',
-  'access_points',
   'outbox_events',
   'idempotency_keys',
   'invoices',
@@ -1341,18 +1448,12 @@ const RESET_TABLES = [
   'trainer_plan_assignment_history',
   'plan_versions',
   'migration_mappings',
-  'feature_flags',
   'members',
   'plans',
   'subscription_plans',
-  'staff',
-  'employees',
-  'role_permission_overrides',
   'accounting',
   'hr',
   'audit_logs',
-  'settings',
-  'appSettings',
   'shifts',
   'hr_profiles',
   'deployment_checklist',
@@ -1368,20 +1469,25 @@ async function main() {
     console.error('Refusing to reset data while NODE_ENV=production. Add --allow-production only for a controlled demo reset.');
     process.exit(1);
   }
+  const dbConfig = getDatabaseEnv();
+  if (!args.database || args.database !== dbConfig.database) {
+    console.error(`Refusing to reset. Re-run with --database=${dbConfig.database} to confirm the exact target database.`);
+    process.exit(1);
+  }
   if (!args.dryRun && !args.backupConfirmed) {
     console.error('Refusing to reset without a confirmed database backup. Run npm run db:backup, then add --backup-confirmed.');
     process.exit(1);
   }
 
-  const dataset = buildDemoDataset();
-  const dbConfig = getDatabaseEnv();
+  let dataset = buildDemoDataset();
+  validateInvoiceSubscriptionLinks(dataset);
   if (args.dryRun) {
     const counts = Object.fromEntries(Object.entries(dataset).filter(([, value]) => Array.isArray(value)).map(([key, value]) => [key, value.length]));
     const output = {
       mode: 'dry-run',
       database: dbConfig.database ? `${dbConfig.database}@${dbConfig.host}:${dbConfig.port}` : 'not configured',
       destructiveChangesApplied: false,
-      preservesExistingAdminAndSuperAdminPasswords: true,
+      preservesExistingUsersStaffAndPasswords: true,
       message: 'Preview only: no rows were deleted or inserted. Run npm run db:demo to back up and perform the reset.',
       counts,
     };
@@ -1410,30 +1516,25 @@ async function main() {
     multipleStatements: true,
   });
 
-  const truncated = [];
+  const cleared = [];
   let preservedAdminUsers = 0;
   let preservedAuthUsers = 0;
   try {
     console.log(`Resetting demo data in ${dbConfig.database}@${dbConfig.host}:${dbConfig.port}...`);
     await ensureDemoSchemaCompatibility(connection);
+    await connection.beginTransaction();
     await connection.query('SET FOREIGN_KEY_CHECKS = 0');
     const [adminCountRows] = await connection.query(
       "SELECT COUNT(*) AS count FROM admin_users WHERE LOWER(TRIM(role)) IN ('admin', 'super_admin')",
     );
-    const [requiredRoleRows] = await connection.query(
-      "SELECT LOWER(TRIM(role)) AS role, COUNT(*) AS count FROM admin_users WHERE LOWER(TRIM(role)) IN ('admin', 'super_admin') GROUP BY LOWER(TRIM(role))",
-    );
-    const requiredRoles = new Set(requiredRoleRows.filter((row) => Number(row.count) > 0).map((row) => row.role));
-    if (!requiredRoles.has('admin') || !requiredRoles.has('super_admin')) {
-      throw new Error('Reset aborted: at least one existing admin and one existing super_admin account are required.');
-    }
     const [userCountRows] = await connection.query(
       "SELECT COUNT(*) AS count FROM users WHERE LOWER(TRIM(role)) IN ('admin', 'super_admin')",
     );
     preservedAdminUsers = Number(adminCountRows?.[0]?.count || 0);
     preservedAuthUsers = Number(userCountRows?.[0]?.count || 0);
-    await connection.query("DELETE FROM admin_users WHERE COALESCE(LOWER(TRIM(role)), '') NOT IN ('admin', 'super_admin')");
-    await connection.query("DELETE FROM users WHERE COALESCE(LOWER(TRIM(role)), '') NOT IN ('admin', 'super_admin')");
+    const preserved = await loadPreservedWorkforce(connection);
+    const employees = preserved.employees;
+    dataset = usePreservedEnvironment(dataset, employees, preserved.accessPointId);
     if (await tableExists(connection, 'maintenance_list_items')) {
       await connection.query("DELETE FROM maintenance_list_items WHERE is_system = 0 OR id NOT LIKE 'mli\\_%'");
     }
@@ -1441,27 +1542,26 @@ async function main() {
       await connection.query("DELETE FROM maintenance_lists WHERE id NOT LIKE 'ml\\_%'");
     }
     for (const table of RESET_TABLES) {
-      if (await truncateIfExists(connection, table)) truncated.push(table);
+      if (await deleteIfExists(connection, table)) cleared.push(table);
     }
     await connection.query('SET FOREIGN_KEY_CHECKS = 1');
-
-    await connection.beginTransaction();
     const inserted = await seed(connection, dataset);
     await connection.commit();
 
     const summary = {
       database: `${dbConfig.database}@${dbConfig.host}:${dbConfig.port}`,
-      truncatedTables: truncated.length,
+      clearedTables: cleared.length,
       inserted,
       preservedAccounts: {
         adminUsers: preservedAdminUsers,
         authUsers: preservedAuthUsers,
+        employees: employees.length,
         passwordHashesModified: false,
       },
       authenticationAccountsCreated: 0,
       scenarios: {
         members: '20 members with active, expired, paused and pending scenarios',
-        employees: '10 employees including 5 trainers',
+        employees: 'Existing users, staff and employees preserved unchanged',
         privateTraining: '10 PT sessions',
         subscriptions: 'Individual, family, group and corporate V2 subscriptions with paid, pending, suspended and expired states',
         sessionLedger: 'Limited-session allocations and immutable consumption movements linked to trainers and PT/access sources',
@@ -1469,7 +1569,7 @@ async function main() {
         accounting: 'Membership, POS, COGS, inventory purchases, payroll, rent and utilities',
       },
     };
-    console.log(args.json ? JSON.stringify(summary, null, 2) : `Demo dataset ready. Inserted ${Object.values(inserted).reduce((sum, count) => sum + Number(count || 0), 0)} records. Existing admin and super_admin credentials were preserved.`);
+    console.log(args.json ? JSON.stringify(summary, null, 2) : `Demo dataset ready. Inserted ${Object.values(inserted).reduce((sum, count) => sum + Number(count || 0), 0)} records. Existing users, staff, employees, roles, permissions and passwords were preserved.`);
   } catch (error) {
     await connection.rollback().catch(() => undefined);
     await connection.query('SET FOREIGN_KEY_CHECKS = 1').catch(() => undefined);

@@ -6,6 +6,7 @@ import { registerDashboardRoutes } from "./dashboard";
 import { registerDataIntegrityRoutes } from "./dataIntegrity";
 import { registerEngagementRoutes } from "./engagement";
 import { registerFinanceRoutes } from "./finance";
+import { registerPaymentsV2Routes } from "./paymentsV2";
 import { registerHrPayrollRoutes } from "./hrPayroll";
 import { registerMembershipRoutes } from "./membership";
 import { createApiCacheMiddleware, registerPlatformSecurityRoutes } from "./platformSecurity";
@@ -66,6 +67,12 @@ export const APPLICATION_ROUTE_MODULES: readonly ApplicationRouteModule[] = Obje
     area: "domain",
     description: "Employees, attendance, payroll runs and payroll approval workflow.",
     register: (app, getPool) => registerHrPayrollRoutes(app, getPool),
+  },
+  {
+    name: "subscription-payments-v2",
+    area: "domain",
+    description: "Partial subscription payments, calculated receivables and immutable payment ledger.",
+    register: (app, getPool) => registerPaymentsV2Routes(app, getPool),
   },
   {
     name: "finance",

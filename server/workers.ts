@@ -160,7 +160,9 @@ export async function drainOutbox(pool: Pool): Promise<{ processed: number; erro
           case "access_denied":
           case "subscription_cancelled":
           case "subscription_frozen":
+          case "subscription_resumed":
           case "subscription_suspended":
+          case "subscription_payment_overdue":
           case "plan_changed":
             appLogger.info("Outbox event processed", { eventType: event.event_type, eventId: event.id });
             break;
@@ -408,6 +410,87 @@ export async function expireCarriedSessions(pool: Pool): Promise<{ expired: numb
 }
 
 /**
+ * Suspend contracts whose pending balance has passed its promised payment date.
+ * The marker stored on the subscription makes the operation idempotent and lets
+ * payment recovery reactivate only affiliations suspended by this worker.
+ */
+export async function reconcileOverdueSubscriptionPayments(
+  pool: Pool,
+): Promise<{ suspended: number; errors: number }> {
+  const locked = await acquireLock(pool, "powergym_overdue_subscription_payments");
+  if (!locked) return { suspended: 0, errors: 0 };
+  let suspended = 0;
+  let errors = 0;
+  try {
+    const [rows]: any = await pool.query(
+      `SELECT s.id
+         FROM subscriptions s
+         JOIN invoices i ON i.id = (
+           SELECT latest.id
+             FROM invoices latest
+            WHERE latest.subscription_v2_id = s.id
+            ORDER BY latest.created_at DESC, latest.id DESC
+            LIMIT 1
+         )
+        WHERE s.status = 'active'
+          AND s.payment_status IN ('pending', 'partial')
+          AND i.status <> 'paid'
+          AND i.due_date < CURDATE()
+        LIMIT 100`,
+    );
+    for (const row of rows) {
+      const connection = await pool.getConnection();
+      try {
+        await connection.beginTransaction();
+        const [affiliations]: any = await connection.query(
+          "SELECT id FROM affiliations WHERE subscription_id = ? AND status = 'active' FOR UPDATE",
+          [row.id],
+        );
+        const affiliationIds = affiliations.map((item: any) => String(item.id));
+        await connection.query(
+          `UPDATE subscriptions
+              SET status = 'suspended', payment_status = 'overdue',
+                  data = JSON_SET(COALESCE(data, JSON_OBJECT()),
+                    '$.automaticPaymentSuspension', true,
+                    '$.paymentSuspendedAffiliationIds', CAST(? AS JSON),
+                    '$.paymentSuspendedAt', DATE_FORMAT(NOW(), '%Y-%m-%dT%H:%i:%sZ')),
+                  version = version + 1, updated_at = NOW()
+            WHERE id = ? AND status = 'active' AND payment_status IN ('pending', 'partial')`,
+          [JSON.stringify(affiliationIds), row.id],
+        );
+        await connection.query(
+          "UPDATE affiliations SET status = 'suspended', updated_at = NOW() WHERE subscription_id = ? AND status = 'active'",
+          [row.id],
+        );
+        await connection.query(
+          "UPDATE invoices SET status = 'overdue', updated_at = NOW() WHERE subscription_v2_id = ? AND status <> 'paid' AND due_date < CURDATE()",
+          [row.id],
+        );
+        await connection.query(
+          "INSERT INTO outbox_events (id, event_type, payload, status) VALUES (?, 'subscription_payment_overdue', ?, 'pending')",
+          [createId("evt"), JSON.stringify({ subscriptionId: row.id, affiliationIds, suspendedBy: "system:payment_reconciliation" })],
+        );
+        await connection.query(
+          "INSERT INTO audit_logs (action, details, performed_by) VALUES ('subscription_suspended_payment_overdue', ?, 'system:payment_reconciliation')",
+          [JSON.stringify({ subscriptionId: row.id, affiliationIds })],
+        );
+        await connection.commit();
+        suspended++;
+      } catch (error: any) {
+        await connection.rollback();
+        errors++;
+        appLogger.error("Overdue payment reconciliation failed", { subscriptionId: row.id, error: error.message });
+      } finally {
+        connection.release();
+      }
+    }
+  } finally {
+    await releaseLock(pool, "powergym_overdue_subscription_payments");
+  }
+  return { suspended, errors };
+}
+
+/**
  * Reconcile balances: verify that materialized balances match movement sums.
  * Reports discrepancies but does NOT auto-fix (requires manual adjustment).
  */
@@ -475,6 +558,17 @@ export function startWorkers(poolProvider: () => Pool | null, intervalMs = 60_00
 
       const expiryAlerts = await notifyExpiringSessionBalances(pool);
       if (expiryAlerts.created > 0) appLogger.info("Session expiry alerts created", expiryAlerts);
+
+      const overduePayments = await reconcileOverdueSubscriptionPayments(pool);
+      if (overduePayments.suspended > 0) appLogger.info("Overdue subscriptions suspended", overduePayments);
+
+      const { reconcileExpiredSubscriptionFreezes } = await import("./subscriptionLifecycle");
+      const freezes = await reconcileExpiredSubscriptionFreezes(pool);
+      if (freezes.resumed > 0) appLogger.info("Expired subscription freezes resumed", freezes);
+
+      const { reconcileScheduledSubscriptionCancellations } = await import("./subscriptionLifecycle");
+      const cancellations = await reconcileScheduledSubscriptionCancellations(pool);
+      if (cancellations.cancelled > 0) appLogger.info("Scheduled subscription cancellations completed", cancellations);
     } catch (error: any) {
       appLogger.error("Worker cycle failed", { error: error.message });
     }

@@ -1,0 +1,148 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import fs from "node:fs";
+import path from "node:path";
+
+const read = (file: string) => fs.readFileSync(path.resolve(file), "utf8");
+
+test("partial payments derive pending amount and synchronize accounting atomically", () => {
+  const route = read("server/paymentsV2.ts");
+  assert.match(route, /deriveInvoicePaymentSummary/);
+  assert.match(route, /amountPaid/);
+  assert.match(route, /amountPending/);
+  assert.match(route, /UPDATE invoices/);
+  assert.match(route, /UPDATE subscriptions/);
+  assert.match(route, /INSERT INTO finance_transactions/);
+  assert.match(route, /beginTransaction/);
+  assert.match(route, /commit/);
+  assert.match(route, /rollback/);
+});
+
+test("accounting UI captures paid amount and renders calculated balance", () => {
+  const panel = read("src/components/accounting/SubscriptionPaymentsPanel.tsx");
+  assert.match(panel, /Amount paid/);
+  assert.match(panel, /Pending amount/);
+  assert.match(panel, /balanceDue/);
+  assert.doesNotMatch(panel, /setPaymentStatus/);
+});
+
+test("access authorization reads the real net amount from the invoice ledger", () => {
+  const entitlement = read("server/domain/v2/entitlementService.ts");
+  assert.match(entitlement, /invoice_payment_events_v2/);
+  assert.match(entitlement, /event_type = 'payment'/);
+  assert.match(entitlement, /event_type = 'refund'/);
+  assert.match(entitlement, /payments\.net_paid/);
+});
+
+test("waivers are non-cash, auditable and can reactivate financial suspensions", () => {
+  const route = read("server/paymentsV2.ts");
+  assert.match(route, /invoices\/:id\/waivers/);
+  assert.match(route, /invoice_balance_waived/);
+  assert.match(route, /nonCashAdjustment: true/);
+  assert.match(route, /suspensionType/);
+  assert.doesNotMatch(route, /'income', 'Membership Waiver'/);
+});
+
+test("refunds post an expense and full refunds cancel entitlement", () => {
+  const route = read("server/paymentsV2.ts");
+  assert.match(route, /payments\/:id\/refunds/);
+  assert.match(route, /'expense', 'Membership Refund'/);
+  assert.match(route, /summary\.status === "refunded"/);
+  assert.match(route, /UPDATE affiliations SET status = 'cancelled'/);
+  assert.match(route, /invoice_payment_refunded/);
+});
+
+test("accounting UI manages waivers, refunds and their immutable history", () => {
+  const panel = read("src/components/accounting/SubscriptionPaymentsPanel.tsx");
+  const api = read("src/lib/paymentsV2Api.ts");
+  assert.match(panel, /Waivers and refunds/);
+  assert.match(panel, /Adjustment history/);
+  assert.match(api, /waiveBalance/);
+  assert.match(api, /refundPayment/);
+});
+
+test("payments require traceable method and reference metadata", () => {
+  const route = read("server/paymentsV2.ts");
+  const panel = read("src/components/accounting/SubscriptionPaymentsPanel.tsx");
+  assert.match(route, /PAYMENT_METHOD_REQUIRED/);
+  assert.match(route, /PAYMENT_REFERENCE_REQUIRED/);
+  assert.match(route, /PAYMENT_DATE_FUTURE/);
+  assert.match(route, /paymentMethod, reference, notes/);
+  assert.match(panel, /Payment method/);
+  assert.match(panel, /Reference/);
+});
+
+test("confirmed payments expose an auditable downloadable receipt", () => {
+  const route = read("server/paymentsV2.ts");
+  const api = read("src/lib/paymentsV2Api.ts");
+  assert.match(route, /payments\/:id\/receipt/);
+  assert.match(route, /PowerGym payment receipt/);
+  assert.match(route, /Content-Disposition/);
+  assert.match(api, /downloadReceipt/);
+});
+
+test("payment reversals are immutable, bounded and mirrored in accounting", () => {
+  const route = read("server/paymentsV2.ts");
+  const panel = read("src/components/accounting/SubscriptionPaymentsPanel.tsx");
+  const api = read("src/lib/paymentsV2Api.ts");
+  const migration = read("sql/033_v2_payment_reversals.sql");
+  assert.match(route, /payments\/:id\/reversals/);
+  assert.match(route, /REVERSAL_EXCEEDS_PAYMENT/);
+  assert.match(route, /'Payment Reversal'/);
+  assert.match(route, /invoice_payment_reversed/);
+  assert.match(panel, /Reverse erroneous payment/);
+  assert.match(api, /reversePayment/);
+  assert.match(migration, /'reversal'/);
+});
+
+test("renewal partial payments capture the received amount and never post the full invoice total as income", () => {
+  const route = read("server/subscriptionLifecycle.ts");
+  const members = read("src/pages/Members.tsx");
+  const api = read("src/lib/subscriptionsV2Api.ts");
+  assert.match(members, /Partially Paid/);
+  assert.match(members, /renewAmountPaid/);
+  assert.match(members, /Amount pending/);
+  assert.match(members, /subscriptionsV2Api\.updatePaymentStatus/);
+  assert.match(members, /Payment method and reference are required/);
+  assert.match(api, /amountPaid\?: string/);
+  assert.match(api, /paymentMethod\?: string/);
+  assert.match(route, /invoice_payment_events_v2/);
+  assert.match(route, /amountPaid/);
+  assert.match(route, /amountPending/);
+  assert.match(route, /PAYMENT_TRACEABILITY_REQUIRED/);
+  assert.match(route, /if \(paidMinor > 0n\) await pool\.query/);
+  assert.match(route, /"posted"/);
+});
+
+test("pending managed renewals resolve their invoice and receive useful payment defaults", () => {
+  const members = read("src/pages/Members.tsx");
+  const paymentsApi = read("src/lib/paymentsV2Api.ts");
+  const lifecycle = read("server/subscriptionLifecycle.ts");
+  assert.match(members, /getInvoiceSubscriptionV2Id\(invoice\) === multiSubscription\.id/);
+  assert.match(members, /subscriptionV2Id\?: string \| null/);
+  assert.match(members, /setRenewPaymentMethod\('cash'\)/);
+  assert.match(members, /paid from/);
+  assert.match(members, /suggestedPaymentReferenceRef/);
+  assert.match(members, /paymentsV2Api\.listInvoices\(\)/);
+  assert.match(members, /invoice\.subscriptionId === multiSubscription\.id/);
+  assert.match(paymentsApi, /function createIdempotencyKey/);
+  assert.doesNotMatch(paymentsApi, /crypto\.randomUUID\(\)/);
+  assert.doesNotMatch(lifecycle, /crypto\.randomUUID\(\)/);
+  assert.match(lifecycle, /randomBytes\(16\)/);
+});
+
+test("legacy managed invoices normalize server-side and initial partial subscriptions keep their balance", () => {
+  const subscriptions = read("server/subscriptionsV2.ts");
+  const members = read("src/pages/Members.tsx");
+  const api = read("src/lib/subscriptionsV2Api.ts");
+  assert.match(subscriptions, /subscription_v2_id = \?/);
+  assert.match(subscriptions, /subscription_id = \?/);
+  assert.match(subscriptions, /'\$\.subscriptionV2Id'/);
+  assert.match(subscriptions, /paymentStatus must be paid, partial or pending/);
+  assert.match(subscriptions, /Initial subscription payment/);
+  assert.match(subscriptions, /amountPending/);
+  assert.doesNotMatch(subscriptions, /crypto\.randomUUID\(\)/);
+  assert.match(members, /subscriptionIntent === 'new' \? selectedNewPlanVersion\?\.price/);
+  assert.match(members, /amountPaid: renewPaymentStatus === 'partial'/);
+  assert.match(api, /paymentReference\?: string/);
+});

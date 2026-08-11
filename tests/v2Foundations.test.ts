@@ -1,0 +1,137 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { assertExpectedPaymentDate, formatDisplayDate } from "../server/domain/v2/date";
+import { formatDisplayDate as formatClientDisplayDate } from "../src/lib/businessDate";
+import { moneyToMinor, subtractMoney } from "../server/domain/v2/money";
+import { evaluateCandidates } from "../server/domain/v2/entitlementService";
+import type { EntitlementCandidate } from "../server/domain/v2/contracts";
+import { evaluateMemberListAccess } from "../src/lib/memberAccess";
+import type { MembershipMember } from "../src/lib/membershipApi";
+
+const base: EntitlementCandidate = {
+  memberId: "member_1", memberStatus: "active", subscriptionId: "sub_1", affiliationId: "aff_1",
+  contractStatus: "active", affiliationStatus: "active", contractStartDate: "2026-08-01", contractEndDate: "2026-08-30",
+  affiliationStartDate: "2026-08-01", affiliationEndDate: "2026-08-30", expectedPaymentDate: "2026-08-10",
+  amountDue: "100.00", amountPaid: "0.00", currency: "USD", isPrimary: true, consumptionPriority: 0, sessionsRemaining: null,
+};
+
+test("all visible business dates use dd/mm/yyyy", () => {
+  assert.equal(formatDisplayDate("2026-08-06"), "06/08/2026");
+  assert.equal(formatClientDisplayDate("2026-08-06"), "06/08/2026");
+  assert.equal(formatClientDisplayDate("invalid"), "—");
+  assert.throws(() => formatDisplayDate("2026-02-30"), /INVALID_BUSINESS_DATE/);
+});
+
+test("expected payment date can equal but never exceed period end", () => {
+  assert.equal(assertExpectedPaymentDate("2026-08-30", "2026-08-01", "2026-08-30"), "2026-08-30");
+  assert.throws(() => assertExpectedPaymentDate("2026-08-31", "2026-08-01", "2026-08-30"), /EXPECTED_PAYMENT_DATE_OUTSIDE_PERIOD/);
+});
+
+test("money remains exact without floating point", () => {
+  assert.equal(moneyToMinor("100.10"), 10010n);
+  assert.equal(subtractMoney("100.10", "0.20"), "99.90");
+});
+
+test("pending permits access through expected payment date and overdue blocks next day", () => {
+  assert.equal(evaluateCandidates("member_1", [base], "2026-08-10").reasonCode, "PAYMENT_PENDING");
+  const blocked = evaluateCandidates("member_1", [base], "2026-08-11");
+  assert.equal(blocked.allowed, false);
+  assert.equal(blocked.reasonCode, "PAYMENT_OVERDUE");
+});
+
+test("Members Directory permits pending and partial access until the expected payment date", () => {
+  const member: MembershipMember = {
+    id: "member_1", firstName: "Test", lastName: "Member", email: "test@example.com",
+    status: "active", currentExpiry: "2026-08-31",
+    plans: [{
+      id: "aff_1", affiliationId: "aff_1", subscriptionId: "sub_1", planId: "plan_1",
+      planVersionId: "version_1", planName: "Monthly", planType: "individual", role: "holder",
+      status: "active", subscriptionStatus: "active", paymentStatus: "pending",
+      expectedPaymentDate: "2026-08-20", isPrimary: true, startDate: "2026-08-01",
+      endDate: "2026-08-31", sessionsUnlimited: true, distributionModel: "individual",
+    }],
+  };
+  assert.equal(evaluateMemberListAccess(member, "2026-08-10").allowed, true);
+  assert.equal(evaluateMemberListAccess(member, "2026-08-20").allowed, true);
+  assert.equal(evaluateMemberListAccess(member, "2026-08-21").reason, "Payment overdue");
+  member.plans![0].paymentStatus = "partial";
+  assert.equal(evaluateMemberListAccess(member, "2026-08-20").allowed, true);
+  assert.equal(evaluateMemberListAccess(member, "2026-08-21").allowed, false);
+});
+
+test("another eligible subscription authorizes a member when one contract is overdue", () => {
+  const paid: EntitlementCandidate = { ...base, subscriptionId: "sub_2", affiliationId: "aff_2", amountPaid: "100.00", paymentStatus: "paid", isPrimary: false };
+  const decision = evaluateCandidates("member_1", [base, paid], "2026-08-11");
+  assert.equal(decision.allowed, true);
+  assert.equal(decision.subscriptionId, "sub_2");
+});
+
+test("selection across multiple plans is deterministic", () => {
+  const a = { ...base, amountPaid: "100.00", paymentStatus: "paid" as const, isPrimary: false, consumptionPriority: 2 };
+  const b = { ...a, subscriptionId: "sub_2", affiliationId: "aff_2", consumptionPriority: 1 };
+  assert.equal(evaluateCandidates("member_1", [a, b], "2026-08-05").affiliationId, "aff_2");
+});
+
+test("an explicitly requested overdue affiliation cannot fall through to another plan", () => {
+  const valid: EntitlementCandidate = {
+    ...base,
+    subscriptionId: "sub_2",
+    affiliationId: "aff_2",
+    amountPaid: "100.00",
+    paymentStatus: "paid",
+  };
+  const decision = evaluateCandidates(
+    "member_1",
+    [base, valid],
+    "2026-08-11",
+    undefined,
+    "aff_1",
+  );
+  assert.equal(decision.allowed, false);
+  assert.equal(decision.reasonCode, "PAYMENT_OVERDUE");
+});
+
+test("all member access methods enforce the canonical entitlement decision", () => {
+  const source = readFileSync(
+    new URL("../server/accessAuthorization.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /new EntitlementService\(pool\)\.evaluateEntitlement/);
+  assert.match(source, /entitlement\.reasonCode !== "NO_ELIGIBLE_SUBSCRIPTION"/);
+  assert.match(source, /entitlement\.allowed[\s\S]*entitlement\.affiliationId/);
+  assert.ok(
+    source.indexOf("evaluateEntitlement") < source.indexOf("selectAffiliation(", source.indexOf("export async function authorizeAccess")),
+    "financial entitlement must be checked before affiliation/session selection",
+  );
+});
+
+test("entitlement payment date uses the operational column and V2 invoice schema", () => {
+  const source = readFileSync(
+    new URL("../server/domain/v2/entitlementService.ts", import.meta.url),
+    "utf8",
+  );
+  assert.doesNotMatch(source, /s\.estimated_payment_date/);
+  assert.doesNotMatch(source, /s\.price_snapshot/);
+  assert.doesNotMatch(source, /s\.currency_snapshot/);
+  assert.match(source, /i\.due_date/);
+  assert.match(source, /COALESCE\(i\.total, s\.price_paid\) AS amount_due/);
+  assert.match(source, /s\.currency AS currency/);
+  assert.match(source, /LEFT JOIN invoices i/);
+  assert.match(source, /i\.subscription_v2_id = s\.id/);
+  assert.doesNotMatch(source, /JSON_EXTRACT\(s\.data, '\$\.expectedPaymentDate'\)/);
+});
+
+test("payment reconciliation suspends overdue contracts and payment recovery is scoped", () => {
+  const workers = readFileSync(new URL("../server/workers.ts", import.meta.url), "utf8");
+  const subscriptions = readFileSync(new URL("../server/subscriptionsV2.ts", import.meta.url), "utf8");
+  assert.match(workers, /reconcileOverdueSubscriptionPayments/);
+  assert.match(workers, /i\.due_date < CURDATE\(\)/);
+  assert.match(workers, /payment_status = 'overdue'/);
+  assert.match(workers, /automaticPaymentSuspension/);
+  assert.match(workers, /subscription_suspended_payment_overdue/);
+  assert.match(subscriptions, /recoverAutomaticSuspension/);
+  assert.match(subscriptions, /paymentSuspendedAffiliationIds/);
+  assert.match(subscriptions, /subscription_reactivated_payment_resolved/);
+  assert.match(subscriptions, /\["pending", "partial"\]\.includes\(paymentStatus\) \? paymentDate : null/);
+});

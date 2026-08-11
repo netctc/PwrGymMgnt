@@ -13,18 +13,35 @@ import { autoTable } from "jspdf-autotable";
 import { requirePermission } from "./rbac";
 import { isFeatureEnabled } from "./featureFlags";
 import { getSessionBalanceContext, mapBalance } from "./sessionLedger";
-import { createInitialCycle } from "./subscriptionCycles";
+import { allocateAffiliationInActiveCycle, createInitialCycle } from "./subscriptionCycles";
 import {
   assertNoOutstandingSubscriptionPayment,
+  findOutstandingSubscriptionPayment,
   normalizePaymentStatus,
 } from "./subscriptionPaymentRules";
 import { upsertTrainerPlanCommission } from "./trainerCommissions";
+import { appendDomainAudit } from "./domain/v2/auditIdempotency";
+import { parseBusinessDate } from "./domain/v2/date";
+import {
+  buildContractMembers,
+  buildContractTerms,
+  claimContractCreation,
+  completeContractCreation,
+  createContractParticipants,
+  createInitialContractPeriod,
+  hashContractRequest,
+} from "./domain/v2/contractCreation";
 
 type PoolProvider = () => Pool | null;
 type AuthenticatedRequest = Request & { user?: { uid?: string; email?: string; role?: string } };
 
+function optionalBusinessDate(value: unknown): string | null {
+  if (value === null || value === undefined || value === "") return null;
+  return parseBusinessDate(value);
+}
+
 function createId(prefix: string) {
-  return `${prefix}_${crypto.randomUUID().replace(/-/g, "")}`;
+  return `${prefix}_${crypto.randomBytes(16).toString("hex")}`;
 }
 
 function createInvoiceNumber() {
@@ -135,6 +152,9 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
   app.get("/api/v2/subscriptions", requirePermission("membership.read"), async (req, res, next) => {
     try {
       const pool = requirePool(poolProvider);
+      const { reconcileExpiredSubscriptionFreezes } = await import("./subscriptionLifecycle");
+      await reconcileExpiredSubscriptionFreezes(pool);
+      const subscriptionId = normalizeString(req.query.subscriptionId);
       const memberId = normalizeString(req.query.memberId);
       const status = normalizeString(req.query.status) || "active";
       const memberStatus = normalizeString(req.query.memberStatus);
@@ -148,6 +168,10 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
       const search = normalizeString(req.query.search).toLowerCase();
       const where: string[] = [];
       const params: any[] = [];
+      if (subscriptionId) {
+        where.push("s.id = ?");
+        params.push(subscriptionId);
+      }
       if (memberId) {
         where.push(`(
           s.holder_member_id = ?
@@ -310,8 +334,8 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
           holderStatus: row.holder_status || "",
           holderAffiliationId: null,
           status: row.status,
-          startDate: row.start_date ? String(row.start_date).slice(0, 10) : "",
-          endDate: row.end_date ? String(row.end_date).slice(0, 10) : "",
+          startDate: optionalBusinessDate(row.start_date) || "",
+          endDate: optionalBusinessDate(row.end_date) || "",
           autoRenew: false,
           pricePaid: Number(row.price || 0),
           currency: row.currency || "USD",
@@ -331,6 +355,7 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
           source: "legacy",
         }))
         .filter((subscription: any) => {
+          if (subscriptionId && subscription.id !== subscriptionId) return false;
           if (memberId && subscription.holderMemberId !== memberId) return false;
           if (
             status !== "all" &&
@@ -412,107 +437,140 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
       const [pvRows]: any = await pool.query("SELECT * FROM plan_versions WHERE id = ? AND status = 'active'", [planVersionId]);
       if (pvRows.length === 0) return res.status(404).json({ error: "Plan version not found or inactive" });
       const pv = pvRows[0];
-      await assertNoOutstandingSubscriptionPayment(pool, holderMemberId);
-
-      const startDate = normalizeDate(req.body.startDate) || new Date().toISOString().slice(0, 10);
-      const endDate = normalizeDate(req.body.endDate) || addDays(startDate, Number(pv.duration_days));
-      const rawPaymentStatus = normalizeString(req.body.paymentStatus);
-      if (!["paid", "pending"].includes(rawPaymentStatus)) {
-        return res.status(400).json({ error: "paymentStatus must be paid or pending" });
+      let contractMembers: ReturnType<typeof buildContractMembers>;
+      try {
+        contractMembers = buildContractMembers(holderMemberId, req.body.memberIds, pv.max_members);
+      } catch (error: any) {
+        return res.status(400).json({
+          error: error?.message || "Invalid contract members",
+          code: error?.message || "INVALID_CONTRACT_MEMBERS",
+        });
       }
-      if (endDate < startDate) {
-        return res.status(400).json({ error: "endDate cannot be before startDate" });
+      const confirmedOutstandingPayment = req.body.confirmOutstandingPayment === true;
+
+      const rawPaymentStatus = normalizeString(req.body.paymentStatus);
+      if (!["paid", "partial", "pending"].includes(rawPaymentStatus)) {
+        return res.status(400).json({ error: "paymentStatus must be paid, partial or pending" });
       }
       const paymentStatus = normalizePaymentStatus(rawPaymentStatus);
+      const priceMinor = moneyToMinor(pv.price);
+      let paidMinor = paymentStatus === "paid" ? priceMinor : 0n;
+      if (paymentStatus === "partial") {
+        try { paidMinor = moneyToMinor(req.body.amountPaid); }
+        catch { return res.status(400).json({ error: "amountPaid must be a valid monetary amount" }); }
+        if (paidMinor <= 0n || paidMinor >= priceMinor) {
+          return res.status(400).json({ error: "amountPaid must be greater than zero and lower than the subscription total" });
+        }
+      }
+      const amountPaid = minorToMoney(paidMinor);
+      const amountPending = minorToMoney(priceMinor - paidMinor);
+      const paymentMethod = normalizeString(req.body.paymentMethod).toLowerCase();
+      const paymentReference = normalizeString(req.body.paymentReference);
+      const paymentNotes = normalizeString(req.body.paymentNotes);
+      if (paidMinor > 0n && (!paymentMethod || !paymentReference)) {
+        return res.status(400).json({ error: "Payment method and reference are required", code: "PAYMENT_TRACEABILITY_REQUIRED" });
+      }
       const today = new Date().toISOString().slice(0, 10);
-      const paymentDate =
-        paymentStatus === "paid" ? today : normalizeDate(req.body.paymentDate);
-      if (!paymentDate) {
+      const requestedStartDate =
+        normalizeDate(req.body.startDate) || today;
+      const requestedPaymentDate =
+        paymentStatus === "paid"
+          ? requestedStartDate
+          : normalizeDate(req.body.paymentDate);
+      if (!requestedPaymentDate) {
         return res.status(400).json({
-          error: "An estimated payment date is required for pending payments",
+          error: "An expected payment date is required for pending payments",
         });
       }
-      if (paymentStatus === "pending" && paymentDate < today) {
+      if (paymentStatus === "pending" && requestedPaymentDate < today) {
         return res.status(400).json({
-          error: "The estimated payment date cannot be in the past",
+          error: "The expected payment date cannot be in the past",
         });
       }
-      if (paymentStatus === "pending" && paymentDate > endDate) {
+      let terms: ReturnType<typeof buildContractTerms>;
+      try {
+        terms = buildContractTerms({
+          startDate: requestedStartDate,
+          endDate: normalizeDate(req.body.endDate) || undefined,
+          durationDays: pv.duration_days,
+          expectedPaymentDate: requestedPaymentDate,
+          price: pv.price,
+        });
+      } catch (error: any) {
         return res.status(400).json({
-          error: "The estimated payment date cannot be after the subscription end date",
+          error: error?.message || "Invalid contract terms",
+          code: error?.message || "INVALID_CONTRACT_TERMS",
         });
       }
+      const {
+        startDate,
+        endDate,
+        expectedPaymentDate: paymentDate,
+        price,
+      } = terms;
 
       const id = createId("sub");
       connection = await pool.getConnection();
       await connection.beginTransaction();
-      const [duplicateAffiliations]: any = await connection.query(
-        `SELECT a.id
-           FROM affiliations a
-           JOIN subscriptions existing_subscription
-             ON existing_subscription.id = a.subscription_id
-          WHERE a.member_id = ?
-            AND a.status IN ('active', 'suspended')
-            AND a.end_date >= CURDATE()
-            AND existing_subscription.plan_id = ?
-            AND existing_subscription.status = 'active'
-            AND existing_subscription.end_date >= CURDATE()
-          LIMIT 1
-          FOR UPDATE`,
-        [holderMemberId, pv.plan_id],
+      const idempotencyKey = normalizeString(req.get("Idempotency-Key"));
+      const correlationId = idempotencyKey || createId("cor");
+      if (idempotencyKey) {
+        const claimed = await claimContractCreation(
+          connection,
+          idempotencyKey,
+          hashContractRequest(req.body),
+        );
+        if (!claimed) {
+          await connection.rollback();
+          return res.status(409).json({
+            error: "This contract creation request was already processed",
+            code: "IDEMPOTENT_REQUEST_ALREADY_PROCESSED",
+          });
+        }
+      }
+      const outstandingPayment = await findOutstandingSubscriptionPayment(
+        connection,
+        holderMemberId,
       );
-      const [duplicateLegacySubscriptions]: any = await connection.query(
-        `SELECT id
-           FROM member_subscriptions
-          WHERE member_id = ?
-            AND plan_id = ?
-            AND LOWER(TRIM(status)) = 'active'
-            AND end_date >= CURDATE()
-          LIMIT 1
-          FOR UPDATE`,
-        [holderMemberId, pv.plan_id],
-      );
-      if (
-        duplicateAffiliations.length > 0 ||
-        duplicateLegacySubscriptions.length > 0
-      ) {
+      if (outstandingPayment && !confirmedOutstandingPayment) {
         await connection.rollback();
         return res.status(409).json({
-          error: "The member already has an active subscription to this plan",
-          code: "DUPLICATE_ACTIVE_PLAN",
+          error: "The member already has an active or inactive plan with a pending payment. Explicit confirmation is required to create another subscription.",
+          code: "OUTSTANDING_SUBSCRIPTION_PAYMENT_CONFIRMATION_REQUIRED",
+          outstandingPayment,
         });
       }
       await connection.query(
         `INSERT INTO subscriptions (id, plan_id, plan_version_id, holder_member_id, status, start_date, end_date, auto_renew, price_paid, currency, payment_status, max_members)
          VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)`,
-        [id, pv.plan_id, planVersionId, holderMemberId, startDate, endDate, pv.auto_renew, Number(pv.price), pv.currency, paymentStatus, Number(pv.max_members)],
+        [id, pv.plan_id, planVersionId, holderMemberId, startDate, endDate, pv.auto_renew, price, pv.currency, paymentStatus, Number(pv.max_members)],
+      );
+      await connection.query(
+        `UPDATE subscriptions SET data = JSON_SET(COALESCE(data, JSON_OBJECT()), '$.amountPaid', ?, '$.amountPending', ?, '$.expectedPaymentDate', ?) WHERE id = ?`,
+        [amountPaid, amountPending, ["pending", "partial"].includes(paymentStatus) ? paymentDate : null, id],
       );
 
-      // Create subscription_member for holder
-      const smId = createId("sm");
-      await connection.query(
-        "INSERT INTO subscription_members (id, subscription_id, member_id, role, status, joined_at) VALUES (?, ?, ?, 'holder', 'active', NOW())",
-        [smId, id, holderMemberId],
-      );
+      const periodId = await createInitialContractPeriod(connection, {
+        subscriptionId: id,
+        terms,
+        actorId: req.user?.email || req.user?.uid || null,
+        correlationId,
+      });
 
-      // Create affiliation for holder
-      const affId = createId("aff");
-      const [existingAffiliations]: any = await connection.query(
-        `SELECT id
-           FROM affiliations
-          WHERE member_id = ?
-            AND status = 'active'
-            AND end_date >= CURDATE()
-          LIMIT 1
-          FOR UPDATE`,
-        [holderMemberId],
-      );
-      const isPrimary = existingAffiliations.length === 0 ? 1 : 0;
-      await connection.query(
-        `INSERT INTO affiliations (id, member_id, subscription_id, subscription_member_id, plan_version_id, status, role, is_primary, start_date, end_date, consumption_priority)
-         VALUES (?, ?, ?, ?, ?, 'active', 'holder', ?, ?, ?, ?)`,
-        [affId, holderMemberId, id, smId, planVersionId, isPrimary, startDate, endDate, Number(pv.consumption_priority)],
-      );
+      const participants = await createContractParticipants(connection, {
+        subscriptionId: id,
+        planId: pv.plan_id,
+        planVersionId,
+        members: contractMembers,
+        startDate,
+        endDate,
+        consumptionPriority: Number(pv.consumption_priority || 0),
+        invitedBy: req.user?.email || req.user?.uid || null,
+      });
+      const holderAffiliationId = participants.find(
+        (participant) => participant.role === "holder",
+      )?.affiliationId || participants[0].affiliationId;
+      const affiliationIds = participants.map((participant) => participant.affiliationId);
 
       await createInitialCycle(
         connection,
@@ -521,32 +579,39 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
         endDate,
         pv.sessions_unlimited ? null : Number(pv.sessions_per_cycle || 0),
         pv.distribution_model || "individual",
-        [affId],
+        affiliationIds,
         {
           cycleFrequency: pv.cycle_frequency || "monthly",
           subscriptionEndDate: endDate,
-          customAllocations: {
-            [affId]: Number(
-              (typeof pv.data === "string" ? JSON.parse(pv.data || "{}") : pv.data)
-                ?.holderSessionsPerCycle || pv.sessions_per_cycle || 0,
-            ),
-          },
+          customAllocations: Object.fromEntries(
+            participants.map((participant) => [
+              participant.affiliationId,
+              Number(
+                (typeof pv.data === "string" ? JSON.parse(pv.data || "{}") : pv.data)?.[
+                  participant.role === "holder"
+                    ? "holderSessionsPerCycle"
+                    : "beneficiarySessionsPerCycle"
+                ] || pv.sessions_per_cycle || 0,
+              ),
+            ]),
+          ),
         },
       );
       const invoiceId = createId("inv");
       const invoiceNumber = createInvoiceNumber();
       await connection.query(
         `INSERT INTO invoices
-          (id, invoice_number, member_id, subscription_id, status,
-           subtotal, tax_amount, total, currency, due_date, paid_at, data)
-         VALUES (?, ?, ?, NULL, ?, ?, 0, ?, ?, ?, ?, ?)`,
+          (id, invoice_number, member_id, subscription_id, subscription_v2_id,
+           status, subtotal, tax_amount, total, currency, due_date, paid_at, data)
+         VALUES (?, ?, ?, NULL, ?, ?, ?, 0, ?, ?, ?, ?, ?)`,
         [
           invoiceId,
           invoiceNumber,
           holderMemberId,
+          id,
           paymentStatus === "paid" ? "paid" : "issued",
-          Number(pv.price || 0),
-          Number(pv.price || 0),
+          price,
+          price,
           pv.currency || "USD",
           paymentDate,
           paymentStatus === "paid" ? new Date() : null,
@@ -556,8 +621,10 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
             periodStart: startDate,
             periodEnd: endDate,
             paymentStatus,
+            amountPaid,
+            amountPending,
             expectedPaymentDate:
-              paymentStatus === "pending" ? paymentDate : null,
+              ["pending", "partial"].includes(paymentStatus) ? paymentDate : null,
           }),
         ],
       );
@@ -568,9 +635,17 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
               '$.expectedPaymentDate', ?
             )
           WHERE id = ?`,
-        [paymentStatus === "pending" ? paymentDate : null, id],
+        [["pending", "partial"].includes(paymentStatus) ? paymentDate : null, id].flat(),
       );
-      await connection.query(
+      if (paidMinor > 0n) await connection.query(
+        `INSERT INTO invoice_payment_events_v2
+          (id, invoice_id, event_type, amount, currency, effective_date, reason, performed_by, idempotency_key, data)
+         VALUES (?, ?, 'payment', ?, ?, ?, ?, ?, ?, ?)`,
+        [createId("pay"), invoiceId, amountPaid, pv.currency || "USD", requestedStartDate,
+          "Initial subscription payment", req.user?.email || req.user?.uid || "system",
+          `subscription-create:${invoiceId}:payment`, JSON.stringify({ source: "subscription_v2", subscriptionId: id, amountPaid, amountPending, paymentMethod, reference: paymentReference, notes: paymentNotes || undefined })],
+      );
+      if (paidMinor > 0n) await connection.query(
         `INSERT INTO finance_transactions
           (id, type, category, amount, transaction_date, source, reference_type,
            reference_id, description, status, created_by, approved_by, data)
@@ -578,20 +653,23 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
                  'subscription', 'subscription_v2_payment', ?, ?, ?, ?, ?, ?)`,
         [
           createId("ftx"),
-          Number(pv.price || 0),
-          paymentDate,
+          amountPaid,
+          requestedStartDate,
           id,
           `Subscription payment ${invoiceNumber} - member ${holderMemberId} - ${pv.name || "plan"}`,
-          paymentStatus === "paid" ? "posted" : "pending",
+          "posted",
           req.user?.email || req.user?.uid || "system",
-          paymentStatus === "paid"
-            ? req.user?.email || req.user?.uid || "system"
-            : null,
+          req.user?.email || req.user?.uid || "system",
           JSON.stringify({
             source: "subscription_v2",
             subscriptionId: id,
             paymentStatus,
             invoiceNumber,
+            invoiceId,
+            amountPaid,
+            amountPending,
+            paymentMethod,
+            reference: paymentReference,
             currency: pv.currency || "USD",
           }),
         ],
@@ -613,14 +691,50 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
             holderMemberId,
             planVersionId,
             paymentStatus,
+            memberIds: contractMembers.map((member) => member.memberId),
           }),
         ],
       );
+      if (outstandingPayment && confirmedOutstandingPayment) {
+        await connection.query(
+          "INSERT INTO audit_logs (action, details, performed_by) VALUES ('subscription_created_with_pending_payment_confirmed', ?, ?)",
+          [
+            JSON.stringify({
+              decision: "confirmed",
+              holderMemberId,
+              planVersionId,
+              newSubscriptionId: id,
+              newPaymentStatus: paymentStatus,
+              outstandingPayment,
+            }),
+            req.user?.email || req.user?.uid || "system",
+          ],
+        );
+      }
+      if (idempotencyKey) {
+        await completeContractCreation(connection, idempotencyKey, 201, {
+          subscriptionId: id,
+          affiliationId: holderAffiliationId,
+          affiliations: participants.map((participant) => ({
+            affiliationId: participant.affiliationId,
+            memberId: participant.memberId,
+            role: participant.role,
+          })),
+          periodId,
+          invoiceNumber,
+        });
+      }
       await connection.commit();
       const [rows]: any = await pool.query("SELECT s.*, pv.name AS plan_name, pv.plan_type FROM subscriptions s LEFT JOIN plan_versions pv ON pv.id = s.plan_version_id WHERE s.id = ?", [id]);
       res.status(201).json({
         subscription: mapSubscription(rows[0]),
-        affiliationId: affId,
+        affiliationId: holderAffiliationId,
+        affiliations: participants.map((participant) => ({
+          affiliationId: participant.affiliationId,
+          memberId: participant.memberId,
+          role: participant.role,
+        })),
+        periodId,
         invoiceNumber,
         paymentDate,
       });
@@ -632,16 +746,58 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
     }
   });
 
+  app.post("/api/v2/subscriptions/pending-payment-decision", requirePermission("membership.write"), async (req: AuthenticatedRequest, res, next) => {
+    try {
+      const pool = requirePool(poolProvider);
+      const holderMemberId = normalizeString(req.body.holderMemberId);
+      const memberIds = Array.from(new Set([
+        holderMemberId,
+        ...(Array.isArray(req.body.memberIds)
+          ? req.body.memberIds.map(normalizeString)
+          : []),
+      ].filter(Boolean)));
+      const planVersionId = normalizeString(req.body.planVersionId);
+      const decision = normalizeString(req.body.decision).toLowerCase();
+      if (!memberIds.length || !planVersionId || decision !== "cancelled") {
+        return res.status(400).json({
+          error: "At least one member, planVersionId and decision=cancelled are required",
+        });
+      }
+      const outstandingPayments = (
+        await Promise.all(memberIds.map(async (memberId) => ({
+          memberId,
+          payment: await findOutstandingSubscriptionPayment(pool, memberId),
+        })))
+      ).filter((entry) => entry.payment);
+      await pool.query(
+        "INSERT INTO audit_logs (action, details, performed_by) VALUES ('subscription_creation_with_pending_payment_cancelled', ?, ?)",
+        [
+          JSON.stringify({
+            decision,
+            memberIds,
+            planVersionId,
+            outstandingPayments,
+          }),
+          req.user?.email || req.user?.uid || "system",
+        ],
+      );
+      res.json({ ok: true, decision });
+    } catch (error) { next(error); }
+  });
+
   app.patch("/api/v2/subscriptions/:id/payment-status", requirePermission("membership.write"), async (req: AuthenticatedRequest, res, next) => {
     let connection: any = null;
     try {
       const pool = requirePool(poolProvider);
       const paymentStatus = normalizePaymentStatus(req.body.paymentStatus);
+      if (!["paid", "partial", "pending"].includes(paymentStatus)) {
+        return res.status(400).json({ error: "paymentStatus must be paid, partial or pending" });
+      }
       connection = await pool.getConnection();
       await connection.beginTransaction();
       const [rows]: any = await connection.query(
         `SELECT s.payment_status, s.price_paid, s.currency, s.start_date,
-                s.end_date, s.data, s.holder_member_id,
+                s.end_date, s.data, s.status, s.holder_member_id,
                 pv.name AS plan_name,
                 holder.first_name AS holder_first_name,
                 holder.last_name AS holder_last_name
@@ -674,14 +830,14 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
           error: "An estimated payment date is required for pending payments",
         });
       }
-      if (paymentStatus === "pending" && paymentDate < today) {
+      if (["pending", "partial"].includes(paymentStatus) && paymentDate < today) {
         await connection.rollback();
         return res.status(400).json({
           error: "The estimated payment date cannot be in the past",
         });
       }
       if (
-        paymentStatus === "pending" &&
+        ["pending", "partial"].includes(paymentStatus) &&
         paymentDate > String(rows[0].end_date).slice(0, 10)
       ) {
         await connection.rollback();
@@ -697,13 +853,15 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
       let accountingCategory = "Membership Subscription";
       let accountingDescriptionPrefix = "Subscription payment";
       const [invoiceRows]: any = await connection.query(
-        `SELECT id, invoice_number, data
+        `SELECT id, invoice_number, total, currency, data
            FROM invoices
-          WHERE JSON_UNQUOTE(JSON_EXTRACT(data, '$.subscriptionV2Id')) = ?
-          ORDER BY created_at DESC
+          WHERE subscription_v2_id = ?
+             OR JSON_UNQUOTE(JSON_EXTRACT(data, '$.subscriptionV2Id')) = ?
+             OR subscription_id = ?
+          ORDER BY (status IN ('issued', 'partial', 'pending', 'overdue')) DESC, created_at DESC
           LIMIT 1
           FOR UPDATE`,
-        [req.params.id],
+        [req.params.id, req.params.id, req.params.id],
       );
       const existingInvoiceData =
         typeof invoiceRows[0]?.data === "string"
@@ -712,6 +870,14 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
       if (invoiceRows.length) {
         invoiceId = invoiceRows[0].id;
         invoiceNumber = invoiceRows[0].invoice_number;
+        await connection.query(
+          `UPDATE invoices
+              SET subscription_v2_id = ?,
+                  data = JSON_SET(COALESCE(data, JSON_OBJECT()), '$.subscriptionV2Id', ?),
+                  updated_at = NOW()
+            WHERE id = ?`,
+          [req.params.id, req.params.id, invoiceId],
+        );
         if (existingInvoiceData.source === "subscription_v2_renewal") {
           accountingReferenceType = "subscription_v2_renewal_invoice";
           accountingReferenceId = invoiceId!;
@@ -735,7 +901,7 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
             paymentDate,
             paymentStatus,
             paymentStatus,
-            paymentStatus === "pending" ? paymentDate : null,
+            ["pending", "partial"].includes(paymentStatus) ? paymentDate : null,
             invoiceId,
           ],
         );
@@ -744,13 +910,14 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
         invoiceNumber = createInvoiceNumber();
         await connection.query(
           `INSERT INTO invoices
-            (id, invoice_number, member_id, subscription_id, status,
-             subtotal, tax_amount, total, currency, due_date, paid_at, data)
-           VALUES (?, ?, ?, NULL, ?, ?, 0, ?, ?, ?, ?, ?)`,
+            (id, invoice_number, member_id, subscription_id, subscription_v2_id,
+             status, subtotal, tax_amount, total, currency, due_date, paid_at, data)
+           VALUES (?, ?, ?, NULL, ?, ?, ?, 0, ?, ?, ?, ?, ?)`,
           [
             invoiceId,
             invoiceNumber,
             rows[0].holder_member_id,
+            req.params.id,
             paymentStatus === "paid" ? "paid" : "issued",
             Number(rows[0].price_paid || 0),
             Number(rows[0].price_paid || 0),
@@ -764,9 +931,79 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
               periodEnd: rows[0].end_date,
               paymentStatus,
               expectedPaymentDate:
-                paymentStatus === "pending" ? paymentDate : null,
+                ["pending", "partial"].includes(paymentStatus) ? paymentDate : null,
             }),
           ],
+        );
+      }
+      const totalMinor = moneyToMinor(invoiceRows[0]?.total ?? rows[0].price_paid ?? 0);
+      const currentDataPaid = moneyToMinor(existingInvoiceData.amountPaid ?? "0.00");
+      let receivedMinor = 0n;
+      if (paymentStatus === "partial") {
+        try { receivedMinor = moneyToMinor(req.body.amountPaid); }
+        catch { await connection.rollback(); return res.status(400).json({ error: "amountPaid must be a valid monetary amount" }); }
+        if (receivedMinor <= 0n || currentDataPaid + receivedMinor >= totalMinor) {
+          await connection.rollback();
+          return res.status(400).json({ error: "amountPaid must be greater than zero and lower than the current pending amount" });
+        }
+      } else if (paymentStatus === "paid") {
+        receivedMinor = totalMinor - currentDataPaid;
+      }
+      const netPaidMinor = currentDataPaid + receivedMinor;
+      const amountPaid = minorToMoney(netPaidMinor);
+      const amountPending = minorToMoney(totalMinor - netPaidMinor);
+      const paymentMethod = normalizeString(req.body.paymentMethod).toLowerCase();
+      const paymentReference = normalizeString(req.body.paymentReference);
+      const paymentNotes = normalizeString(req.body.paymentNotes);
+      if (paymentStatus === "partial" && (!paymentMethod || !paymentReference)) {
+        await connection.rollback();
+        return res.status(400).json({ error: "Payment method and reference are required", code: "PAYMENT_TRACEABILITY_REQUIRED" });
+      }
+      if (receivedMinor > 0n) await connection.query(
+        `INSERT INTO invoice_payment_events_v2
+          (id, invoice_id, event_type, amount, currency, effective_date, reason, performed_by, idempotency_key, data)
+         VALUES (?, ?, 'payment', ?, ?, ?, ?, ?, ?, ?)`,
+        [createId("pay"), invoiceId, minorToMoney(receivedMinor), rows[0].currency || "USD", today,
+          "Subscription payment", req.user?.email || req.user?.uid || "system",
+          normalizeString(req.get("Idempotency-Key")) || `subscription-payment:${invoiceId}:${createId("key")}`,
+          JSON.stringify({ source: "subscription_v2", subscriptionId: req.params.id, paymentMethod, reference: paymentReference, notes: paymentNotes || undefined })],
+      );
+      await connection.query(
+        `UPDATE invoices SET status = ?, paid_at = CASE WHEN ? = 'paid' THEN COALESCE(paid_at, NOW()) ELSE NULL END,
+            data = JSON_SET(COALESCE(data, JSON_OBJECT()), '$.paymentStatus', ?, '$.amountPaid', ?, '$.amountPending', ?), updated_at = NOW()
+          WHERE id = ?`,
+        [paymentStatus === "paid" ? "paid" : "issued", paymentStatus, paymentStatus, amountPaid, amountPending, invoiceId],
+      );
+      const subscriptionData =
+        typeof rows[0].data === "string" ? JSON.parse(rows[0].data || "{}") : (rows[0].data || {});
+      const paymentSuspendedAffiliationIds = Array.isArray(subscriptionData.paymentSuspendedAffiliationIds)
+        ? subscriptionData.paymentSuspendedAffiliationIds.map(String)
+        : [];
+      const recoverAutomaticSuspension =
+        paymentStatus === "paid" &&
+        rows[0].status === "suspended" &&
+        subscriptionData.automaticPaymentSuspension === true;
+      if (recoverAutomaticSuspension) {
+        await connection.query(
+          `UPDATE subscriptions
+              SET status = 'active',
+                  data = JSON_REMOVE(COALESCE(data, JSON_OBJECT()),
+                    '$.automaticPaymentSuspension', '$.paymentSuspendedAffiliationIds', '$.paymentSuspendedAt'),
+                  version = version + 1, updated_at = NOW()
+            WHERE id = ?`,
+          [req.params.id],
+        );
+        if (paymentSuspendedAffiliationIds.length) {
+          await connection.query(
+            `UPDATE affiliations SET status = 'active', updated_at = NOW()
+              WHERE subscription_id = ? AND status = 'suspended'
+                AND id IN (${paymentSuspendedAffiliationIds.map(() => "?").join(",")})`,
+            [req.params.id, ...paymentSuspendedAffiliationIds],
+          );
+        }
+        await connection.query(
+          "INSERT INTO audit_logs (action, details, performed_by) VALUES ('subscription_reactivated_payment_resolved', ?, ?)",
+          [JSON.stringify({ subscriptionId: req.params.id, affiliationIds: paymentSuspendedAffiliationIds }), req.user?.email || req.user?.uid || "system"],
         );
       }
       await connection.query(
@@ -775,20 +1012,24 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
                 data = JSON_SET(
                   COALESCE(data, JSON_OBJECT()),
                   '$.expectedPaymentDate', ?
+                  , '$.amountPaid', ?
+                  , '$.amountPending', ?
                 ),
                 version = version + 1,
                 updated_at = NOW()
           WHERE id = ?`,
         [
           paymentStatus,
-          paymentStatus === "pending" ? paymentDate : null,
+          ["pending", "partial"].includes(paymentStatus) ? paymentDate : null,
+          amountPaid,
+          amountPending,
           req.params.id,
         ],
       );
-      const accountingStatus = paymentStatus === "paid" ? "posted" : "pending";
+      const accountingStatus = receivedMinor > 0n ? "posted" : "pending";
       const holderName = `${rows[0].holder_first_name || ""} ${rows[0].holder_last_name || ""}`.trim();
       const accountingTransactionId = createId("ftx");
-      await connection.query(
+      if (receivedMinor > 0n) await connection.query(
         `INSERT INTO finance_transactions
           (id, type, category, amount, transaction_date, source, reference_type,
            reference_id, description, status, created_by, approved_by, data)
@@ -805,22 +1046,25 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
         [
           accountingTransactionId,
           accountingCategory,
-          Number(rows[0].price_paid || 0),
-          paymentDate,
+          minorToMoney(receivedMinor),
+          today,
           accountingReferenceType,
           accountingReferenceId,
           `${accountingDescriptionPrefix}${invoiceNumber ? ` ${invoiceNumber}` : ""} - ${holderName || "member"} - ${rows[0].plan_name || "plan"}`,
           accountingStatus,
           req.user?.email || req.user?.uid || "system",
-          paymentStatus === "paid"
-            ? req.user?.email || req.user?.uid || "system"
-            : null,
+          req.user?.email || req.user?.uid || "system",
           JSON.stringify({
             source: "subscription_v2",
             subscriptionId: req.params.id,
             paymentStatus,
             previousPaymentStatus,
             invoiceNumber,
+            invoiceId,
+            amountPaid,
+            amountPending,
+            paymentMethod,
+            reference: paymentReference,
             currency: rows[0].currency || "USD",
           }),
         ],
@@ -849,6 +1093,7 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
         ok: true,
         previousPaymentStatus,
         paymentStatus,
+        subscriptionReactivated: recoverAutomaticSuspension,
         paymentDate,
         accountingStatus,
         invoiceNumber,
@@ -894,6 +1139,7 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
   });
 
   app.post("/api/v2/subscriptions/:id/members", requirePermission("membership.write"), async (req: AuthenticatedRequest, res, next) => {
+    let connection: any = null;
     try {
       const pool = requirePool(poolProvider);
       if (!await requireFeature(pool, "ENABLE_MULTI_USER_PLANS", res)) return;
@@ -901,14 +1147,22 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
       const subscriptionId = req.params.id;
       const memberId = normalizeString(req.body.memberId);
       if (!memberId) return res.status(400).json({ error: "memberId is required" });
-      await assertNoOutstandingSubscriptionPayment(pool, memberId);
 
-      // Verify subscription exists and check capacity
-      const [subRows]: any = await pool.query(
-        "SELECT * FROM subscriptions WHERE id = ? AND status = 'active' AND end_date >= CURDATE()",
+      connection = await pool.getConnection();
+      await connection.beginTransaction();
+
+      const [subRows]: any = await connection.query(
+        `SELECT s.id, s.plan_version_id, s.start_date, s.end_date, s.max_members,
+                pv.plan_id, pv.sessions_unlimited, pv.sessions_per_cycle,
+                pv.distribution_model, pv.data AS plan_data
+           FROM subscriptions s
+           JOIN plan_versions pv ON pv.id = s.plan_version_id
+          WHERE s.id = ? AND s.status = 'active' AND s.end_date >= CURDATE()
+          LIMIT 1 FOR UPDATE`,
         [subscriptionId],
       );
-      if (subRows.length === 0) {
+      if (!subRows.length) {
+        await connection.rollback();
         return res.status(409).json({
           error: "Beneficiaries cannot be modified after the multi-user subscription has expired",
           code: "SUBSCRIPTION_EXPIRED",
@@ -916,81 +1170,271 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
       }
       const sub = subRows[0];
 
-      const [countRows]: any = await pool.query(
-        "SELECT COUNT(*) AS c FROM subscription_members WHERE subscription_id = ? AND status IN ('active', 'suspended')",
-        [subscriptionId],
+      const [memberRows]: any = await connection.query(
+        "SELECT id, status FROM members WHERE id = ? LIMIT 1 FOR UPDATE",
+        [memberId],
       );
-      if (Number(countRows[0]?.c || 0) >= Number(sub.max_members)) {
-        return res.status(409).json({ error: "Subscription member limit reached", code: "CAPACITY_LIMIT_REACHED" });
+      if (!memberRows.length) {
+        await connection.rollback();
+        return res.status(404).json({ error: "Member not found", code: "MEMBER_NOT_FOUND" });
+      }
+      if (String(memberRows[0].status || "").trim().toLowerCase() !== "active") {
+        await connection.rollback();
+        return res.status(409).json({ error: "Only active members can be added", code: "MEMBER_NOT_ACTIVE" });
       }
 
-      // Check not already a member
-      const [existing]: any = await pool.query(
-        "SELECT id FROM subscription_members WHERE subscription_id = ? AND member_id = ? AND status IN ('active', 'suspended') LIMIT 1",
+      await assertNoOutstandingSubscriptionPayment(connection, memberId);
+
+      const [activeMemberRows]: any = await connection.query(
+        `SELECT id FROM subscription_members
+          WHERE subscription_id = ? AND status IN ('active', 'suspended')
+          FOR UPDATE`,
+        [subscriptionId],
+      );
+      if (activeMemberRows.length >= Number(sub.max_members)) {
+        await connection.rollback();
+        return res.status(409).json({
+          error: "Subscription member limit reached",
+          code: "CAPACITY_LIMIT_REACHED",
+        });
+      }
+
+      const [existingRows]: any = await connection.query(
+        `SELECT id FROM subscription_members
+          WHERE subscription_id = ? AND member_id = ?
+            AND status IN ('active', 'suspended')
+          LIMIT 1 FOR UPDATE`,
         [subscriptionId, memberId],
       );
-      if (existing.length > 0) return res.status(409).json({ error: "Member is already in this subscription" });
+      if (existingRows.length) {
+        await connection.rollback();
+        return res.status(409).json({
+          error: "Member is already in this subscription",
+          code: "MEMBER_ALREADY_ASSIGNED",
+        });
+      }
+
+      const [duplicatePlanRows]: any = await connection.query(
+        `SELECT a.id
+           FROM affiliations a
+           JOIN subscriptions s ON s.id = a.subscription_id
+          WHERE a.member_id = ?
+            AND s.plan_id = ?
+            AND a.status IN ('active', 'suspended', 'frozen')
+            AND s.status IN ('active', 'suspended', 'frozen')
+            AND a.end_date >= CURDATE()
+            AND s.end_date >= CURDATE()
+          LIMIT 1 FOR UPDATE`,
+        [memberId, sub.plan_id],
+      );
+      if (duplicatePlanRows.length) {
+        await connection.rollback();
+        return res.status(409).json({
+          error: "DUPLICATE_ACTIVE_PLAN",
+          code: "DUPLICATE_ACTIVE_PLAN",
+        });
+      }
 
       const smId = createId("sm");
-      const role = normalizeString(req.body.role) || "beneficiary";
-      await pool.query(
-        "INSERT INTO subscription_members (id, subscription_id, member_id, role, status, joined_at, invited_by) VALUES (?, ?, ?, ?, 'active', NOW(), ?)",
-        [smId, subscriptionId, memberId, role, req.user?.email || null],
-      );
-
-      // Create affiliation for the new member
       const affId = createId("aff");
-      const startDate = new Date().toISOString().slice(0, 10);
-      const endDate = sub.end_date instanceof Date ? sub.end_date.toISOString().slice(0, 10) : String(sub.end_date).slice(0, 10);
-      await pool.query(
-        `INSERT INTO affiliations (id, member_id, subscription_id, subscription_member_id, plan_version_id, status, role, is_primary, start_date, end_date, consumption_priority)
-         VALUES (?, ?, ?, ?, ?, 'active', ?, 0, ?, ?, 0)`,
-        [affId, memberId, subscriptionId, smId, sub.plan_version_id, role, startDate, endDate],
+      const role = "beneficiary";
+      const today = new Date().toISOString().slice(0, 10);
+      const subscriptionStart = String(sub.start_date).slice(0, 10);
+      const startDate = subscriptionStart > today ? subscriptionStart : today;
+      const endDate = String(sub.end_date).slice(0, 10);
+      const [primaryRows]: any = await connection.query(
+        `SELECT id FROM affiliations
+          WHERE member_id = ?
+            AND status IN ('active', 'suspended', 'frozen')
+            AND end_date >= CURDATE()
+          LIMIT 1 FOR UPDATE`,
+        [memberId],
       );
 
-      res.status(201).json({ subscriptionMember: { id: smId, memberId, role, status: "active" }, affiliationId: affId });
-    } catch (error) { next(error); }
+      await connection.query(
+        `INSERT INTO subscription_members
+          (id, subscription_id, member_id, role, status, joined_at, invited_by)
+         VALUES (?, ?, ?, ?, 'active', NOW(), ?)`,
+        [smId, subscriptionId, memberId, role, req.user?.email || req.user?.uid || null],
+      );
+      await connection.query(
+        `INSERT INTO affiliations
+          (id, member_id, subscription_id, subscription_member_id,
+           plan_version_id, status, role, is_primary, start_date, end_date,
+           consumption_priority)
+         VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, 0)`,
+        [
+          affId,
+          memberId,
+          subscriptionId,
+          smId,
+          sub.plan_version_id,
+          role,
+          primaryRows.length ? 0 : 1,
+          startDate,
+          endDate,
+        ],
+      );
+
+      let allocatedSessions: number | null = null;
+      if (!Boolean(sub.sessions_unlimited)) {
+        const [cycleRows]: any = await connection.query(
+          `SELECT id FROM subscription_cycles
+            WHERE subscription_id = ? AND status = 'active'
+            ORDER BY cycle_number DESC LIMIT 1 FOR UPDATE`,
+          [subscriptionId],
+        );
+        if (!cycleRows.length) {
+          throw Object.assign(new Error("ACTIVE_CYCLE_REQUIRED"), {
+            status: 409,
+            code: "ACTIVE_CYCLE_REQUIRED",
+          });
+        }
+        const planData = typeof sub.plan_data === "string"
+          ? JSON.parse(sub.plan_data || "{}")
+          : (sub.plan_data || {});
+        allocatedSessions = await allocateAffiliationInActiveCycle(connection, {
+          cycleId: cycleRows[0].id,
+          subscriptionId,
+          affiliationId: affId,
+          distributionModel: sub.distribution_model || "individual",
+          sessionsPerCycle: Number(sub.sessions_per_cycle || 0),
+          customQuantity: Number(
+            planData.beneficiarySessionsPerCycle || sub.sessions_per_cycle || 0,
+          ),
+          performedBy: req.user?.email || req.user?.uid || "system",
+        });
+      }
+
+      await appendDomainAudit(connection, {
+        entityType: "subscription",
+        entityId: subscriptionId,
+        eventType: "subscription_beneficiary_added",
+        actorId: req.user?.email || req.user?.uid || null,
+        correlationId: createId("cor"),
+        after: { memberId, subscriptionMemberId: smId, affiliationId: affId, allocatedSessions },
+      });
+      await connection.commit();
+      res.status(201).json({
+        subscriptionMember: { id: smId, memberId, role, status: "active" },
+        affiliationId: affId,
+        allocatedSessions,
+      });
+    } catch (error) {
+      if (connection) await connection.rollback();
+      next(error);
+    } finally {
+      if (connection) connection.release();
+    }
   });
 
   app.delete("/api/v2/subscriptions/:subId/members/:memberId", requirePermission("membership.write"), async (req: AuthenticatedRequest, res, next) => {
+    let connection: any = null;
     try {
       const pool = requirePool(poolProvider);
       if (!await requireFeature(pool, "ENABLE_MULTI_USER_PLANS", res)) return;
 
       const { subId, memberId } = req.params;
-      const [subscriptionRows]: any = await pool.query(
-        "SELECT id FROM subscriptions WHERE id = ? AND status = 'active' AND end_date >= CURDATE()",
+      connection = await pool.getConnection();
+      await connection.beginTransaction();
+
+      const [subscriptionRows]: any = await connection.query(
+        `SELECT s.id
+           FROM subscriptions s
+          WHERE s.id = ? AND s.status = 'active' AND s.end_date >= CURDATE()
+          LIMIT 1 FOR UPDATE`,
         [subId],
       );
-      if (subscriptionRows.length === 0) {
+      if (!subscriptionRows.length) {
+        await connection.rollback();
         return res.status(409).json({
           error: "Beneficiaries cannot be modified after the multi-user subscription has expired",
           code: "SUBSCRIPTION_EXPIRED",
         });
       }
 
-      // Cannot remove the holder
-      const [smRows]: any = await pool.query(
-        "SELECT id, role FROM subscription_members WHERE subscription_id = ? AND member_id = ? AND status IN ('active', 'suspended') LIMIT 1",
+      const [smRows]: any = await connection.query(
+        `SELECT id, role, status
+           FROM subscription_members
+          WHERE subscription_id = ? AND member_id = ?
+            AND status IN ('active', 'suspended')
+          LIMIT 1 FOR UPDATE`,
         [subId, memberId],
       );
-      if (smRows.length === 0) return res.status(404).json({ error: "Member not found in subscription" });
-      if (smRows[0].role === "holder") return res.status(400).json({ error: "Cannot remove the subscription holder" });
+      if (!smRows.length) {
+        await connection.rollback();
+        return res.status(404).json({ error: "Member not found in subscription" });
+      }
+      if (smRows[0].role === "holder") {
+        await connection.rollback();
+        return res.status(400).json({
+          error: "Cannot remove the subscription holder",
+          code: "SUBSCRIPTION_HOLDER_PROTECTED",
+        });
+      }
 
-      // Deactivate subscription_member
-      await pool.query(
+      const [affiliationRows]: any = await connection.query(
+        `SELECT id, status, is_primary
+           FROM affiliations
+          WHERE subscription_id = ? AND member_id = ?
+            AND status IN ('active', 'suspended', 'frozen')
+          FOR UPDATE`,
+        [subId, memberId],
+      );
+
+      await connection.query(
         "UPDATE subscription_members SET status = 'removed', left_at = NOW() WHERE id = ?",
         [smRows[0].id],
       );
-
-      // Cancel affiliated affiliations
-      await pool.query(
-        "UPDATE affiliations SET status = 'cancelled', updated_at = NOW() WHERE subscription_id = ? AND member_id = ? AND status = 'active'",
+      await connection.query(
+        `UPDATE affiliations
+            SET status = 'cancelled', is_primary = 0, updated_at = NOW()
+          WHERE subscription_id = ? AND member_id = ?
+            AND status IN ('active', 'suspended', 'frozen')`,
         [subId, memberId],
       );
 
+      if (affiliationRows.some((row: any) => Boolean(row.is_primary))) {
+        await connection.query(
+          `UPDATE affiliations
+              SET is_primary = 1, updated_at = NOW()
+            WHERE id = (
+              SELECT candidate.id FROM (
+                SELECT id
+                  FROM affiliations
+                 WHERE member_id = ?
+                   AND status = 'active'
+                   AND end_date >= CURDATE()
+                 ORDER BY consumption_priority ASC, end_date ASC, id ASC
+                 LIMIT 1
+              ) candidate
+            )`,
+          [memberId],
+        );
+      }
+
+      await appendDomainAudit(connection, {
+        entityType: "subscription",
+        entityId: subId,
+        eventType: "subscription_beneficiary_removed",
+        actorId: req.user?.email || req.user?.uid || null,
+        correlationId: createId("cor"),
+        before: {
+          memberId,
+          subscriptionMemberId: smRows[0].id,
+          affiliationIds: affiliationRows.map((row: any) => row.id),
+        },
+        after: { memberId, status: "removed" },
+        reason: normalizeString(req.body?.reason) || null,
+      });
+      await connection.commit();
       res.json({ ok: true, removed: memberId });
-    } catch (error) { next(error); }
+    } catch (error) {
+      if (connection) await connection.rollback();
+      next(error);
+    } finally {
+      if (connection) connection.release();
+    }
   });
 
   // --- Affiliations ---
@@ -1052,9 +1496,9 @@ export function registerSubscriptionsV2Routes(app: Express, poolProvider: PoolPr
           distributionModel: row.distribution_model,
           cycleId: row.cycle_id || null,
           cycleNumber: row.cycle_number ? Number(row.cycle_number) : null,
-          cycleStartDate: row.cycle_start_date ? String(row.cycle_start_date).slice(0, 10) : null,
-          cycleEndDate: row.cycle_end_date ? String(row.cycle_end_date).slice(0, 10) : null,
-          nextResetDate: row.cycle_end_date ? String(row.cycle_end_date).slice(0, 10) : null,
+          cycleStartDate: optionalBusinessDate(row.cycle_start_date),
+          cycleEndDate: optionalBusinessDate(row.cycle_end_date),
+          nextResetDate: optionalBusinessDate(row.cycle_end_date),
           included: Number(row.included),
           assigned: Number(row.included),
           reserved: Number(row.reserved),
@@ -2038,14 +2482,19 @@ function mapSubscription(row: any) {
     holderStatus: row.holder_status || "",
     holderAffiliationId: row.holder_affiliation_id || null,
     status: row.status,
-    startDate: row.start_date ? String(row.start_date).slice(0, 10) : "",
-    endDate: row.end_date ? String(row.end_date).slice(0, 10) : "",
+    startDate: optionalBusinessDate(row.start_date) || "",
+    endDate: optionalBusinessDate(row.end_date) || "",
     autoRenew: Boolean(row.auto_renew),
     pricePaid: Number(row.price_paid || 0),
     currency: row.currency || "USD",
     paymentStatus: row.payment_status || "pending",
     expectedPaymentDate:
       subscriptionData.expectedPaymentDate || null,
+    scheduledPlanVersionId: subscriptionData.scheduledPlanVersionId || null,
+    scheduledPlanName: subscriptionData.scheduledPlanName || null,
+    scheduledPlanEffectiveDate: subscriptionData.scheduledPlanEffectiveDate || null,
+    scheduledPaymentStatus: subscriptionData.scheduledPaymentStatus || null,
+    scheduledExpectedPaymentDate: subscriptionData.scheduledExpectedPaymentDate || null,
     maxMembers: Number(row.max_members || 1),
     activeMembers: Number(row.active_members || 1),
     sessionsUnlimited: row.sessions_unlimited !== undefined ? Boolean(row.sessions_unlimited) : true,
@@ -2070,6 +2519,17 @@ function mapSubscription(row: any) {
   };
 }
 
+function moneyToMinor(value: unknown) {
+  const raw = String(value ?? "").trim();
+  if (!/^\d+(?:\.\d{1,2})?$/.test(raw)) throw new Error("INVALID_MONETARY_AMOUNT");
+  const [whole, fraction = ""] = raw.split(".");
+  return BigInt(whole) * 100n + BigInt(fraction.padEnd(2, "0"));
+}
+
+function minorToMoney(value: bigint) {
+  return `${value / 100n}.${String(value % 100n).padStart(2, "0")}`;
+}
+
 function mapAffiliation(row: any) {
   return {
     id: row.id,
@@ -2081,8 +2541,8 @@ function mapAffiliation(row: any) {
     status: row.status,
     role: row.role,
     isPrimary: Boolean(row.is_primary),
-    startDate: row.start_date ? String(row.start_date).slice(0, 10) : "",
-    endDate: row.end_date ? String(row.end_date).slice(0, 10) : "",
+    startDate: optionalBusinessDate(row.start_date) || "",
+    endDate: optionalBusinessDate(row.end_date) || "",
     sessionsUnlimited: row.sessions_unlimited !== undefined ? Boolean(row.sessions_unlimited) : true,
     subscriptionStatus: row.subscription_status || "",
     consumptionPriority: Number(row.consumption_priority || 0),

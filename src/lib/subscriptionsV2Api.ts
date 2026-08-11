@@ -54,6 +54,11 @@ export type SubscriptionV2 = {
   currency: string;
   paymentStatus: string;
   expectedPaymentDate?: string | null;
+  scheduledPlanVersionId?: string | null;
+  scheduledPlanName?: string | null;
+  scheduledPlanEffectiveDate?: string | null;
+  scheduledPaymentStatus?: string | null;
+  scheduledExpectedPaymentDate?: string | null;
   maxMembers: number;
   activeMembers?: number;
   sessionsUnlimited: boolean;
@@ -176,10 +181,23 @@ async function apiRequest<T>(url: string, options: RequestInit = {}): Promise<T>
   const response = await fetch(url, { credentials: 'include', ...options, headers });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const error = new Error(
-      payload.error || `Request failed with ${response.status}`,
-    ) as Error & { status?: number };
+    const apiError = payload?.error;
+    const message =
+      typeof apiError === 'string'
+        ? apiError
+        : typeof apiError?.message === 'string'
+          ? apiError.message
+          : typeof payload?.message === 'string'
+            ? payload.message
+            : `Request failed with ${response.status}`;
+    const error = new Error(message) as Error & {
+      status?: number;
+      code?: string;
+      details?: Record<string, unknown>;
+    };
     error.status = response.status;
+    error.code = payload?.code || apiError?.code;
+    error.details = payload;
     throw error;
   }
   return payload as T;
@@ -220,6 +238,7 @@ export const subscriptionsV2Api = {
 
   // Subscriptions
   listSubscriptions: (params: {
+    subscriptionId?: string;
     memberId?: string;
     status?: string;
     memberStatus?: string;
@@ -240,17 +259,29 @@ export const subscriptionsV2Api = {
       };
     }>(`/api/v2/subscriptions${toQuery(params)}`),
 
-  createSubscription: (payload: { planVersionId: string; holderMemberId: string; startDate?: string; endDate?: string; paymentStatus?: string; paymentDate?: string }) =>
+  createSubscription: (payload: { planVersionId: string; holderMemberId: string; startDate?: string; endDate?: string; paymentStatus?: string; paymentDate?: string; amountPaid?: string; paymentMethod?: string; paymentReference?: string; paymentNotes?: string; confirmOutstandingPayment?: boolean }) =>
     apiRequest<{ subscription: SubscriptionV2; affiliationId: string }>('/api/v2/subscriptions', { method: 'POST', body: JSON.stringify(payload) }),
+
+  recordPendingPaymentDecision: (payload: {
+    holderMemberId?: string;
+    memberIds?: string[];
+    planVersionId: string;
+    decision: 'cancelled';
+  }) =>
+    apiRequest<{ ok: boolean; decision: 'cancelled' }>(
+      '/api/v2/subscriptions/pending-payment-decision',
+      { method: 'POST', body: JSON.stringify(payload) },
+    ),
 
   updatePaymentStatus: (
     id: string,
     paymentStatus: string,
     paymentDate?: string,
+    payment?: { amountPaid: string; paymentMethod: string; paymentReference: string; paymentNotes?: string },
   ) =>
     apiRequest<{ ok: boolean; previousPaymentStatus: string; paymentStatus: string; paymentDate: string; accountingStatus: string; invoiceNumber: string | null; paymentStatusLocked: boolean }>(
       `/api/v2/subscriptions/${encodeURIComponent(id)}/payment-status`,
-      { method: 'PATCH', body: JSON.stringify({ paymentStatus, paymentDate }) },
+      { method: 'PATCH', body: JSON.stringify({ paymentStatus, paymentDate, ...payment }) },
     ),
 
   getSessionSummary: (id: string) =>
@@ -350,6 +381,7 @@ export const subscriptionsV2Api = {
     confirmSessionConsumption?: boolean;
     sessionAction?: 'consume' | 'recover';
     recoveryReason?: string;
+    confirmSubscriptionResume?: boolean;
     idempotencyKey?: string;
   }) =>
     apiRequest<any>('/api/access/authorize', { method: 'POST', body: JSON.stringify(payload) }),
@@ -364,8 +396,11 @@ export const subscriptionsV2Api = {
     apiRequest<{ accessPoint: any }>('/api/access/points', { method: 'POST', body: JSON.stringify(payload) }),
 
   // Subscription Lifecycle
-  freezeSubscription: (id: string, reason?: string) =>
-    apiRequest<{ ok: boolean; previousStatus: string; newStatus: string }>(`/api/v2/subscriptions/${encodeURIComponent(id)}/freeze`, { method: 'POST', body: JSON.stringify({ reason }) }),
+  freezeSubscription: (id: string, payload: { startDate: string; endDate: string; reason: string }) =>
+    apiRequest<{ ok: boolean; previousStatus: string; newStatus: string; plannedDays: number; extendsEndDate: boolean }>(`/api/v2/subscriptions/${encodeURIComponent(id)}/freeze`, { method: 'POST', body: JSON.stringify(payload) }),
+
+  resumeSubscription: (id: string, payload: { resumeDate: string; reason: string }) =>
+    apiRequest<{ ok: boolean; previousStatus: string; newStatus: string; frozenDays: number; extensionDays: number; recalculatedEndDate: string }>(`/api/v2/subscriptions/${encodeURIComponent(id)}/resume`, { method: 'POST', body: JSON.stringify(payload) }),
 
   suspendSubscription: (id: string, reason?: string) =>
     apiRequest<{ ok: boolean; previousStatus: string; newStatus: string }>(`/api/v2/subscriptions/${encodeURIComponent(id)}/suspend`, { method: 'POST', body: JSON.stringify({ reason }) }),
@@ -373,22 +408,27 @@ export const subscriptionsV2Api = {
   reactivateSubscription: (id: string, reason?: string) =>
     apiRequest<{ ok: boolean; previousStatus: string; newStatus: string }>(`/api/v2/subscriptions/${encodeURIComponent(id)}/reactivate`, { method: 'POST', body: JSON.stringify({ reason }) }),
 
-  cancelSubscription: (id: string, reason?: string) =>
-    apiRequest<{ ok: boolean; previousStatus: string; newStatus: string }>(`/api/v2/subscriptions/${encodeURIComponent(id)}/cancel`, { method: 'POST', body: JSON.stringify({ reason }) }),
+  cancelSubscription: (id: string, payload: { effectiveDate: string; reason: string }) =>
+    apiRequest<{ ok: boolean; cancellationId: string; effectiveDate: string; status: 'scheduled' | 'completed'; affectedMembers?: number; cancelledBookings?: number; cancelledSessions?: number; refundReview?: { required: boolean; automaticRefundCreated: false } }>(`/api/v2/subscriptions/${encodeURIComponent(id)}/cancel`, { method: 'POST', body: JSON.stringify(payload) }),
 
   renewSubscription: (
     id: string,
     payload: {
-      paymentStatus: 'paid' | 'pending';
+      planVersionId?: string;
+      paymentStatus: 'paid' | 'partial' | 'pending';
       paymentDate: string;
+      amountPaid?: string;
+      paymentMethod?: string;
+      paymentReference?: string;
+      paymentNotes?: string;
       confirmOutstandingPayment?: boolean;
     } = {
       paymentStatus: 'pending',
       paymentDate: new Date().toISOString().slice(0, 10),
     },
   ) =>
-    apiRequest<{ ok: boolean; newStartDate: string; newEndDate: string; paymentStatus: string; paymentDate: string; invoiceNumber: string }>(`/api/v2/subscriptions/${encodeURIComponent(id)}/renew`, { method: 'POST', body: JSON.stringify(payload) }),
+    apiRequest<{ ok: boolean; newPlanVersionId: string; newStartDate: string; newEndDate: string; paymentStatus: string; paymentDate: string; amountPaid: string; amountPending: string; invoiceNumber: string }>(`/api/v2/subscriptions/${encodeURIComponent(id)}/renew`, { method: 'POST', body: JSON.stringify(payload) }),
 
-  changePlan: (id: string, planVersionId: string) =>
-    apiRequest<{ ok: boolean; newPlanVersionId: string; newEndDate: string }>(`/api/v2/subscriptions/${encodeURIComponent(id)}/change-plan`, { method: 'POST', body: JSON.stringify({ planVersionId }) }),
+  changePlan: (id: string, payload: { planVersionId: string; reason?: string; paymentStatus: string; expectedPaymentDate?: string }) =>
+    apiRequest<{ ok: boolean; currentPlanVersionId: string; scheduledPlanVersionId: string; effectiveDate: string; paymentStatus: string; expectedPaymentDate: string | null }>(`/api/v2/subscriptions/${encodeURIComponent(id)}/change-plan`, { method: 'POST', body: JSON.stringify(payload) }),
 };

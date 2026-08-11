@@ -84,10 +84,23 @@ async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const error = new Error(
-      payload.error || `Request failed (${response.status})`,
-    ) as Error & { status?: number };
+    const apiError = payload?.error;
+    const message =
+      typeof apiError === "string"
+        ? apiError
+        : typeof apiError?.message === "string"
+          ? apiError.message
+          : typeof payload?.message === "string"
+            ? payload.message
+            : `Request failed (${response.status})`;
+    const error = new Error(message) as Error & {
+      status?: number;
+      code?: string;
+      details?: Record<string, unknown>;
+    };
     error.status = response.status;
+    error.code = payload?.code || apiError?.code;
+    error.details = payload;
     throw error;
   }
   return payload as T;
@@ -247,6 +260,7 @@ export const planManagementApi = {
     }>;
     notes?: string;
     paymentStatus?: "pending" | "partial" | "paid" | "overdue" | "waived" | "refunded";
+    confirmOutstandingPayment?: boolean;
   }) =>
     request<{
       subscription: {

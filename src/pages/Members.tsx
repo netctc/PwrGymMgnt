@@ -7,6 +7,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../co
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../components/ui/dialog';
 import { Input } from '../components/ui/input';
 import DateInput from '../components/DateInput';
+import { formatDate as formatSharedDate } from '../lib/formatDate';
+import { evaluateMemberListAccess } from '../lib/memberAccess';
 import { Label } from '../components/ui/label';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '../components/ui/sheet';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
@@ -35,6 +37,7 @@ import {
   RefreshCw,
   Search,
   FileText,
+  ArrowRightLeft,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { usePersistentState } from '../hooks/usePersistentState';
@@ -48,6 +51,7 @@ import {
   type MaintenanceList,
   type ManagedPlan,
 } from '../lib/planManagementApi';
+import { paymentsV2Api } from '../lib/paymentsV2Api';
 
 type MemberForm = {
   id?: string;
@@ -77,6 +81,7 @@ const DEFAULT_MEMBER_STATUSES = [
 ];
 const DEFAULT_PAYMENT_STATUSES = [
   { value: 'paid', label: 'Paid' },
+  { value: 'partial', label: 'Partially Paid' },
   { value: 'pending', label: 'Pending' },
 ];
 
@@ -105,18 +110,13 @@ function toMemberForm(member?: MembershipMember): MemberForm {
 }
 
 function formatDate(value?: string | null) {
-  if (!value) return '—';
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return String(value).slice(0, 10);
-  const day = String(parsed.getDate()).padStart(2, '0');
-  const month = String(parsed.getMonth() + 1).padStart(2, '0');
-  const year = parsed.getFullYear();
-  return `${day}/${month}/${year}`;
+  return formatSharedDate(value);
 }
 
 function addDaysToDate(date: string, days: number) {
-  if (!date) return '';
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(days)) return '';
   const value = new Date(`${date}T00:00:00.000Z`);
+  if (Number.isNaN(value.getTime())) return '';
   value.setUTCDate(value.getUTCDate() + days);
   return value.toISOString().slice(0, 10);
 }
@@ -130,6 +130,17 @@ function getLatestSubscriptionEndDate(subscriptions: MembershipSubscription[]) {
 
 function getLatestInvoice(invoices: MembershipInvoice[]) {
   return [...invoices].sort((a, b) => String(b.createdAt || b.dueDate || '').localeCompare(String(a.createdAt || a.dueDate || '')))[0] || null;
+}
+
+function getInvoiceSubscriptionV2Id(invoice: MembershipInvoice) {
+  const normalizedInvoice = invoice as MembershipInvoice & {
+    subscriptionV2Id?: string | null;
+  };
+  return (
+    normalizedInvoice.subscriptionV2Id ||
+    String(invoice.data?.subscriptionV2Id || '') ||
+    null
+  );
 }
 
 function dateValue(value?: string | null) {
@@ -183,6 +194,14 @@ function badgeVariant(status?: string) {
   if (status === 'active' || status === 'paid') return 'default';
   if (status === 'archived' || status === 'expired') return 'destructive';
   return 'secondary';
+}
+
+function getMemberAccessState(member: MembershipMember) {
+  return evaluateMemberListAccess(member);
+}
+
+function subscriptionChangePlanUrl(memberId: string, subscriptionId: string) {
+  return `/subscriptions?memberId=${encodeURIComponent(memberId)}&action=change-plan&subscriptionId=${encodeURIComponent(subscriptionId)}`;
 }
 
 export default function Members() {
@@ -358,13 +377,21 @@ export default function Members() {
   ] = useState(true);
   const [renewMember, setRenewMember] = useState<MembershipMember | null>(null);
   const [renewPlanId, setRenewPlanId] = useState('');
+  const [renewPlanVersionId, setRenewPlanVersionId] = useState('');
   const [renewStartDate, setRenewStartDate] = useState(today());
   const [renewCurrentExpiry, setRenewCurrentExpiry] = useState('');
   const [renewCurrentPlan, setRenewCurrentPlan] = useState('');
   const [renewPaymentStatus, setRenewPaymentStatus] = useState<
-    '' | 'paid' | 'pending'
+    '' | 'paid' | 'partial' | 'pending'
   >('');
   const [renewPaymentDate, setRenewPaymentDate] = useState('');
+  const [renewAmountPaid, setRenewAmountPaid] = useState('');
+  const [renewExistingInvoiceId, setRenewExistingInvoiceId] = useState<string | null>(null);
+  const [renewExistingPaid, setRenewExistingPaid] = useState(0);
+  const [renewPaymentMethod, setRenewPaymentMethod] = useState('');
+  const [renewPaymentReference, setRenewPaymentReference] = useState('');
+  const [renewPaymentNotes, setRenewPaymentNotes] = useState('');
+  const suggestedPaymentReferenceRef = useRef('');
   const [renewMode, setRenewMode] = useState<'create' | 'edit'>('create');
   const [renewExistingLegacySubscriptionId, setRenewExistingLegacySubscriptionId] =
     useState<string | null>(null);
@@ -372,6 +399,7 @@ export default function Members() {
   const [renewPaymentLocked, setRenewPaymentLocked] = useState(false);
   const [renewMultiSubscription, setRenewMultiSubscription] =
     useState<SubscriptionV2 | null>(null);
+  const [renewTargetSubscriptionId, setRenewTargetSubscriptionId] = useState('');
   const [qrOpen, setQrOpen] = useState(false);
   const [qrMember, setQrMember] = useState<MembershipMember | null>(null);
   const [accessToken, setAccessToken] = useState('');
@@ -388,6 +416,15 @@ export default function Members() {
     `/subscriptions/new-hybrid${memberId ? `?holderMemberId=${encodeURIComponent(memberId)}` : ''}`;
   const manageBeneficiariesUrl = (memberId: string) =>
     `/plans/multi-user?memberId=${encodeURIComponent(memberId)}`;
+  const changePlanUrl = (member: MembershipMember) => {
+    const subscriptionId =
+      (member.plans || []).find(
+        (plan) =>
+          plan.subscriptionStatus === 'active' &&
+          dateValue(plan.endDate) >= today(),
+      )?.subscriptionId || member.multiUserSubscriptionId || '';
+    return `/subscriptions?memberId=${encodeURIComponent(member.id)}&action=change-plan${subscriptionId ? `&subscriptionId=${encodeURIComponent(subscriptionId)}` : ''}`;
+  };
 
   const paginationPages = useMemo(() => {
     const candidates = [
@@ -406,6 +443,17 @@ export default function Members() {
     ).sort((a, b) => a - b);
   }, [memberPagination.page, memberPagination.totalPages]);
   const selectedRenewPlan = useMemo(() => plans.find((plan) => plan.id === renewPlanId) || null, [plans, renewPlanId]);
+  const activeRenewalManagedPlans = useMemo(
+    () => newSubscriptionPlans.filter((plan) => plan.status === 'active'),
+    [newSubscriptionPlans],
+  );
+  const selectedRenewPlanVersion = useMemo(
+    () =>
+      activeRenewalManagedPlans.find(
+        (plan) => plan.planVersionId === renewPlanVersionId,
+      ) || null,
+    [activeRenewalManagedPlans, renewPlanVersionId],
+  );
   const availableNewSubscriptionPlans = useMemo(() => {
     const currentPlanMemberships = (renewMember?.plans || []).filter(
       (plan) =>
@@ -438,6 +486,47 @@ export default function Members() {
       ) || null,
     [availableNewSubscriptionPlans, newSubscriptionPlanVersionId],
   );
+  const renewalTotal = Number(
+    (subscriptionIntent === 'new' ? selectedNewPlanVersion?.price : undefined) ??
+      selectedRenewPlanVersion?.price ?? selectedRenewPlan?.price ?? 0,
+  );
+  const renewalAmountPending = useMemo(() => {
+    const paid = Number(renewAmountPaid);
+    const currentBalance = Math.max(0, renewalTotal - renewExistingPaid);
+    if (!Number.isFinite(renewalTotal) || !Number.isFinite(paid)) return currentBalance;
+    return Math.max(0, currentBalance - paid);
+  }, [renewAmountPaid, renewExistingPaid, renewalTotal]);
+  const suggestedPaymentReference = useMemo(() => {
+    if (!renewMember || !['paid', 'partial'].includes(renewPaymentStatus)) return '';
+    const memberName = `${renewMember.firstName || ''} ${renewMember.lastName || ''}`.trim();
+    const planName =
+      selectedRenewPlanVersion?.name ||
+      (subscriptionIntent === 'new' ? selectedNewPlanVersion?.name : '') ||
+      selectedRenewPlan?.name ||
+      renewMultiSubscription?.planName ||
+      renewCurrentPlan ||
+      'Plan';
+    const amountPaid =
+      renewPaymentStatus === 'paid' ? renewalTotal : Number(renewAmountPaid || 0);
+    const currency =
+      selectedRenewPlanVersion?.currency ||
+      (subscriptionIntent === 'new' ? selectedNewPlanVersion?.currency : '') ||
+      selectedRenewPlan?.currency ||
+      renewMultiSubscription?.currency ||
+      'USD';
+    return `${memberName} - ${planName} - ${formatMoney(amountPaid, currency)} paid from ${formatMoney(renewalTotal, currency)}`;
+  }, [renewAmountPaid, renewCurrentPlan, renewMember, renewMultiSubscription, renewPaymentStatus, renewalTotal, selectedNewPlanVersion, selectedRenewPlan, selectedRenewPlanVersion, subscriptionIntent]);
+
+  useEffect(() => {
+    const previousSuggestion = suggestedPaymentReferenceRef.current;
+    if (
+      suggestedPaymentReference &&
+      (!renewPaymentReference.trim() || renewPaymentReference === previousSuggestion)
+    ) {
+      setRenewPaymentReference(suggestedPaymentReference);
+    }
+    suggestedPaymentReferenceRef.current = suggestedPaymentReference;
+  }, [renewPaymentReference, suggestedPaymentReference]);
   const renewEndDate = useMemo(
     () => {
       if (renewMode === 'edit') return renewExistingEndDate;
@@ -446,6 +535,12 @@ export default function Members() {
         return addDaysToDate(
           renewStartDate,
           selectedNewPlanVersion.durationDays,
+        );
+      }
+      if (renewMultiSubscription && selectedRenewPlanVersion) {
+        return addDaysToDate(
+          renewStartDate,
+          selectedRenewPlanVersion.durationDays,
         );
       }
       if (selectedRenewPlan) {
@@ -468,6 +563,7 @@ export default function Members() {
       renewStartDate,
       renewMultiSubscription,
       selectedRenewPlan,
+      selectedRenewPlanVersion,
       selectedNewPlanVersion,
       subscriptionIntent,
     ],
@@ -807,6 +903,12 @@ export default function Members() {
     }
     setRenewPaymentStatus('');
     setRenewPaymentDate('');
+    setRenewAmountPaid('');
+    setRenewExistingInvoiceId(null);
+    setRenewExistingPaid(0);
+    setRenewPaymentMethod('cash');
+    setRenewPaymentReference('');
+    setRenewPaymentNotes('');
     setRenewStartDate(today());
     setRenewExistingLegacySubscriptionId(null);
     setRenewExistingEndDate('');
@@ -830,19 +932,30 @@ export default function Members() {
     setPageSearchParams(next, { replace: true });
   }, [pageSearchParams, renewOpen]);
 
-  const openRenew = async (member: MembershipMember) => {
+  const openRenew = async (
+    member: MembershipMember,
+    targetSubscriptionId?: string,
+  ) => {
     setSubscriptionIntent('renew');
     setRenewMember(member);
-    setRenewPlanId(plans[0]?.id || '');
+    setRenewPlanId('');
+    setRenewPlanVersionId('');
     setRenewCurrentExpiry('');
     setRenewCurrentPlan('');
     setRenewPaymentStatus('');
     setRenewPaymentDate('');
+    setRenewAmountPaid('');
+    setRenewExistingInvoiceId(null);
+    setRenewExistingPaid(0);
+    setRenewPaymentMethod('cash');
+    setRenewPaymentReference('');
+    setRenewPaymentNotes('');
     setRenewMode('create');
     setRenewExistingLegacySubscriptionId(null);
     setRenewExistingEndDate('');
     setRenewPaymentLocked(false);
     setRenewMultiSubscription(null);
+    setRenewTargetSubscriptionId(targetSubscriptionId || '');
     setRenewStartDate(today());
     setRenewOpen(true);
 
@@ -853,18 +966,64 @@ export default function Members() {
           .listSubscriptions({ memberId: member.id, status: 'all' })
           .catch(() => ({ subscriptions: [] as SubscriptionV2[] })),
       ]);
+      const renewalCandidates = Array.from(
+        new Set([
+          ...(response.member.plans || member.plans || [])
+            .filter((plan) => plan.subscriptionId && plan.role !== 'beneficiary')
+            .map((plan) => plan.subscriptionId),
+          ...response.subscriptions.map((subscription) => subscription.id),
+        ]),
+      );
+      if (!targetSubscriptionId && renewalCandidates.length > 1) {
+        setRenewOpen(false);
+        toast.info('This member has multiple subscriptions. Select “Renew this subscription” from the required contract.');
+        await openDetail(member);
+        return;
+      }
+      const exactSubscriptionId = targetSubscriptionId || renewalCandidates[0] || '';
+      if (!exactSubscriptionId) {
+        throw new Error('No subscription is available to renew. Create a new subscription instead.');
+      }
+      setRenewTargetSubscriptionId(exactSubscriptionId);
+      const preferredPlan = [...(response.member.plans || member.plans || [])]
+        .filter((plan) => plan.subscriptionId === exactSubscriptionId)
+        .sort(
+          (a, b) =>
+            Number(
+              b.subscriptionStatus === 'active' && dateValue(b.endDate) >= today(),
+            ) -
+              Number(
+                a.subscriptionStatus === 'active' && dateValue(a.endDate) >= today(),
+              ) ||
+            Number(b.isPrimary) - Number(a.isPrimary) ||
+            dateValue(b.endDate).localeCompare(dateValue(a.endDate)),
+        )[0];
+      const sortedMultiSubscriptions = [...multiResponse.subscriptions].sort(
+        (a, b) =>
+          Number(b.status === 'active' && dateValue(b.endDate) >= today()) -
+            Number(a.status === 'active' && dateValue(a.endDate) >= today()) ||
+          dateValue(b.endDate).localeCompare(dateValue(a.endDate)),
+      );
       const multiSubscription =
-        multiResponse.subscriptions
-          .sort((a, b) => String(b.endDate).localeCompare(String(a.endDate)))[0] ||
-        null;
-      const latestLegacySubscription = [...response.subscriptions].sort(
+        sortedMultiSubscriptions.find(
+          (subscription) => subscription.id === exactSubscriptionId,
+        ) || null;
+      const sortedLegacySubscriptions = [...response.subscriptions].sort(
         (a, b) =>
           Number(b.status === 'active') - Number(a.status === 'active') ||
           String(b.endDate).localeCompare(String(a.endDate)),
-      )[0];
+      );
+      const latestLegacySubscription =
+        sortedLegacySubscriptions.find(
+          (subscription) => subscription.id === exactSubscriptionId,
+        );
+      if (!multiSubscription && !latestLegacySubscription) {
+        throw new Error(`Subscription ${exactSubscriptionId} was not found for this member.`);
+      }
       const currentExpiry =
         multiSubscription?.endDate ||
-        getLatestSubscriptionEndDate(response.subscriptions);
+        latestLegacySubscription?.endDate ||
+        '';
       setRenewMultiSubscription(multiSubscription);
       setRenewCurrentPlan(
         multiSubscription?.planName ||
@@ -875,25 +1034,77 @@ export default function Members() {
       if (multiSubscription?.planId) {
         setRenewPlanId(multiSubscription.planId);
       }
+      if (multiSubscription?.planVersionId) {
+        setRenewPlanVersionId(multiSubscription.planVersionId);
+      } else {
+        setRenewPlanId(
+          latestLegacySubscription?.planId ||
+            response.member.plans?.find(
+              (plan) => plan.subscriptionId === latestLegacySubscription?.id,
+            )?.planId ||
+            '',
+        );
+      }
       setRenewCurrentExpiry(currentExpiry);
 
-      const currentMultiSubscription =
-        multiSubscription?.status === 'active' &&
-        dateValue(multiSubscription.endDate) >= today()
-          ? multiSubscription
-          : null;
-      const multiSubscriptionInvoice = currentMultiSubscription
-        ? response.invoices.find((invoice) => {
+      let multiSubscriptionInvoice = multiSubscription
+        ? [...response.invoices]
+          .sort((a, b) => String(b.createdAt || b.dueDate || '').localeCompare(String(a.createdAt || a.dueDate || '')))
+          .find((invoice) => {
             const invoiceData = invoice.data || {};
             return (
-              invoiceData.subscriptionV2Id === currentMultiSubscription.id &&
+              getInvoiceSubscriptionV2Id(invoice) === multiSubscription.id &&
               (invoiceData.source !== 'subscription_v2_renewal' ||
                 !invoiceData.periodEnd ||
                 dateValue(invoiceData.periodEnd) ===
-                  dateValue(currentMultiSubscription.endDate))
+                  dateValue(multiSubscription.endDate)) &&
+              String(invoice.status || '').toLowerCase() !== 'void'
             );
           }) || null
         : null;
+      if (
+        multiSubscription &&
+        !multiSubscriptionInvoice &&
+        ['pending', 'partial', 'overdue'].includes(
+          String(multiSubscription.paymentStatus).toLowerCase(),
+        )
+      ) {
+        const accountingResponse = await paymentsV2Api.listInvoices();
+        const accountingInvoice = accountingResponse.invoices.find(
+          (invoice) =>
+            invoice.subscriptionId === multiSubscription.id &&
+            !['paid', 'waived', 'refunded'].includes(invoice.status),
+        );
+        if (accountingInvoice) {
+          multiSubscriptionInvoice = ({
+            id: accountingInvoice.id,
+            invoiceNumber: accountingInvoice.invoiceNumber,
+            memberId: accountingInvoice.memberId,
+            status: accountingInvoice.status,
+            subtotal: Number(accountingInvoice.total),
+            taxAmount: 0,
+            total: Number(accountingInvoice.total),
+            currency: accountingInvoice.currency,
+            dueDate: accountingInvoice.dueDate,
+            paidAt: null,
+            createdAt: accountingInvoice.createdAt || accountingInvoice.dueDate,
+            data: {
+              source: 'subscription_v2_renewal',
+              subscriptionV2Id: accountingInvoice.subscriptionId,
+              amountPaid: accountingInvoice.netPaid,
+              amountPending: accountingInvoice.balanceDue,
+              periodEnd: multiSubscription.endDate,
+            },
+          } as unknown) as MembershipInvoice;
+        }
+      }
+      const currentMultiSubscription =
+        multiSubscription &&
+        (multiSubscriptionInvoice ||
+          (multiSubscription.status === 'active' &&
+            dateValue(multiSubscription.endDate) >= today()))
+          ? multiSubscription
+          : null;
       const shouldEditMultiPayment = Boolean(
         currentMultiSubscription &&
           (['pending', 'partial', 'overdue'].includes(
@@ -933,6 +1144,8 @@ export default function Members() {
             ? 'paid'
             : 'pending';
         setRenewMode('edit');
+        setRenewExistingInvoiceId(multiSubscriptionInvoice?.id || null);
+        setRenewExistingPaid(Number(multiSubscriptionInvoice?.data?.amountPaid || 0));
         setRenewStartDate(dateValue(currentMultiSubscription.startDate));
         setRenewExistingEndDate(dateValue(currentMultiSubscription.endDate));
         setRenewPaymentStatus(paymentStatus);
@@ -968,7 +1181,31 @@ export default function Members() {
       return;
     }
     if (!renewPaymentStatus) {
-      toast.error('Select Paid or Payment pending.');
+      toast.error('Select Paid, Partially Paid or Payment pending.');
+      return;
+    }
+    if (renewPaymentStatus === 'partial') {
+      if (subscriptionIntent === 'renew' && !renewMultiSubscription) {
+        toast.error('The managed renewal invoice was not found.');
+        return;
+      }
+      const amountPaid = Number(renewAmountPaid);
+      const availableBalance = Math.max(0, renewalTotal - renewExistingPaid);
+      if (!Number.isFinite(amountPaid) || amountPaid <= 0 || amountPaid >= availableBalance) {
+        toast.error('Amount paid must be greater than zero and lower than the current pending amount.');
+        return;
+      }
+      if (!renewPaymentMethod || !renewPaymentReference.trim()) {
+        toast.error('Payment method and reference are required.');
+        return;
+      }
+    }
+    if (
+      renewPaymentStatus === 'paid' &&
+      renewMode === 'create' &&
+      (!renewPaymentMethod || !renewPaymentReference.trim())
+    ) {
+      toast.error('Payment method and reference are required.');
       return;
     }
     if (!renewPaymentDate) {
@@ -979,11 +1216,11 @@ export default function Members() {
       );
       return;
     }
-    if (renewPaymentStatus === 'pending' && renewPaymentDate > renewEndDate) {
+    if (['pending', 'partial'].includes(renewPaymentStatus) && renewPaymentDate > renewEndDate) {
       toast.error('Estimated payment date cannot be after End Date.');
       return;
     }
-    if (renewPaymentStatus === 'pending' && renewPaymentDate < today()) {
+    if (['pending', 'partial'].includes(renewPaymentStatus) && renewPaymentDate < today()) {
       toast.error('Estimated payment date cannot be in the past.');
       return;
     }
@@ -1011,14 +1248,50 @@ export default function Members() {
         if (!selectedNewPlanVersion) {
           throw new Error('Select an active plan.');
         }
-        await subscriptionsV2Api.createSubscription({
+        const creationPayload = {
           planVersionId: selectedNewPlanVersion.planVersionId,
           holderMemberId: renewMember.id,
           startDate: renewStartDate,
           endDate: renewEndDate,
           paymentStatus: renewPaymentStatus,
           paymentDate: renewPaymentDate,
-        });
+          amountPaid: renewPaymentStatus === 'partial' ? renewAmountPaid : undefined,
+          paymentMethod: renewPaymentStatus !== 'pending' ? renewPaymentMethod : undefined,
+          paymentReference: renewPaymentStatus !== 'pending' ? renewPaymentReference.trim() : undefined,
+          paymentNotes: renewPaymentStatus !== 'pending' ? renewPaymentNotes.trim() : undefined,
+        };
+        try {
+          await subscriptionsV2Api.createSubscription(creationPayload);
+        } catch (error: any) {
+          if (
+            error?.code !==
+            'OUTSTANDING_SUBSCRIPTION_PAYMENT_CONFIRMATION_REQUIRED'
+          ) {
+            throw error;
+          }
+          const confirmed = window.confirm(
+            locale === 'ar'
+              ? 'لدى هذا العضو خطة نشطة أو غير نشطة بدفعة معلّقة. هل تريد إنشاء الاشتراك الجديد تحت مسؤوليتك؟ سيتم تسجيل قرارك والمستخدم الحالي في سجل التدقيق.'
+              : 'This member already has an active or inactive plan with a pending payment. Do you want to create the new subscription under your responsibility? Your decision and the current user will be recorded in the audit trail.',
+          );
+          if (!confirmed) {
+            await subscriptionsV2Api.recordPendingPaymentDecision({
+              holderMemberId: renewMember.id,
+              planVersionId: selectedNewPlanVersion.planVersionId,
+              decision: 'cancelled',
+            });
+            toast.info(
+              locale === 'ar'
+                ? 'تم إلغاء إنشاء الاشتراك وتسجيل القرار.'
+                : 'Subscription creation cancelled and decision recorded.',
+            );
+            return;
+          }
+          await subscriptionsV2Api.createSubscription({
+            ...creationPayload,
+            confirmOutstandingPayment: true,
+          });
+        }
         toast.success('New subscription created and assigned to the member');
         setRenewOpen(false);
         await loadMembers();
@@ -1030,6 +1303,12 @@ export default function Members() {
             renewMultiSubscription.id,
             renewPaymentStatus,
             renewPaymentDate,
+            renewPaymentStatus === 'partial' ? {
+              amountPaid: renewAmountPaid,
+              paymentMethod: renewPaymentMethod,
+              paymentReference: renewPaymentReference.trim(),
+              paymentNotes: renewPaymentNotes.trim() || undefined,
+            } : undefined,
           );
         } else if (renewExistingLegacySubscriptionId) {
           await membershipApi.updateSubscriptionPaymentStatus(
@@ -1052,11 +1331,19 @@ export default function Members() {
         return;
       }
       if (renewMultiSubscription) {
+        if (!renewPlanVersionId) {
+          throw new Error('Select an active plan before renewing.');
+        }
         await subscriptionsV2Api.renewSubscription(
           renewMultiSubscription.id,
           {
+            planVersionId: renewPlanVersionId,
             paymentStatus: renewPaymentStatus,
             paymentDate: renewPaymentDate,
+            amountPaid: renewPaymentStatus === 'partial' ? renewAmountPaid : undefined,
+            paymentMethod: renewPaymentStatus !== 'pending' ? renewPaymentMethod : undefined,
+            paymentReference: renewPaymentStatus !== 'pending' ? renewPaymentReference.trim() : undefined,
+            paymentNotes: renewPaymentStatus !== 'pending' ? renewPaymentNotes.trim() : undefined,
             confirmOutstandingPayment,
           },
         );
@@ -1489,16 +1776,17 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                 <TableHead>Expiry</TableHead>
                 <TableHead>Joined</TableHead>
                 <TableHead>Last Access</TableHead>
-                <TableHead>Status</TableHead>
+                <TableHead>Member Status</TableHead>
+                <TableHead>Access</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {loading ? (
-                <TableRow><TableCell colSpan={8} className="py-8 text-center text-slate-500">Loading members...</TableCell></TableRow>
+                <TableRow><TableCell colSpan={9} className="py-8 text-center text-slate-500">Loading members...</TableCell></TableRow>
               ) : members.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={8} className="py-8">
+                  <TableCell colSpan={9} className="py-8">
                     <EmptyState
                       compact
                       title="No members match these filters"
@@ -1509,7 +1797,9 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                   </TableCell>
                 </TableRow>
               ) : (
-                members.map((member) => (
+                members.map((member) => {
+                  const accessState = getMemberAccessState(member);
+                  return (
                   <TableRow key={member.id} className={member.paymentAttentionRequired ? 'bg-red-50 hover:bg-red-100' : undefined}>
                     <TableCell>
                       {member.subscriptionType === 'multi_user' ? (
@@ -1666,9 +1956,14 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                     <TableCell>{formatDate(member.lastAccess)}</TableCell>
                     <TableCell><Badge variant={badgeVariant(getEffectiveMemberStatus(member)) as any}>{getEffectiveMemberStatus(member)}</Badge></TableCell>
                     <TableCell>
-                      <div className="flex justify-end gap-2">
+                      <Badge variant={accessState.allowed ? 'default' : 'destructive'}>{accessState.label}</Badge>
+                      <p className="mt-1 max-w-40 text-xs text-slate-500">{accessState.reason}</p>
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex flex-wrap justify-end gap-2">
                         <Button variant="outline" size="sm" onClick={() => openDetail(member)}><Eye className="mr-1 h-3.5 w-3.5" /> View</Button>
                         <Button variant="outline" size="sm" onClick={() => openRenew(member)}><CreditCard className="mr-1 h-3.5 w-3.5" /> Renew</Button>
+                        <Button variant="outline" size="sm" asChild><Link to={changePlanUrl(member)}><ArrowRightLeft className="mr-1 h-3.5 w-3.5" /> Change plan</Link></Button>
                         <Button variant="outline" size="sm" onClick={() => openQr(member)}><QrCode className="mr-1 h-3.5 w-3.5" /> QR</Button>
                         <Button variant="outline" size="sm" onClick={() => openEdit(member)}><Pencil className="mr-1 h-3.5 w-3.5" /> Edit</Button>
                         <Button
@@ -1687,7 +1982,8 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                       </div>
                     </TableCell>
                   </TableRow>
-                ))
+                  );
+                })
               )}
             </TableBody>
           </Table>
@@ -1905,6 +2201,11 @@ The secure QR token is embedded in the attached PDF/QR image.`;
             {renewMember && (
               <div className="rounded-lg bg-slate-50 p-3 text-sm">
                 <p className="font-medium text-slate-900">{renewMember.firstName} {renewMember.lastName}</p>
+                {subscriptionIntent === 'renew' && renewTargetSubscriptionId && (
+                  <p className="break-all text-xs font-medium text-slate-700">
+                    Subscription ID: {renewTargetSubscriptionId}
+                  </p>
+                )}
                 <p className="text-slate-500">
                   Current plans: {renewCurrentPlan || 'No active plan'}
                 </p>
@@ -1946,15 +2247,43 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                 <select
                   id="renewPlan"
                   className="h-9 w-full min-w-0 max-w-full rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
-                  value={renewPlanId}
-                  onChange={(event) => setRenewPlanId(event.target.value)}
-                  disabled={Boolean(renewMultiSubscription) || renewMode === 'edit'}
+                  value={
+                    renewMultiSubscription ? renewPlanVersionId : renewPlanId
+                  }
+                  onChange={(event) => {
+                    if (renewMultiSubscription) {
+                      setRenewPlanVersionId(event.target.value);
+                    } else {
+                      setRenewPlanId(event.target.value);
+                    }
+                  }}
+                  disabled={renewMode === 'edit'}
                   required
                 >
                   {renewMultiSubscription ? (
-                    <option value={renewMultiSubscription.planId}>
-                      {renewMultiSubscription.planName}
-                    </option>
+                    <>
+                      {!activeRenewalManagedPlans.some(
+                        (plan) =>
+                          plan.planVersionId === renewPlanVersionId,
+                      ) &&
+                        renewPlanVersionId && (
+                          <option value={renewPlanVersionId}>
+                            {renewCurrentPlan || renewMultiSubscription.planName}
+                          </option>
+                        )}
+                      {activeRenewalManagedPlans.length === 0 && (
+                        <option value="">No active plans available</option>
+                      )}
+                      {activeRenewalManagedPlans.map((plan) => (
+                        <option
+                          key={plan.planVersionId}
+                          value={plan.planVersionId}
+                        >
+                          {plan.name} - {formatMoney(plan.price, plan.currency)} /{' '}
+                          {plan.durationDays} days
+                        </option>
+                      ))}
+                    </>
                   ) : (
                     <>
                       {renewMode === 'edit' &&
@@ -2006,8 +2335,9 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                   required
                   disabled={renewPaymentLocked}
                   onChange={(event) => {
-                    const value = event.target.value as '' | 'paid' | 'pending';
+                    const value = event.target.value as '' | 'paid' | 'partial' | 'pending';
                     setRenewPaymentStatus(value);
+                    if (value !== 'partial') setRenewAmountPaid('');
                     setRenewPaymentDate(
                       value === 'paid'
                         ? today()
@@ -2044,6 +2374,74 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                 </p>
               </div>
             </div>
+            {renewPaymentStatus === 'partial' && (
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="renewAmountPaid">Amount paid</Label>
+                  <Input
+                    id="renewAmountPaid"
+                    type="number"
+                    min="0.01"
+                    max={Math.max(0, renewalTotal - renewExistingPaid - 0.01)}
+                    step="0.01"
+                    value={renewAmountPaid}
+                    onChange={(event) => setRenewAmountPaid(event.target.value)}
+                    required
+                  />
+                  <p className="text-xs text-slate-500">Enter only the amount actually received.</p>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="renewAmountPending">Amount pending</Label>
+                  <Input
+                    id="renewAmountPending"
+                    value={formatMoney(renewalAmountPending, (subscriptionIntent === 'new' ? selectedNewPlanVersion?.currency : undefined) || selectedRenewPlanVersion?.currency || selectedRenewPlan?.currency || renewMultiSubscription?.currency || 'USD')}
+                    readOnly
+                    disabled
+                  />
+                  <p className="text-xs text-slate-500">Calculated automatically from the subscription total.</p>
+                </div>
+              </div>
+            )}
+            {['paid', 'partial'].includes(renewPaymentStatus) && renewMode === 'create' ||
+            renewPaymentStatus === 'partial' && renewMode === 'edit' ? (
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="renewPaymentMethod">Payment method</Label>
+                  <select
+                    id="renewPaymentMethod"
+                    className="h-9 w-full rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+                    value={renewPaymentMethod}
+                    onChange={(event) => setRenewPaymentMethod(event.target.value)}
+                    required
+                  >
+                    <option value="">Select payment method</option>
+                    <option value="cash">Cash</option>
+                    <option value="card">Card</option>
+                    <option value="bank_transfer">Bank transfer</option>
+                    <option value="other">Other</option>
+                  </select>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="renewPaymentReference">Payment reference</Label>
+                  <Input
+                    id="renewPaymentReference"
+                    value={renewPaymentReference}
+                    onChange={(event) => setRenewPaymentReference(event.target.value)}
+                    placeholder="Receipt, terminal or transfer reference"
+                    required
+                  />
+                </div>
+                <div className="space-y-2 md:col-span-2">
+                  <Label htmlFor="renewPaymentNotes">Payment notes</Label>
+                  <Input
+                    id="renewPaymentNotes"
+                    value={renewPaymentNotes}
+                    onChange={(event) => setRenewPaymentNotes(event.target.value)}
+                    placeholder="Optional notes"
+                  />
+                </div>
+              </div>
+            ) : null}
             <div className="flex flex-wrap justify-end gap-2 pt-2">
               {renewMember && (
                 <>
@@ -2063,11 +2461,13 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                   renewPaymentLocked ||
                   !renewPaymentStatus ||
                   !renewPaymentDate ||
+                  (renewPaymentStatus === 'partial' && !renewAmountPaid) ||
                   (subscriptionIntent === 'new'
                     ? !renewMember || !selectedNewPlanVersion
                     : renewMode === 'create' &&
-                      !renewMultiSubscription &&
-                      plans.length === 0)
+                      (renewMultiSubscription
+                        ? !renewPlanVersionId
+                        : !renewPlanId || plans.length === 0))
                 }
               >
                 {saving
@@ -2143,6 +2543,27 @@ The secure QR token is embedded in the attached PDF/QR image.`;
             {detailLoading && <p className="text-sm text-slate-500">Loading profile...</p>}
             {detail && (
               <>
+                {(() => {
+                  const accessState = getMemberAccessState(detail.member);
+                  return (
+                    <Card className={accessState.allowed ? 'border-emerald-200 bg-emerald-50/40' : 'border-red-200 bg-red-50/40'}>
+                      <CardHeader>
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <CardTitle>Access status</CardTitle>
+                            <CardDescription>The current operational access decision for this member.</CardDescription>
+                          </div>
+                          <Badge variant={accessState.allowed ? 'default' : 'destructive'}>{accessState.label}</Badge>
+                        </div>
+                      </CardHeader>
+                      <CardContent className="text-sm">
+                        <p className="font-medium text-slate-900">{accessState.reason}</p>
+                        <p className="mt-1 text-slate-500">Member status, subscription validity, affiliation and payment status are evaluated separately.</p>
+                      </CardContent>
+                    </Card>
+                  );
+                })()}
+
                 <Card>
                   <CardHeader>
                     <CardTitle>{detail.member.firstName} {detail.member.lastName}</CardTitle>
@@ -2165,6 +2586,12 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                     <div><span className="text-slate-500">Last Access:</span> {formatDate(detail.member.lastAccess)}</div>
                     <div><span className="text-slate-500">Member ID:</span> {detail.member.id}</div>
                     <div className="flex flex-wrap gap-2 md:col-span-2">
+                      <Button size="sm" variant="outline" asChild>
+                        <Link to={changePlanUrl(detail.member)}><ArrowRightLeft className="mr-2 h-4 w-4" /> Change plan</Link>
+                      </Button>
+                      <Button size="sm" variant="outline" onClick={() => { setDetailOpen(false); openNewSubscription(detail.member); }}>
+                        <Plus className="mr-2 h-4 w-4" /> New subscription
+                      </Button>
                       <Button size="sm" variant="outline" asChild>
                         <Link to={newMultiUserUrl(detail.member.id)}>{multiUserCopy.create}</Link>
                       </Button>
@@ -2231,10 +2658,19 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                           ? (detail.member.plans || []).map((plan) => (
                           <div key={`${plan.subscriptionId}_${plan.affiliationId || plan.id}`} className="rounded-lg border p-3 text-sm">
                             <div className="flex justify-between gap-3">
-                              <p className="font-medium">{plan.planName}</p>
+                              <div>
+                                <p className="font-medium">{plan.planName}</p>
+                                <p className="break-all text-xs text-slate-500">Subscription ID: {plan.subscriptionId}</p>
+                              </div>
                               <Badge variant={badgeVariant(plan.status) as any}>{plan.status}</Badge>
                             </div>
                             <p className="text-slate-500">{formatDate(plan.startDate)} - {formatDate(plan.endDate)}</p>
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              <Badge variant="outline">Contract: {plan.subscriptionStatus}</Badge>
+                              <Badge variant="outline">Payment: {plan.paymentStatus || detail.member.paymentStatus || '—'}</Badge>
+                              <Badge variant="outline">Role: {plan.role || 'member'}</Badge>
+                              {plan.isPrimary && <Badge variant="secondary">Primary affiliation</Badge>}
+                            </div>
                             {plan.trainerName && (
                               <p className="text-slate-500">{multiUserCopy.responsibleTrainer}: {plan.trainerName}</p>
                             )}
@@ -2243,6 +2679,31 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                                 {multiUserCopy.sessionBalance}: {plan.sessionsConsumed || 0} / {plan.sessionsReserved || 0} / {plan.sessionsPending || 0}
                               </p>
                             )}
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              {plan.role !== 'beneficiary' && (
+                                <Button
+                                  size="sm"
+                                  onClick={() => {
+                                    setDetailOpen(false);
+                                    void openRenew(detail.member, plan.subscriptionId);
+                                  }}
+                                >
+                                  <CreditCard className="mr-2 h-4 w-4" /> Renew this subscription
+                                </Button>
+                              )}
+                              {plan.subscriptionStatus === 'active' && (
+                                <Button size="sm" variant="outline" asChild>
+                                  <Link to={subscriptionChangePlanUrl(detail.member.id, plan.subscriptionId)}>
+                                    <ArrowRightLeft className="mr-2 h-4 w-4" /> Change this plan
+                                  </Link>
+                                </Button>
+                              )}
+                              {plan.role === 'holder' && (
+                                <Button size="sm" variant="outline" asChild>
+                                  <Link to={manageBeneficiariesUrl(detail.member.id)}>{multiUserCopy.manage}</Link>
+                                </Button>
+                              )}
+                            </div>
                           </div>
                           ))
                           : detail.subscriptions.map((subscription) => (
@@ -2253,6 +2714,17 @@ The secure QR token is embedded in the attached PDF/QR image.`;
                               </div>
                               <p className="text-slate-500">{formatDate(subscription.startDate)} - {formatDate(subscription.endDate)}</p>
                               <p className="text-slate-500">{formatMoney(subscription.price, subscription.currency)}</p>
+                              <div className="mt-3">
+                                <Button
+                                  size="sm"
+                                  onClick={() => {
+                                    setDetailOpen(false);
+                                    void openRenew(detail.member, subscription.id);
+                                  }}
+                                >
+                                  <CreditCard className="mr-2 h-4 w-4" /> Renew this subscription
+                                </Button>
+                              </div>
                             </div>
                           ))}
                       </div>

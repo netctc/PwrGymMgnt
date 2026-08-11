@@ -36,6 +36,7 @@ import {
 } from "../components/ui/table";
 import DateInput from "../components/DateInput";
 import { useLocalization } from "../contexts/LocalizationContext";
+import { formatDate } from "../lib/formatDate";
 import {
   membershipApi,
   type MembershipMember,
@@ -848,19 +849,17 @@ export default function MultiUserMemberships() {
                       {member.role === "holder" ? c.holder : c.beneficiary}
                     </TableCell>
                     <TableCell>
-                      {member.joinedAt
-                        ? String(member.joinedAt).slice(0, 10)
-                        : "—"}
+                      {formatDate(member.joinedAt)}
                     </TableCell>
                     <TableCell>
                       <div>
-                        {member.effectiveEndDate ||
-                          managedSubscription?.endDate ||
-                          "—"}
+                        {formatDate(
+                          member.effectiveEndDate || managedSubscription?.endDate,
+                        )}
                       </div>
                       {member.expiryOverride && (
                         <div className="text-xs text-amber-700">
-                          {c.maximumExpiry}: {member.maximumEndDate}
+                          {c.maximumExpiry}: {formatDate(member.maximumEndDate)}
                         </div>
                       )}
                     </TableCell>
@@ -1001,10 +1000,10 @@ export default function MultiUserMemberships() {
                 {expiryMember?.firstName} {expiryMember?.lastName}
               </div>
               <div className="mt-1 text-slate-500">
-                {c.mainExpiry}: {managedSubscription?.endDate || "—"}
+                {c.mainExpiry}: {formatDate(managedSubscription?.endDate)}
               </div>
               <div className="text-slate-500">
-                {c.maximumExpiry}: {expiryMember?.maximumEndDate || "—"}
+                {c.maximumExpiry}: {formatDate(expiryMember?.maximumEndDate)}
               </div>
             </div>
             <div className="space-y-2">

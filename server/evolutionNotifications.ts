@@ -125,6 +125,25 @@ export async function processOutboxNotification(pool: Pool, eventType: string, p
         return true;
       }
 
+      case "subscription_resumed": {
+        if (payload.subscriptionId) {
+          const [rows]: any = await pool.query(
+            "SELECT holder_member_id FROM subscriptions WHERE id = ? LIMIT 1",
+            [payload.subscriptionId],
+          );
+          if (rows.length > 0) {
+            await createNotification(pool, {
+              userId: rows[0].holder_member_id,
+              title: "Subscription Resumed",
+              body: `Your subscription is active again. New validity end: ${payload.recalculatedEndDate || 'unchanged'}.`,
+              type: "info",
+              linkUrl: "/subscriptions",
+            });
+          }
+        }
+        return true;
+      }
+
       case "access_denied": {
         // Notify admin of repeated denials
         await createNotification(pool, {
