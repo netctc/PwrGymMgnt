@@ -3,8 +3,10 @@
 --
 -- This is an operational script, not a migration. Edit only the INSERT block
 -- below, then execute the complete file against the intended database.
--- Use YYYY-MM-DD dates. plan_name must be NULL when the member has one
--- subscription; it is required when the member has more than one.
+-- Use YYYY-MM-DD dates. plan_name may be NULL only when the full name
+-- identifies exactly one member with exactly one eligible subscription.
+-- It is required when the name is shared by multiple members or when the
+-- selected member has multiple subscriptions.
 
 SET NAMES utf8mb4;
 
@@ -24,7 +26,8 @@ INSERT INTO subscription_date_updates_input
   (member_name, new_start_date, new_end_date, plan_name)
 VALUES
   ('MEMBER FULL NAME', '2026-08-01', '2026-08-31', NULL);
--- Example when the member has more than one subscription:
+-- Example when the member has more than one subscription OR the same full
+-- name belongs to multiple member records:
 -- ('MEMBER FULL NAME', '2026-09-01', '2026-09-30', 'Monthly Plan');
 
 DELIMITER $$
@@ -96,6 +99,8 @@ BEGIN
       SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = v_message;
     END IF;
 
+    -- Names are not unique in the application. When homonyms exist, resolve
+    -- the member through the supplied plan across both Legacy and V2 models.
     SELECT COUNT(*), MIN(id)
       INTO v_member_count, v_member_id
       FROM members
@@ -105,8 +110,50 @@ BEGIN
       SET v_message = CONCAT('Input row ', v_input_id, ': member not found: ', v_member_name);
       SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = v_message;
     ELSEIF v_member_count > 1 THEN
-      SET v_message = CONCAT('Input row ', v_input_id, ': duplicate member name; use a unique identifier: ', v_member_name);
-      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = v_message;
+      IF v_plan_name IS NULL THEN
+        SET v_message = CONCAT('Input row ', v_input_id, ': plan_name is required because multiple members share the name: ', v_member_name);
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = v_message;
+      END IF;
+
+      SELECT COUNT(*), MIN(candidate.member_id)
+        INTO v_member_count, v_member_id
+        FROM (
+          SELECT DISTINCT m.id AS member_id
+            FROM members m
+           WHERE TRIM(CONCAT_WS(' ', m.first_name, m.last_name)) = v_member_name
+             AND (
+               EXISTS (
+                 SELECT 1
+                   FROM member_subscriptions ms
+                   LEFT JOIN subscription_plans sp ON sp.id = ms.plan_id
+                  WHERE ms.member_id = m.id
+                    AND (ms.plan_name = v_plan_name OR sp.name = v_plan_name)
+               )
+               OR EXISTS (
+                 SELECT 1
+                   FROM subscriptions s
+                   JOIN plan_versions pv ON pv.id = s.plan_version_id
+                  WHERE s.holder_member_id = m.id
+                    AND pv.name = v_plan_name
+               )
+               OR EXISTS (
+                 SELECT 1
+                   FROM affiliations a
+                   JOIN subscriptions s ON s.id = a.subscription_id
+                   JOIN plan_versions pv ON pv.id = s.plan_version_id
+                  WHERE a.member_id = m.id
+                    AND pv.name = v_plan_name
+               )
+             )
+        ) AS candidate;
+
+      IF v_member_count = 0 THEN
+        SET v_message = CONCAT('Input row ', v_input_id, ': no member named ', v_member_name, ' has subscription plan ', v_plan_name, '.');
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = v_message;
+      ELSEIF v_member_count > 1 THEN
+        SET v_message = CONCAT('Input row ', v_input_id, ': name and plan still identify multiple members; use a unique member identifier.');
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = v_message;
+      END IF;
     END IF;
 
     SELECT COUNT(*)
