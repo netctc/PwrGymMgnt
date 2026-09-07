@@ -142,7 +142,8 @@
     "vite": "^6.2.3"
   },
   "overrides": {
-    "node-domexception": "file:./mocks/node-domexception"
+    "node-domexception": "file:./mocks/node-domexception",
+    "qs": "6.16.0"
   },
   "engines": {
     "node": ">=22.0.0 <23.0.0",
